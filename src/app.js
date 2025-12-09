@@ -1,3 +1,4 @@
+// src/app.js
 import express from 'express';
 import cors from 'cors';
 import { router as companyRoutes } from './routes/companyRoutes.js';
