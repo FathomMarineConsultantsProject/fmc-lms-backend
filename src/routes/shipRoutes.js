@@ -10,8 +10,8 @@ import {
 
 export const router = Router();
 
-router.get('/', getAllShips);
-router.get('/:id', getShipById);
+router.get('/', getAllShips); // GET /ships
+router.get('/:id', getShipById); // GET /ships/:id
 router.post('/', createShip);
 router.put('/:id', updateShip);
 router.delete('/:id', deleteShip);
