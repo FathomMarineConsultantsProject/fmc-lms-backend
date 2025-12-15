@@ -1,6 +1,10 @@
 // src/controller/incidentsController.js
 import { db } from '../db.js';
 
+const isUuid = (v) =>
+  typeof v === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
 // GET /incidents
 // Optional visibility filter: /incidents?user_id=5
 export const getAllIncidents = async (req, res) => {
@@ -52,9 +56,10 @@ export const getAllIncidents = async (req, res) => {
 
 // GET /incidents/:id
 export const getIncidentById = async (req, res) => {
-  const incidentId = parseInt(req.params.id, 10);
-  if (Number.isNaN(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a number' });
+  const incidentId = req.params.id;
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: 'incident_id must be a UUID' });
   }
 
   try {
@@ -220,9 +225,10 @@ export const createIncident = async (req, res) => {
 
 // PUT /incidents/:id
 export const updateIncident = async (req, res) => {
-  const incidentId = parseInt(req.params.id, 10);
-  if (Number.isNaN(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a number' });
+  const incidentId = req.params.id;
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: 'incident_id must be a UUID' });
   }
 
   const {
@@ -259,14 +265,12 @@ export const updateIncident = async (req, res) => {
 
       const shipCompanyId = shipRes.rows[0].company_id;
 
-      // If company_id provided, it must match
       if (finalCompanyId && finalCompanyId !== shipCompanyId) {
         return res.status(400).json({
           error: `company_id mismatch: ship_id ${shipId} belongs to company_id ${shipCompanyId}`,
         });
       }
 
-      // If company_id not provided, auto-fill from ship
       if (!finalCompanyId) finalCompanyId = shipCompanyId;
     }
 
@@ -328,9 +332,10 @@ export const updateIncident = async (req, res) => {
 
 // DELETE /incidents/:id  (soft delete)
 export const deleteIncident = async (req, res) => {
-  const incidentId = parseInt(req.params.id, 10);
-  if (Number.isNaN(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a number' });
+  const incidentId = req.params.id;
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: 'incident_id must be a UUID' });
   }
 
   try {
@@ -351,4 +356,3 @@ export const deleteIncident = async (req, res) => {
     res.status(500).json({ error: 'Failed to delete incident' });
   }
 };
-
