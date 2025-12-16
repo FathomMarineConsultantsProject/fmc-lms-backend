@@ -3,6 +3,9 @@ import express from 'express';
 import cors from 'cors';
 import { router as companyRoutes } from './routes/companyRoutes.js';
 import { router as shipRoutes } from './routes/shipRoutes.js';
+import { router as userRoutes } from './routes/userRoutes.js';
+
+import { router as authRoutes } from './routes/authRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -16,8 +19,10 @@ app.get('/', (req, res) => {
 });
 
 // main routes
+app.use('/auth', authRoutes);
 app.use('/companies', companyRoutes);
 app.use('/ships', shipRoutes);
+app.use('/users', userRoutes);
 
 app.listen(PORT, () => {
   console.log(`FMC backend listening on http://localhost:${PORT}`);
