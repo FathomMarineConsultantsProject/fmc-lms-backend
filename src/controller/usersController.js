@@ -42,13 +42,44 @@ const createUniqueUsername = async (seafarerId) => {
 // GET /users
 export const getAllUsers = async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT * FROM users ORDER BY user_id');
-    res.json(rows);
+    const { role_id, company_id, ship_id, user_id } = req.user;
+
+    // role 1
+    if (role_id === 1) {
+      const { rows } = await db.query('SELECT * FROM users ORDER BY user_id');
+      return res.json(rows);
+    }
+
+    // role 2 (company)
+    if (role_id === 2) {
+      const { rows } = await db.query(
+        'SELECT * FROM users WHERE company_id = $1 ORDER BY user_id',
+        [company_id]
+      );
+      return res.json(rows);
+    }
+
+    // role 3 (ship)
+    if (role_id === 3) {
+      const { rows } = await db.query(
+        'SELECT * FROM users WHERE company_id = $1 AND ship_id = $2 ORDER BY user_id',
+        [company_id, ship_id]
+      );
+      return res.json(rows);
+    }
+
+    // role 4 (self only)
+    const { rows } = await db.query(
+      'SELECT * FROM users WHERE user_id = $1',
+      [user_id]
+    );
+    return res.json(rows);
   } catch (err) {
     console.error('Error getting users:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 };
+
 
 // GET /users/:id
 export const getUserById = async (req, res) => {

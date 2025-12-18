@@ -1,5 +1,7 @@
 // src/routes/userRoutes.js
 import { Router } from 'express';
+import { requireAuth } from '../middleware/requireAuth.js';
+
 import {
   getAllUsers,
   getUserById,
@@ -9,6 +11,8 @@ import {
 } from '../controller/usersController.js';
 
 export const router = Router();
+
+router.use(requireAuth);
 
 router.get('/', getAllUsers);
 router.get('/:id', getUserById);
