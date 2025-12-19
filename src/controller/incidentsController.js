@@ -105,6 +105,28 @@ const canSeeIncident = (user, incident) => {
   return false;
 };
 
+// Rules applied
+
+// Role 1: all incidents
+
+// Role 2: incidents where company_id = req.user.company_id
+
+// Role 3: incidents where company_id = req.user.company_id AND ship_id = req.user.ship_id
+
+// Role 4 (crew):
+
+// can see:
+
+// same ship incidents with visible_to_ship_only=true
+
+// same company incidents with visible_to_ship_only=false
+
+// their own reported incidents always
+
+// can create incidents (forced reported_by_user_id = req.user.user_id)
+
+// can update/delete only their own incidents
+
 // GET /incidents
 export const getAllIncidents = async (req, res) => {
   try {

@@ -35,6 +35,17 @@ export const getAllShips = async (req, res) => {
   }
 };
 
+// ROLE BASES ACCESS
+// Rules applied
+
+// Role 1: all ships
+
+// Role 2: only ships in their company
+
+// Role 3/4: only their ship
+
+// Create/Update/Delete: Role 1 + Role 2 only (Role 2 restricted to their company)
+
 //GET SHIP
 export const getShipById = async (req, res) => {
   try {
