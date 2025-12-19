@@ -17,8 +17,7 @@ export const login = async (req, res) => {
   try {
     const { rows } = await db.query(
       `
-      SELECT user_id, seafarer_id, full_name, status,
-             username, password_hash, role_id, ship_id, company_id
+      SELECT user_id, seafarer_id, full_name, status, username, password_hash, role_id, ship_id, company_id
       FROM users
       WHERE username = $1
       LIMIT 1
