@@ -1,5 +1,6 @@
 // src/routes/companyRoutes.js
 import { Router } from 'express';
+import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getAllCompanies,
   getCompanyById,
@@ -10,8 +11,10 @@ import {
 
 export const router = Router();
 
-router.get('/', getAllCompanies);  // get/ companies
-router.get('/:id', getCompanyById); // get/ companies/:id
+router.use(requireAuth);
+
+router.get('/', getAllCompanies);
+router.get('/:id', getCompanyById);
 router.post('/', createCompany);
 router.put('/:id', updateCompany);
 router.delete('/:id', deleteCompany);

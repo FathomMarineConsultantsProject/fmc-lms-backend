@@ -1,52 +1,115 @@
 // src/controller/incidentsController.js
 import { db } from '../db.js';
 
+const ROLE_SUPERADMIN = 1;
+const ROLE_ADMIN = 2;
+const ROLE_SUBADMIN = 3;
+const ROLE_CREW = 4;
+
 const isUuid = (v) =>
   typeof v === 'string' &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
-// GET /incidents
-// Optional visibility filter: /incidents?user_id=5
-export const getAllIncidents = async (req, res) => {
-  const userId = req.query.user_id ? parseInt(req.query.user_id, 10) : null;
+const buildIncidentListQuery = (user) => {
+  const { role_id, company_id, ship_id, user_id } = user;
 
-  try {
-    // If user_id is provided, apply visibility logic:
-    // - incidents of user's ship always visible
-    // - incidents of user's company visible ONLY if visible_to_ship_only is false
-    if (userId) {
-      if (Number.isNaN(userId)) {
-        return res.status(400).json({ error: 'user_id must be a number' });
-      }
+  if (role_id === ROLE_SUPERADMIN) {
+    return {
+      text: `
+        SELECT *
+        FROM incident_reports
+        WHERE is_deleted IS NOT TRUE
+        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+      `,
+      values: [],
+    };
+  }
 
-      const { rows } = await db.query(
-        `
-        SELECT ir.*
-        FROM incident_reports ir
-        JOIN users u ON u.user_id = $1
-        WHERE ir.is_deleted IS NOT TRUE
-          AND (
-            ir.ship_id = u.ship_id
-            OR (ir.company_id = u.company_id AND ir.visible_to_ship_only IS NOT TRUE)
-          )
-        ORDER BY ir.occurred_at DESC NULLS LAST, ir.incident_id DESC
-        `,
-        [userId]
-      );
+  if (role_id === ROLE_ADMIN) {
+    return {
+      text: `
+        SELECT *
+        FROM incident_reports
+        WHERE is_deleted IS NOT TRUE
+          AND company_id = $1
+        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+      `,
+      values: [company_id],
+    };
+  }
 
-      return res.json(rows);
-    }
+  if (role_id === ROLE_SUBADMIN) {
+    return {
+      text: `
+        SELECT *
+        FROM incident_reports
+        WHERE is_deleted IS NOT TRUE
+          AND company_id = $1
+          AND ship_id = $2
+        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+      `,
+      values: [company_id, ship_id],
+    };
+  }
 
-    // No user filter = return all (admin/dev)
-    const { rows } = await db.query(
-      `
+  // role4 crew
+  return {
+    text: `
       SELECT *
       FROM incident_reports
       WHERE is_deleted IS NOT TRUE
-      ORDER BY occurred_at DESC NULLS LAST, incident_id DESC
-      `
-    );
+        AND (
+          reported_by_user_id = $1
+          OR (
+            ship_id = $2
+            AND visible_to_ship_only IS TRUE
+          )
+          OR (
+            company_id = $3
+            AND (visible_to_ship_only IS NOT TRUE)
+          )
+        )
+      ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+    `,
+    values: [user_id, ship_id, company_id],
+  };
+};
 
+const canSeeIncident = (user, incident) => {
+  const { role_id, company_id, ship_id, user_id } = user;
+
+  if (role_id === ROLE_SUPERADMIN) return true;
+
+  if (role_id === ROLE_ADMIN) {
+    return String(incident.company_id) === String(company_id);
+  }
+
+  if (role_id === ROLE_SUBADMIN) {
+    return (
+      String(incident.company_id) === String(company_id) &&
+      Number(incident.ship_id) === Number(ship_id)
+    );
+  }
+
+  // crew
+  if (Number(incident.reported_by_user_id) === Number(user_id)) return true;
+
+  if (Number(incident.ship_id) === Number(ship_id) && incident.visible_to_ship_only === true) {
+    return true;
+  }
+
+  if (String(incident.company_id) === String(company_id) && incident.visible_to_ship_only !== true) {
+    return true;
+  }
+
+  return false;
+};
+
+// GET /incidents
+export const getAllIncidents = async (req, res) => {
+  try {
+    const q = buildIncidentListQuery(req.user);
+    const { rows } = await db.query(q.text, q.values);
     res.json(rows);
   } catch (err) {
     console.error('Error getting incidents:', err);
@@ -57,24 +120,20 @@ export const getAllIncidents = async (req, res) => {
 // GET /incidents/:id
 export const getIncidentById = async (req, res) => {
   const incidentId = req.params.id;
-
-  if (!isUuid(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a UUID' });
-  }
+  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
 
   try {
     const { rows } = await db.query(
-      `
-      SELECT *
-      FROM incident_reports
-      WHERE incident_id = $1
-        AND is_deleted IS NOT TRUE
-      `,
+      `SELECT * FROM incident_reports
+       WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
       [incidentId]
     );
-
     if (!rows.length) return res.status(404).json({ error: 'Incident not found' });
-    res.json(rows[0]);
+
+    const incident = rows[0];
+    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
+
+    res.json(incident);
   } catch (err) {
     console.error('Error getting incident:', err);
     res.status(500).json({ error: 'Failed to fetch incident' });
@@ -85,8 +144,7 @@ export const getIncidentById = async (req, res) => {
 export const createIncident = async (req, res) => {
   const {
     ship_id,
-    company_id, // optional: if omitted, we’ll auto-fill from ships.company_id
-    reported_by_user_id,
+    company_id,
     visible_to_ship_only,
     title,
     description,
@@ -104,80 +162,58 @@ export const createIncident = async (req, res) => {
   } = req.body;
 
   const shipId = parseInt(ship_id, 10);
-  const reporterId = parseInt(reported_by_user_id, 10);
+  if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
+  if (!title) return res.status(400).json({ error: 'title is required' });
 
-  if (Number.isNaN(shipId) || Number.isNaN(reporterId)) {
-    return res.status(400).json({ error: 'ship_id and reported_by_user_id must be numbers' });
-  }
-  if (!title) {
-    return res.status(400).json({ error: 'title is required' });
-  }
+  const { role_id, company_id: myCompanyId, ship_id: myShipId, user_id: myUserId } = req.user;
 
   try {
-    // 1) validate ship exists + get ship.company_id (UUID)
-    const shipRes = await db.query(
-      `SELECT ship_id, company_id FROM ships WHERE ship_id = $1`,
-      [shipId]
-    );
+    // ship must exist
+    const shipRes = await db.query(`SELECT ship_id, company_id FROM ships WHERE ship_id = $1`, [shipId]);
     if (!shipRes.rows.length) return res.status(404).json({ error: 'Ship not found' });
 
-    const shipCompanyId = shipRes.rows[0].company_id; // UUID string
+    const shipCompanyId = shipRes.rows[0].company_id;
+    const finalCompanyId = company_id ? String(company_id) : String(shipCompanyId);
 
-    // 2) ensure incident company_id matches the ship’s company_id
-    const finalCompanyId = company_id ? String(company_id) : shipCompanyId;
-    if (finalCompanyId !== shipCompanyId) {
-      return res.status(400).json({
-        error: `company_id mismatch: ship_id ${shipId} belongs to company_id ${shipCompanyId}`,
-      });
+    if (String(finalCompanyId) !== String(shipCompanyId)) {
+      return res.status(400).json({ error: 'company_id mismatch with ship.company_id' });
     }
 
-    // 3) validate reporter exists
-    const userRes = await db.query(
-      `SELECT user_id, ship_id, company_id FROM users WHERE user_id = $1`,
-      [reporterId]
-    );
-    if (!userRes.rows.length) return res.status(404).json({ error: 'Reporting user not found' });
-
-    // 4) authorization-like check: reporter must belong to same ship OR company
-    const reporter = userRes.rows[0];
-    const sameShip = reporter.ship_id === shipId;
-    const sameCompany = reporter.company_id === finalCompanyId;
-
-    if (!sameShip && !sameCompany) {
-      return res.status(403).json({
-        error: 'User cannot report incident for a ship/company they do not belong to',
-      });
+    // scope rules
+    if (role_id === ROLE_ADMIN) {
+      if (String(finalCompanyId) !== String(myCompanyId)) {
+        return res.status(403).json({ error: 'Forbidden (company scope)' });
+      }
     }
 
-    // 5) insert
+    if (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) {
+      if (String(finalCompanyId) !== String(myCompanyId) || Number(shipId) !== Number(myShipId)) {
+        return res.status(403).json({ error: 'Forbidden (ship scope)' });
+      }
+    }
+
+    // reporter forced for everyone except superadmin (superadmin may specify)
+    const reporterId =
+      role_id === ROLE_SUPERADMIN && req.body.reported_by_user_id
+        ? parseInt(req.body.reported_by_user_id, 10)
+        : myUserId;
+
     const { rows } = await db.query(
       `
       INSERT INTO incident_reports (
-        ship_id,
-        company_id,
-        reported_by_user_id,
-        visible_to_ship_only,
-        title,
-        description,
-        incident_type,
-        severity,
-        location_on_ship,
-        root_cause,
-        corrective_action,
-        preventive_action,
-        status,
-        occurred_at,
-        reported_at,
-        closed_at,
-        reference_code,
-        is_deleted,
-        created_at,
-        updated_at
+        ship_id, company_id, reported_by_user_id,
+        visible_to_ship_only, title, description,
+        incident_type, severity, location_on_ship,
+        root_cause, corrective_action, preventive_action,
+        status, occurred_at, reported_at, closed_at,
+        reference_code, is_deleted, created_at, updated_at
       )
       VALUES (
         $1, $2, $3,
         COALESCE($4, false),
-        $5, $6, $7, $8, $9, $10, $11, $12,
+        $5, $6,
+        $7, $8, $9,
+        $10, $11, $12,
         COALESCE($13, 'Reported'),
         $14,
         COALESCE($15, NOW()),
@@ -213,12 +249,9 @@ export const createIncident = async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('Error creating incident:', err);
-
-    // FK violation (safety net)
     if (err.code === '23503') {
-      return res.status(400).json({ error: 'Foreign key constraint failed (check ship/company/user IDs)' });
+      return res.status(400).json({ error: 'Foreign key constraint failed' });
     }
-
     res.status(500).json({ error: 'Failed to create incident' });
   }
 };
@@ -226,83 +259,82 @@ export const createIncident = async (req, res) => {
 // PUT /incidents/:id
 export const updateIncident = async (req, res) => {
   const incidentId = req.params.id;
-
-  if (!isUuid(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a UUID' });
-  }
-
-  const {
-    ship_id,
-    company_id,
-    reported_by_user_id,
-    visible_to_ship_only,
-    title,
-    description,
-    incident_type,
-    severity,
-    location_on_ship,
-    root_cause,
-    corrective_action,
-    preventive_action,
-    status,
-    occurred_at,
-    reported_at,
-    closed_at,
-    reference_code,
-    is_deleted,
-  } = req.body;
+  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
 
   try {
-    // If ship_id is provided, enforce company_id consistency (UUID)
-    let finalCompanyId = company_id ? String(company_id) : null;
+    const currentRes = await db.query(
+      `SELECT * FROM incident_reports WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      [incidentId]
+    );
+    if (!currentRes.rows.length) return res.status(404).json({ error: 'Incident not found' });
 
-    if (ship_id) {
-      const shipId = parseInt(ship_id, 10);
-      if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
+    const incident = currentRes.rows[0];
 
-      const shipRes = await db.query(`SELECT company_id FROM ships WHERE ship_id = $1`, [shipId]);
-      if (!shipRes.rows.length) return res.status(404).json({ error: 'Ship not found' });
+    // authorize
+    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
 
-      const shipCompanyId = shipRes.rows[0].company_id;
-
-      if (finalCompanyId && finalCompanyId !== shipCompanyId) {
-        return res.status(400).json({
-          error: `company_id mismatch: ship_id ${shipId} belongs to company_id ${shipCompanyId}`,
-        });
-      }
-
-      if (!finalCompanyId) finalCompanyId = shipCompanyId;
+    // crew can only update their own reported incidents
+    if (req.user.role_id === ROLE_CREW && Number(incident.reported_by_user_id) !== Number(req.user.user_id)) {
+      return res.status(403).json({ error: 'Forbidden (only own incident)' });
     }
+
+    // prevent lower roles from moving incident to other ship/company
+    const nextShipId = req.body.ship_id ? parseInt(req.body.ship_id, 10) : null;
+    const nextCompanyId = req.body.company_id ? String(req.body.company_id) : null;
+
+    if ((req.user.role_id === ROLE_ADMIN || req.user.role_id === ROLE_SUBADMIN || req.user.role_id === ROLE_CREW) &&
+        (nextShipId || nextCompanyId)) {
+      // they must remain in their scope
+      const mustCompany = String(req.user.company_id);
+      const mustShip = req.user.ship_id;
+
+      if (nextCompanyId && String(nextCompanyId) !== mustCompany) {
+        return res.status(403).json({ error: 'Forbidden (cannot change company_id)' });
+      }
+      if ((req.user.role_id === ROLE_SUBADMIN || req.user.role_id === ROLE_CREW) && nextShipId && Number(nextShipId) !== Number(mustShip)) {
+        return res.status(403).json({ error: 'Forbidden (cannot change ship_id)' });
+      }
+    }
+
+    const {
+      visible_to_ship_only,
+      title,
+      description,
+      incident_type,
+      severity,
+      location_on_ship,
+      root_cause,
+      corrective_action,
+      preventive_action,
+      status,
+      occurred_at,
+      reported_at,
+      closed_at,
+      reference_code,
+    } = req.body;
 
     const { rowCount } = await db.query(
       `
       UPDATE incident_reports
       SET
-        ship_id              = COALESCE($1, ship_id),
-        company_id           = COALESCE($2, company_id),
-        reported_by_user_id  = COALESCE($3, reported_by_user_id),
-        visible_to_ship_only = COALESCE($4, visible_to_ship_only),
-        title                = COALESCE($5, title),
-        description          = COALESCE($6, description),
-        incident_type        = COALESCE($7, incident_type),
-        severity             = COALESCE($8, severity),
-        location_on_ship     = COALESCE($9, location_on_ship),
-        root_cause           = COALESCE($10, root_cause),
-        corrective_action    = COALESCE($11, corrective_action),
-        preventive_action    = COALESCE($12, preventive_action),
-        status               = COALESCE($13, status),
-        occurred_at          = COALESCE($14, occurred_at),
-        reported_at          = COALESCE($15, reported_at),
-        closed_at            = COALESCE($16, closed_at),
-        reference_code       = COALESCE($17, reference_code),
-        is_deleted           = COALESCE($18, is_deleted),
+        visible_to_ship_only = COALESCE($1, visible_to_ship_only),
+        title                = COALESCE($2, title),
+        description          = COALESCE($3, description),
+        incident_type        = COALESCE($4, incident_type),
+        severity             = COALESCE($5, severity),
+        location_on_ship     = COALESCE($6, location_on_ship),
+        root_cause           = COALESCE($7, root_cause),
+        corrective_action    = COALESCE($8, corrective_action),
+        preventive_action    = COALESCE($9, preventive_action),
+        status               = COALESCE($10, status),
+        occurred_at          = COALESCE($11, occurred_at),
+        reported_at          = COALESCE($12, reported_at),
+        closed_at            = COALESCE($13, closed_at),
+        reference_code       = COALESCE($14, reference_code),
         updated_at           = NOW()
-      WHERE incident_id = $19
+      WHERE incident_id = $15
       `,
       [
-        ship_id ?? null,
-        finalCompanyId ?? null,
-        reported_by_user_id ?? null,
         visible_to_ship_only ?? null,
         title ?? null,
         description ?? null,
@@ -317,7 +349,6 @@ export const updateIncident = async (req, res) => {
         reported_at ?? null,
         closed_at ?? null,
         reference_code ?? null,
-        is_deleted ?? null,
         incidentId,
       ]
     );
@@ -330,22 +361,31 @@ export const updateIncident = async (req, res) => {
   }
 };
 
-// DELETE /incidents/:id  (soft delete)
+// DELETE /incidents/:id (soft delete)
 export const deleteIncident = async (req, res) => {
   const incidentId = req.params.id;
-
-  if (!isUuid(incidentId)) {
-    return res.status(400).json({ error: 'incident_id must be a UUID' });
-  }
+  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
 
   try {
+    const currentRes = await db.query(
+      `SELECT * FROM incident_reports WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      [incidentId]
+    );
+    if (!currentRes.rows.length) return res.status(404).json({ error: 'Incident not found' });
+
+    const incident = currentRes.rows[0];
+
+    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
+
+    // crew can only delete their own incident
+    if (req.user.role_id === ROLE_CREW && Number(incident.reported_by_user_id) !== Number(req.user.user_id)) {
+      return res.status(403).json({ error: 'Forbidden (only own incident)' });
+    }
+
     const { rowCount } = await db.query(
-      `
-      UPDATE incident_reports
-      SET is_deleted = true,
-          updated_at = NOW()
-      WHERE incident_id = $1
-      `,
+      `UPDATE incident_reports
+       SET is_deleted = true, updated_at = NOW()
+       WHERE incident_id = $1`,
       [incidentId]
     );
 

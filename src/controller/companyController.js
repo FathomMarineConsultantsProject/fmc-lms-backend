@@ -1,39 +1,75 @@
 // src/controller/companyController.js
 import { db } from '../db.js';
 
+const ROLE_SUPERADMIN = 1;
+const ROLE_ADMIN = 2;
+
+const isRole = (req, roleId) => Number(req.user?.role_id) === Number(roleId);
+
+const ensureRole = (req, res, allowedRoles) => {
+  const roleId = Number(req.user?.role_id);
+  if (!roleId || !allowedRoles.includes(roleId)) {
+    res.status(403).json({ error: 'Forbidden' });
+    return false;
+  }
+  return true;
+};
+
+const ensureCompanyScope = (req, res, companyId) => {
+  // role1 can access any company
+  if (isRole(req, ROLE_SUPERADMIN)) return true;
+
+  // others must have company_id and must match requested companyId
+  if (!req.user?.company_id || String(req.user.company_id) !== String(companyId)) {
+    res.status(403).json({ error: 'Forbidden (company scope)' });
+    return false;
+  }
+  return true;
+};
+
 // GET /companies
+// role1 -> all companies
+// role2/3/4 -> only own company
 export const getAllCompanies = async (req, res) => {
   try {
+    if (isRole(req, ROLE_SUPERADMIN)) {
+      const { rows } = await db.query('SELECT * FROM company ORDER BY company_id');
+      return res.json(rows);
+    }
+
+    if (!req.user?.company_id) return res.json([]);
+
     const { rows } = await db.query(
-      'SELECT * FROM company ORDER BY company_id'
+      'SELECT * FROM company WHERE company_id = $1',
+      [req.user.company_id]
     );
-    res.json(rows);
+    return res.json(rows);
   } catch (err) {
     console.error('Error getting companies:', err);
-    res.status(500).json({ error: 'Failed to fetch companies' });
+    return res.status(500).json({ error: 'Failed to fetch companies' });
   }
 };
 
 // GET /companies/:id
+// role1 -> any
+// role2/3/4 -> only own company
 export const getCompanyById = async (req, res) => {
+  const id = String(req.params.id);
+
   try {
-    const { rows } = await db.query(
-      'SELECT * FROM company WHERE company_id = $1',
-      [req.params.id]
-    );
+    if (!ensureCompanyScope(req, res, id)) return;
 
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
+    const { rows } = await db.query('SELECT * FROM company WHERE company_id = $1', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Company not found' });
 
-    res.json(rows[0]);
+    return res.json(rows[0]);
   } catch (err) {
     console.error('Error getting company:', err);
-    res.status(500).json({ error: 'Failed to fetch company' });
+    return res.status(500).json({ error: 'Failed to fetch company' });
   }
 };
 
-// POST /companies
+// POST /companies  (role1 only)
 // Example body:
 // {
 //   "company_name": "Fathom Marine",
@@ -53,6 +89,8 @@ export const getCompanyById = async (req, res) => {
 //   "password_hash": "hashed_password_here"
 // }
 export const createCompany = async (req, res) => {
+  if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
+
   const {
     company_name,
     code,
@@ -71,9 +109,7 @@ export const createCompany = async (req, res) => {
     password_hash,
   } = req.body;
 
-  if (!company_name) {
-    return res.status(400).json({ error: 'company_name is required' });
-  }
+  if (!company_name) return res.status(400).json({ error: 'company_name is required' });
 
   try {
     const { rows } = await db.query(
@@ -94,32 +130,42 @@ export const createCompany = async (req, res) => {
        RETURNING *`,
       [
         company_name,
-        code || null,
-        email_domain || null,
+        code ?? null,
+        email_domain ?? null,
         is_active,
-        metadata_json || null,
-        ships_count || null,
-        role || null,
-        regional_address || null,
-        ism_address || null,
-        type || null,
-        contact_person_name || null,
-        phone_no || null,
-        email || null,
-        username || null,
-        password_hash || null,
+        metadata_json ?? null,
+        ships_count ?? null,
+        role ?? null,
+        regional_address ?? null,
+        ism_address ?? null,
+        type ?? null,
+        contact_person_name ?? null,
+        phone_no ?? null,
+        email ?? null,
+        username ?? null,
+        password_hash ?? null,
       ]
     );
 
-    res.status(201).json(rows[0]);
+    return res.status(201).json(rows[0]);
   } catch (err) {
     console.error('Error creating company:', err);
-    res.status(500).json({ error: 'Failed to create company' });
+    return res.status(500).json({ error: 'Failed to create company' });
   }
 };
 
 // PUT /companies/:id
+// role1 -> update any
+// role2 -> update only own company
 export const updateCompany = async (req, res) => {
+  const id = String(req.params.id);
+
+  // Only role1/role2 allowed to update
+  if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
+
+  // role2 must match company scope
+  if (!ensureCompanyScope(req, res, id)) return;
+
   const {
     company_name,
     code,
@@ -160,51 +206,47 @@ export const updateCompany = async (req, res) => {
          updated_at          = NOW()
        WHERE company_id = $16`,
       [
-        company_name,
-        code,
-        email_domain,
-        is_active,
-        metadata_json,
-        ships_count,
-        role,
-        regional_address,
-        ism_address,
-        type,
-        contact_person_name,
-        phone_no,
-        email,
-        username,
-        password_hash,
-        req.params.id,
+        company_name ?? null,
+        code ?? null,
+        email_domain ?? null,
+        is_active ?? null,
+        metadata_json ?? null,
+        ships_count ?? null,
+        role ?? null,
+        regional_address ?? null,
+        ism_address ?? null,
+        type ?? null,
+        contact_person_name ?? null,
+        phone_no ?? null,
+        email ?? null,
+        username ?? null,
+        password_hash ?? null,
+        id,
       ]
     );
 
-    if (!rowCount) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
-
-    res.json({ message: 'Company updated' });
+    if (!rowCount) return res.status(404).json({ error: 'Company not found' });
+    return res.json({ message: 'Company updated' });
   } catch (err) {
     console.error('Error updating company:', err);
-    res.status(500).json({ error: 'Failed to update company' });
+    return res.status(500).json({ error: 'Failed to update company' });
   }
 };
 
-// DELETE /companies/:id
+// DELETE /companies/:id  (role1 only)
 export const deleteCompany = async (req, res) => {
+  if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
+
   try {
     const { rowCount } = await db.query(
       'DELETE FROM company WHERE company_id = $1',
       [req.params.id]
     );
 
-    if (!rowCount) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
-
-    res.json({ message: 'Company deleted' });
+    if (!rowCount) return res.status(404).json({ error: 'Company not found' });
+    return res.json({ message: 'Company deleted' });
   } catch (err) {
     console.error('Error deleting company:', err);
-    res.status(500).json({ error: 'Failed to delete company' });
+    return res.status(500).json({ error: 'Failed to delete company' });
   }
 };
