@@ -1,5 +1,6 @@
 // src/routes/companyRoutes.js
 import { Router } from 'express';
+import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getAllCompanies,
   getCompanyById,
@@ -9,6 +10,8 @@ import {
 } from '../controller/companyController.js';
 
 export const router = Router();
+
+router.use(requireAuth);
 
 router.get('/', getAllCompanies);  // get/ companies
 router.get('/:id', getCompanyById); // get/ companies/:id

@@ -1,5 +1,6 @@
 // // src/routes/incidentRoutes.js
 import { Router } from 'express';
+import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getAllIncidents,
   getIncidentById,
@@ -9,6 +10,8 @@ import {
 } from '../controller/incidentsController.js';
 
 export const router = Router();
+
+router.use(requireAuth);
 
 router.get('/', getAllIncidents);
 router.get('/:id', getIncidentById);
