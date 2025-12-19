@@ -13,8 +13,8 @@ export const router = Router();
 
 router.use(requireAuth);
 
-router.get('/', getAllCompanies);  // get/ companies
-router.get('/:id', getCompanyById); // get/ companies/:id
+router.get('/', getAllCompanies);
+router.get('/:id', getCompanyById);
 router.post('/', createCompany);
 router.put('/:id', updateCompany);
 router.delete('/:id', deleteCompany);
