@@ -12,7 +12,10 @@ export const requireAuth = (req, res, next) => {
     if (!secret) return res.status(500).json({ error: 'JWT_SECRET missing in .env' });
 
     const payload = jwt.verify(token, secret);
-    console.log("AUTH PAYLOAD:", payload);
+    if (process.env.NODE_ENV !== "production") {
+      console.log("AUTH PAYLOAD:", payload);
+    }
+
 
     // Attach to request for later use
     req.user = payload;
