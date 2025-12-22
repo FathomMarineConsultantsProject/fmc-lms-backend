@@ -1,6 +1,9 @@
 // src/app.js
 import express from 'express';
 import cors from 'cors';
+import swaggerUi from "swagger-ui-express";
+import swaggerSpec from "./swagger.js";
+
 import { router as companyRoutes } from './routes/companyRoutes.js';
 import { router as shipRoutes } from './routes/shipRoutes.js';
 import { router as userRoutes } from './routes/userRoutes.js';
@@ -15,6 +18,8 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.get("/openapi.json", (req, res) => res.json(swaggerSpec));
 
 // simple health check
 app.get('/', (req, res) => {
