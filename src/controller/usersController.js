@@ -18,6 +18,30 @@ const generatePassword = (length = 12) => {
 const hashPassword = (plain) =>
   crypto.createHash('sha256').update(String(plain)).digest('hex');
 
+// AES-256-GCM reversible encryption (Option B)
+const getEncKey = () => {
+  const b64 = process.env.PASSWORD_ENC_KEY;
+  if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
+  const key = Buffer.from(b64, 'base64');
+  if (key.length !== 32) throw new Error('PASSWORD_ENC_KEY must be 32 bytes base64');
+  return key;
+};
+
+/**
+ * returns: base64(iv).base64(tag).base64(ciphertext)
+ */
+const encryptPassword = (plain) => {
+  const key = getEncKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+  const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
+};
+
+
 // generate username based on seafarer_id + random suffix to avoid collisions
 const generateUsername = (seafarerId) => {
   const base = String(seafarerId).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -121,25 +145,28 @@ export const createUser = async (req, res) => {
     let generatedUsername = null;
     let generatedPassword = null;
     let passwordHashToStore = null;
+    let passwordEncToStore = null;
+
 
     if (onboardNow) {
       generatedUsername = await createUniqueUsername(seafarer_id);
       generatedPassword = generatePassword(12);
       passwordHashToStore = hashPassword(generatedPassword);
+      passwordEncToStore = encryptPassword(generatedPassword);
     }
 
     const { rows } = await db.query(
       `INSERT INTO users
-       (seafarer_id, full_name, rank, trip,
-        embarkation_date, disembarkation_date,
-        status, username, password_hash,
-        ship_id, company_id, created_at, updated_at)
-       VALUES
-       ($1, $2, $3, $4,
-        $5, $6,
-        $7, $8, $9,
-        $10, $11, NOW(), NOW())
-       RETURNING *`,
+   (seafarer_id, full_name, rank, trip,
+    embarkation_date, disembarkation_date,
+    status, username, password_hash, password_enc,
+    ship_id, company_id, created_at, updated_at)
+   VALUES
+   ($1, $2, $3, $4,
+    $5, $6,
+    $7, $8, $9, $10,
+    $11, $12, NOW(), NOW())
+   RETURNING *`,
       [
         seafarer_id,
         full_name,
@@ -148,8 +175,9 @@ export const createUser = async (req, res) => {
         embarkation_date || null,
         disembarkation_date || null,
         status || null,
-        generatedUsername,      // null if not onboard
-        passwordHashToStore,    // null if not onboard
+        generatedUsername,
+        passwordHashToStore,
+        passwordEncToStore,     // ✅ NEW
         ship_id || null,
         company_id || null,
       ]
@@ -213,6 +241,7 @@ export const updateUser = async (req, res) => {
     let newUsername = null;
     let newPassword = null;
     let newPasswordHash = null;
+    let newPasswordEnc = null;
 
     // Generate creds ONLY ONCE: when user becomes onboard and has no creds yet
     if (nextOnboard && !hasCreds) {
@@ -220,27 +249,28 @@ export const updateUser = async (req, res) => {
       newUsername = await createUniqueUsername(sidForUsername);
       newPassword = generatePassword(12);
       newPasswordHash = hashPassword(newPassword);
+      newPasswordEnc = encryptPassword(newPassword);   // ✅ NEW
     }
 
     const { rowCount } = await db.query(
       `UPDATE users
-       SET
-         seafarer_id         = COALESCE($1, seafarer_id),
-         full_name           = COALESCE($2, full_name),
-         rank                = COALESCE($3, rank),
-         trip                = COALESCE($4, trip),
-         embarkation_date    = COALESCE($5, embarkation_date),
-         disembarkation_date = COALESCE($6, disembarkation_date),
-         status              = COALESCE($7, status),
+   SET
+     seafarer_id         = COALESCE($1, seafarer_id),
+     full_name           = COALESCE($2, full_name),
+     rank                = COALESCE($3, rank),
+     trip                = COALESCE($4, trip),
+     embarkation_date    = COALESCE($5, embarkation_date),
+     disembarkation_date = COALESCE($6, disembarkation_date),
+     status              = COALESCE($7, status),
 
-         -- IMPORTANT: do NOT wipe creds on offboard
-         username            = COALESCE($8::varchar, username),
-         password_hash       = COALESCE($9::varchar, password_hash),
+     username            = COALESCE($8::varchar, username),
+     password_hash       = COALESCE($9::varchar, password_hash),
+     password_enc        = COALESCE($10::text, password_enc),
 
-         ship_id             = COALESCE($10, ship_id),
-         company_id          = COALESCE($11::uuid, company_id),
-         updated_at          = NOW()
-       WHERE user_id = $12`,
+     ship_id             = COALESCE($11, ship_id),
+     company_id          = COALESCE($12::uuid, company_id),
+     updated_at          = NOW()
+   WHERE user_id = $13`,
       [
         seafarer_id,
         full_name,
@@ -249,14 +279,14 @@ export const updateUser = async (req, res) => {
         embarkation_date,
         disembarkation_date,
         status,
-        newUsername,      // only set if generated
-        newPasswordHash,  // only set if generated
+        newUsername,
+        newPasswordHash,
+        newPasswordEnc,   // ✅ NEW
         ship_id,
         company_id,
         id,
       ]
     );
-
     if (!rowCount) return res.status(404).json({ error: 'User not found' });
 
     res.json({
