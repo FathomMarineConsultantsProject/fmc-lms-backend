@@ -7,6 +7,7 @@ import {
   createShip,
   updateShip,
   deleteShip,
+  getShipsByCompanyId,
 } from '../controller/shipsController.js';
 
 export const router = Router();
@@ -82,27 +83,49 @@ router.use(requireAuth);
  *   get:
  *     summary: Get ships (role-based)
  *     description: |
- *       - Role 1 (SuperAdmin): all ships
- *       - Role 2 (Admin): ships in own company
- *       - Role 3/4: only own ship (from token ship_id), otherwise []
+ *       Role 1: all ships (optional filter by company_id)  
+ *       Role 2: ships in their company  
+ *       Role 3/4: only their ship
  *     tags: [Ships]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: company_id
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Filter ships by company (SuperAdmin only)
  *     responses:
- *       200:
- *         description: List of ships (may be empty)
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/Ship'
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       200: { description: OK }
+ *       401: { description: Unauthorized }
  */
 router.get('/', getAllShips);
+
+/**
+ * @openapi
+ * /ships/company/{company_id}:
+ *   get:
+ *     summary: Get ships by company_id (SuperAdmin only)
+ *     description: Role 1 can filter ships by company_id.
+ *     tags: [Ships]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Company UUID
+ *     responses:
+ *       200: { description: OK }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.get('/company/:company_id', getShipsByCompanyId);
 
 /**
  * @openapi

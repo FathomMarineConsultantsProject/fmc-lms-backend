@@ -11,12 +11,24 @@ const canWriteShips = (roleId) => roleId === ROLE_SUPERADMIN || roleId === ROLE_
 export const getAllShips = async (req, res) => {
   try {
     const { role_id, company_id, ship_id } = req.user;
+    const { company_id: queryCompanyId } = req.query;
 
+    // ✅ Role 1 (SuperAdmin)
     if (role_id === ROLE_SUPERADMIN) {
+      // Optional filter by company_id
+      if (queryCompanyId) {
+        const { rows } = await db.query(
+          'SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id',
+          [queryCompanyId]
+        );
+        return res.json(rows);
+      }
+
       const { rows } = await db.query('SELECT * FROM ships ORDER BY ship_id');
       return res.json(rows);
     }
 
+    // ✅ Role 2 (Admin) → only their company
     if (role_id === ROLE_ADMIN) {
       const { rows } = await db.query(
         'SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id',
@@ -25,10 +37,14 @@ export const getAllShips = async (req, res) => {
       return res.json(rows);
     }
 
-    // role3/4 -> only own ship
+    // ✅ Role 3 / 4 → only their ship
     if (!ship_id) return res.json([]);
-    const { rows } = await db.query('SELECT * FROM ships WHERE ship_id = $1', [ship_id]);
+    const { rows } = await db.query(
+      'SELECT * FROM ships WHERE ship_id = $1',
+      [ship_id]
+    );
     return res.json(rows);
+
   } catch (err) {
     console.error('Error getting ships:', err);
     res.status(500).json({ error: 'Failed to fetch ships' });
@@ -226,3 +242,28 @@ export const deleteShip = async (req, res) => {
     res.status(500).json({ error: 'Failed to delete ship' });
   }
 };
+
+// GET /ships/company/:company_id
+// SuperAdmin only: get ships filtered by company_id
+export const getShipsByCompanyId = async (req, res) => {
+  try {
+    const { role_id } = req.user;
+    if (Number(role_id) !== ROLE_SUPERADMIN) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const companyId = String(req.params.company_id || "").trim();
+    if (!companyId) return res.status(400).json({ error: "company_id is required" });
+
+    const { rows } = await db.query(
+      "SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id",
+      [companyId]
+    );
+
+    return res.json(rows);
+  } catch (err) {
+    console.error("Error getting ships by company:", err);
+    return res.status(500).json({ error: "Failed to fetch ships" });
+  }
+};
+
