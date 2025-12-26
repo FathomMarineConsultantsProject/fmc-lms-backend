@@ -11,6 +11,7 @@ import { router as authRoutes } from './routes/authRoutes.js';
 import { router as incidentRoutes } from './routes/incidentRoutes.js';
 import { router as certificateRoutes } from './routes/certificateRoutes.js';
 import { router as assessmentRoutes } from './routes/assessmentRoutes.js';
+import { router as activityRoutes } from './routes/activityRoutes.js';
 
 
 const app = express();
@@ -34,6 +35,8 @@ app.use('/users', userRoutes);
 app.use('/incidents', incidentRoutes);
 app.use('/certificates', certificateRoutes);
 app.use('/assessments', assessmentRoutes);
+app.use('/activity', activityRoutes);
+
 
 app.listen(PORT, () => {
   console.log(`FMC backend listening on http://localhost:${PORT}`);
