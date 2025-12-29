@@ -1,12 +1,14 @@
 // src/routes/userRoutes.js
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { allowRoles } from "../middleware/rbac.js";
 import {
   getAllUsers,
   getUserById,
   createUser,
   updateUser,
   deleteUser,
+  importUsersFromExcel,
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -45,9 +47,10 @@ router.get("/", getAllUsers);
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string }
+ *         schema: { type: integer }
  *     responses:
  *       200: { description: OK }
+ *       404: { description: User not found }
  */
 router.get("/:id", getUserById);
 
@@ -61,10 +64,14 @@ router.get("/:id", getUserById);
  *       - bearerAuth: []
  *     requestBody:
  *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
  *     responses:
  *       201: { description: Created }
  */
-router.post("/", createUser);
+router.post("/", allowRoles(1,2,3), createUser);
 
 /**
  * @openapi
@@ -78,11 +85,17 @@ router.post("/", createUser);
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string }
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
  *     responses:
  *       200: { description: Updated }
  */
-router.put("/:id", updateUser);
+router.put("/:id", allowRoles(1,2,3), updateUser);
 
 /**
  * @openapi
@@ -96,8 +109,35 @@ router.put("/:id", updateUser);
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string }
+ *         schema: { type: integer }
  *     responses:
  *       200: { description: Deleted }
  */
-router.delete("/:id", deleteUser);
+router.delete("/:id", allowRoles(1,2), deleteUser);
+
+/**
+ * @openapi
+ * /users/import:
+ *   post:
+ *     summary: Import users from Excel
+ *     description: Upload .xlsx as multipart/form-data field "file"
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [file]
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       201: { description: Import finished }
+ *       400: { description: Bad request }
+ *       403: { description: Forbidden }
+ */
+router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
