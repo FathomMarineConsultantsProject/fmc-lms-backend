@@ -459,142 +459,158 @@ export const deleteUser = async (req, res) => {
   }
 };
 
-// ================= EXCEL IMPORT =================
+// ================== EXCEL HELPERS ==================
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Your template required headers (normalized)
+
+const getCell = (row, wantedKey) => {
+  const wk = normalizeKey(wantedKey);
+  const found = Object.keys(row).find((k) => normalizeKey(k) === wk);
+  return found ? row[found] : null;
+};
+
+// Your export file headers (row 4 in your sample)
 const REQUIRED_EXCEL_HEADERS = [
-  "seafarer", // name
-  "id", // seafarer_id
-  "rank",
-  "sex",
-  "date of birth",
-  "place of birth",
-  "nationality",
-  "embarkation port",
-  "embarkation date",
-  "disembarkation port",
-  "disembarkation date",
-  "end of contract",
-  "plus months",
-  "passport number",
-  "issue place",
-  "issue date",       // passport issue date
-  "expiry date",      // passport expiry date
-  "seaman's book number",
-  "issue date.1",     // seaman book issue date
-  "expiry date.1",    // seaman book expiry date
+  "Seafarer",
+  "ID",
+  "Sex",
+  "Rank",
+  "Date of Birth",
+  "Place of Birth",
+  "Nationality",
+  "Embarkation Port",
+  "Embarkation Date",
+  "Disembarkation Port",
+  "Disembarkation Date",
+  "End of Contract",
+  "Plus Months",
+  "Passport Number",
+  "Issue Place",
+  "Issue Date",
+  "Expiry Date",
+  "Seaman's Book Number",
+  "Issue Date.1",
+  "Expiry Date.1",
 ];
+
+// Finds the header row index (0-based) by scanning rows for enough required headers
+const detectHeaderRowIndex = (sheet) => {
+  const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" }); // 2D array
+  const required = new Set(REQUIRED_EXCEL_HEADERS.map(normalizeKey));
+
+  for (let r = 0; r < Math.min(matrix.length, 30); r++) {
+    const row = matrix[r] || [];
+    const keys = row.map(normalizeKey);
+    let hits = 0;
+    for (const k of keys) if (required.has(k)) hits++;
+
+    // if most headers are present, consider it header row
+    if (hits >= 8) return r;
+  }
+  return -1;
+};
 
 const validateExcelHeaders = (rows) => {
   const headers = Object.keys(rows[0] || {}).map(normalizeKey);
-  return REQUIRED_EXCEL_HEADERS.filter((h) => !headers.includes(h));
+  const required = REQUIRED_EXCEL_HEADERS.map(normalizeKey);
+  return required.filter((h) => !headers.includes(h));
 };
 
-const getCell = (row, key) => {
-  const foundKey = Object.keys(row).find((x) => normalizeKey(x) === normalizeKey(key));
-  return foundKey ? row[foundKey] : null;
-};
-
-// STRICT company/ship validation:
-// - role 1: must send company_id and ship_id as form-data fields
-// - role 2: company_id forced from token; ship_id optional but validated; if missing, import will allow NULL ship_id
-// - role 3: company_id + ship_id forced from token (cannot import other ship/company)
+// Validate company_id + ship_id from form data and enforce role scope
 const resolveImportScope = async (req) => {
-  const role = Number(req.user.role_id);
+  const role = Number(req.user?.role_id);
 
-  let company_id = null;
-  let ship_id = null;
+  const company_id = String(req.body?.company_id || "").trim();
+  const ship_id_raw = req.body?.ship_id;
+  const ship_id = ship_id_raw !== undefined ? parseIntOrNull(ship_id_raw) : null;
 
-  if (role === 1) {
-    company_id = String(req.body.company_id || "").trim();
-    ship_id = parseIntOrNull(req.body.ship_id);
+  if (!isUuid(company_id)) return { error: "company_id is required and must be a valid UUID" };
+  if (ship_id === null || Number.isNaN(ship_id)) return { error: "ship_id is required and must be a number" };
 
-    if (!isUuid(company_id)) {
-      return { error: "Role 1 must provide valid company_id (uuid) in form-data" };
-    }
-    if (ship_id === null || Number.isNaN(ship_id)) {
-      return { error: "Role 1 must provide valid ship_id (integer) in form-data" };
-    }
-  }
-
-  if (role === 2) {
-    company_id = String(req.user.company_id);
-    // ship_id optional from form-data
-    const maybeShip = parseIntOrNull(req.body.ship_id);
-    ship_id = maybeShip === NaN ? NaN : maybeShip; // might be null
-    if (ship_id !== null && Number.isNaN(ship_id)) {
-      return { error: "If provided, ship_id must be an integer" };
-    }
-  }
-
-  if (role === 3) {
-    company_id = String(req.user.company_id);
-    ship_id = Number(req.user.ship_id);
-  }
-
-  // Validate company exists
+  // company exists?
   const c = await db.query("SELECT company_id FROM company WHERE company_id = $1", [company_id]);
   if (!c.rows.length) return { error: "company_id does not exist" };
 
-  // Validate ship exists + belongs to company (if ship_id not null)
-  if (ship_id !== null) {
-    const s = await db.query("SELECT ship_id, company_id FROM ships WHERE ship_id = $1", [ship_id]);
-    if (!s.rows.length) return { error: "ship_id does not exist" };
-    if (String(s.rows[0].company_id) !== String(company_id)) {
-      return { error: "ship_id does not belong to company_id" };
-    }
+  // ship exists and belongs to company?
+  const s = await db.query("SELECT ship_id, company_id FROM ships WHERE ship_id = $1", [ship_id]);
+  if (!s.rows.length) return { error: "ship_id does not exist" };
+  if (String(s.rows[0].company_id) !== company_id) {
+    return { error: "ship_id does not belong to company_id" };
+  }
+
+  // Role scope enforcement
+  if (role === 2) {
+    if (String(req.user.company_id) !== company_id) return { error: "Role 2 company scope violation" };
+  }
+  if (role === 3) {
+    if (String(req.user.company_id) !== company_id) return { error: "Role 3 company scope violation" };
+    if (Number(req.user.ship_id) !== ship_id) return { error: "Role 3 ship scope violation" };
   }
 
   return { company_id, ship_id };
 };
 
-// POST /users/import  (roles 1/2/3)
+// ================== IMPORT ENDPOINT ==================
+// POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
   async (req, res) => {
     const role = Number(req.user?.role_id);
-    if (![1, 2, 3].includes(role)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    if (![1, 2, 3].includes(role)) return res.status(403).json({ error: "Forbidden" });
 
     if (!req.file) {
       return res.status(400).json({ error: 'Excel file is required (field name: "file")' });
     }
 
     try {
-      // 1) Scope (company/ship) resolution + strict validation
+      // 1) Validate and lock import scope
       const scope = await resolveImportScope(req);
       if (scope.error) return res.status(400).json({ error: scope.error });
       const { company_id, ship_id } = scope;
 
-      // 2) Parse Excel
-      const wb = xlsx.read(req.file.buffer, { type: "buffer" });
+      // 2) Parse workbook + detect correct header row
+      const wb = xlsx.read(req.file.buffer, { type: "buffer", cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = xlsx.utils.sheet_to_json(sheet, { defval: null, raw: true }); // keep Date objects if present
+
+      const headerRowIdx = detectHeaderRowIndex(sheet);
+      if (headerRowIdx === -1) {
+        return res.status(400).json({
+          error: "Could not detect header row. Please use the standard template (headers must exist).",
+        });
+      }
+
+      // Start reading from detected header row
+      const rows = xlsx.utils.sheet_to_json(sheet, {
+        range: headerRowIdx, // <-- KEY FIX
+        defval: null,
+        raw: true,
+      });
 
       if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
 
-      // 3) Header validation (template must match)
+      // 3) Validate template headers
       const missingHeaders = validateExcelHeaders(rows);
       if (missingHeaders.length) {
         return res.status(400).json({
           error: "Excel template mismatch: missing required columns",
           missing_columns: missingHeaders,
+          detected_header_row: headerRowIdx + 1, // human readable
         });
       }
 
       const results = {
+        import_scope: { company_id, ship_id },
+        detected_header_row: headerRowIdx + 1,
         total_rows: rows.length,
         inserted: 0,
         skipped: 0,
         errors: [],
-        created_credentials: [], // show generated username/password for onboard users
+        created_credentials: [],
       };
 
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
-        const rowNum = i + 2; // assumes row1 header-ish; good enough for frontend reporting
+        const rowNum = i + 2; // relative to header row; good enough for reporting
 
         // Map Excel -> DB fields
         const seafarer_id = getCell(r, "ID");
@@ -624,20 +640,24 @@ export const importUsersFromExcel = [
         const seaman_book_issue_date = parseDateOrNull(getCell(r, "Issue Date.1"));
         const seaman_book_expiry_date = parseDateOrNull(getCell(r, "Expiry Date.1"));
 
-        // Minimal required row checks
+        // Minimal required checks
         if (!seafarer_id || !full_name) {
           results.skipped++;
-          results.errors.push({ row: rowNum, error: "Missing ID (seafarer_id) or Seafarer (full_name)" });
+          results.errors.push({
+            row: rowNum,
+            error: "Missing ID (seafarer_id) or Seafarer (full_name)",
+          });
           continue;
         }
 
-        // Validate parsed numbers/dates
+        // Validate numbers
         if (plus_months !== null && Number.isNaN(plus_months)) {
           results.skipped++;
           results.errors.push({ row: rowNum, error: "Plus Months must be a number" });
           continue;
         }
 
+        // Validate dates
         const dateFields = [
           ["Date of Birth", date_of_birth],
           ["Embarkation Date", embarkation_date],
@@ -648,17 +668,17 @@ export const importUsersFromExcel = [
           ["Seaman Book Issue Date", seaman_book_issue_date],
           ["Seaman Book Expiry Date", seaman_book_expiry_date],
         ];
-        const badDate = dateFields.find(([, v]) => v === NaN);
+        const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
         if (badDate) {
           results.skipped++;
           results.errors.push({ row: rowNum, error: `Invalid date in: ${badDate[0]}` });
           continue;
         }
 
-        // Status: from dates (or you can change this logic)
+        // Status rule
         const status = computeStatusFromDates({ disembarkation_date });
 
-        // Credentials generation if status onboard
+        // Generate credentials if onboard
         let username = null;
         let password = null;
         let password_hash = null;
@@ -695,7 +715,7 @@ export const importUsersFromExcel = [
                $25,$26,$27,
                $28,
                NOW(), NOW())
-             RETURNING user_id`,
+             RETURNING user_id, seafarer_id, full_name, username, status`,
             [
               String(seafarer_id),
               String(full_name),
@@ -710,7 +730,7 @@ export const importUsersFromExcel = [
               password_hash,
               password_enc,
 
-              ship_id ?? null,
+              ship_id,
               company_id,
 
               sex ?? null,
@@ -732,19 +752,20 @@ export const importUsersFromExcel = [
               seaman_book_issue_date ?? null,
               seaman_book_expiry_date ?? null,
 
-              4, // imported crew = role 4
+              4, // imported crew
             ]
           );
 
           results.inserted++;
 
+          // show plaintext password for frontend (as required)
           if (password) {
             results.created_credentials.push({
               row: rowNum,
               user_id: inserted[0].user_id,
-              seafarer_id,
-              username,
-              password, // plaintext for frontend (as requested)
+              seafarer_id: inserted[0].seafarer_id,
+              username: inserted[0].username,
+              password,
             });
           }
         } catch (e) {
@@ -758,7 +779,6 @@ export const importUsersFromExcel = [
 
       return res.status(201).json({
         message: "Excel import completed",
-        import_scope: { company_id, ship_id },
         ...results,
       });
     } catch (err) {
