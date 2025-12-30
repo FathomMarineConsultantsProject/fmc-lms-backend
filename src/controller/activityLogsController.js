@@ -1,12 +1,17 @@
 // src/controller/activityLogsController.js
 import { db } from '../db.js';
 
-// Optional: simple API key protection for Unity calls (recommended)
+// simple API key protection for Unity calls 
 // Add ACTIVITY_API_KEY=some_secret in .env
 const requireActivityKey = (req, res) => {
-  const key = req.headers['x-activity-key'];
+  const key =
+    req.headers['x-activity-key'] ||
+    req.headers['activity_api_key'] ||     // Postman might lowercase it
+    req.headers['activity-api-key'];       // just in case
+
   const expected = process.env.ACTIVITY_API_KEY;
-  if (!expected) return true; // if not set, allow (dev mode)
+  if (!expected) return true;
+
   if (String(key || '') !== String(expected)) {
     res.status(401).json({ error: 'Invalid activity key' });
     return false;
