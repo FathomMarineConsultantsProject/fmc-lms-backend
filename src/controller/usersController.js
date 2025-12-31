@@ -459,64 +459,168 @@ export const deleteUser = async (req, res) => {
   }
 };
 
-// ================== EXCEL HELPERS ==================
+// ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ---- Aliases: add/remove as you discover new template names ----
+const FIELD_ALIASES = {
+  // Used by many templates
+  seafarer_id: [
+    "seafarer id",
+    "seafarer_id",
+    "id",
+    "cid",
+    "crew id",
+    "crew_id",
+    "crew pin",
+    "crew_pin",
+    "srn",
+    "seafarer no",
+    "seafarer number",
 
-const getCell = (row, wantedKey) => {
-  const wk = normalizeKey(wantedKey);
-  const found = Object.keys(row).find((k) => normalizeKey(k) === wk);
-  return found ? row[found] : null;
+    // ✅ format2.xlsx
+    "crew ipn",
+    "crew_ipn",
+    "ipn",
+    "crewipn",
+    "crew ipn#",
+    "crew ipn #",
+    "crew ipn no",
+    "crew ipn number",
+
+    // ✅ IMO Crew List template (important!)
+    "number of identity document",
+    "identity document number",
+    "document number",
+    "id document number",
+    "seaman book no",
+    "seaman book number",
+    "passport no",
+    "passport number",
+  ],
+
+  // Some templates have a direct name column, some are split into family/given
+  full_name: [
+    "full name",
+    "full_name",
+    "name",
+    "seafarer",
+    "crew name",
+    "crew_name",
+
+    // ✅ format2.xlsx weird usage (you said LAST_NAME contains full text sometimes)
+    "last_name",
+    "last name",
+  ],
+
+  // ✅ IMO template split name
+  family_name: ["family name", "surname", "last name"],
+  given_names: ["given names", "given  names", "first name", "forename"],
+
+  rank: ["rank", "position", "designation", "rank_code", "rank code", "rank or rating"],
+  trip: ["trip", "voyage", "trip no", "trip number"],
+
+  embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on"],
+
+  disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "disemb date"],
+
+  end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
+  plus_months: ["plus months", "extension months", "months", "plus month"],
+
+  sex: ["sex", "gender"],
+  date_of_birth: ["date of birth", "dob", "birth date"],
+  place_of_birth: ["place of birth", "pob", "birth place"],
+  nationality: ["nationality", "country"],
+
+  passport_number: ["passport number", "passport no", "passport_no"],
+  passport_issue_place: ["issue place", "passport issue place", "place of issue", "poi", "country of issue"],
+  passport_issue_date: ["issue date", "passport issue date", "passport issued", "issued date"],
+  passport_expiry_date: ["expiry date", "passport expiry date", "passport expires", "exp date"],
+
+  seaman_book_number: ["seaman's book number", "seaman book number", "seaman book no", "sb number", "number of identity document"],
+  seaman_book_issue_date: ["issue date.1", "seaman book issue date", "sb issue date"],
+  seaman_book_expiry_date: ["expiry date.1", "seaman book expiry date", "sb expiry date"],
+
+  status: ["status", "crew status", "onboard/offboard"],
 };
 
-// Your export file headers (row 4 in your sample)
-const REQUIRED_EXCEL_HEADERS = [
-  "Seafarer",
-  "ID",
-  "Sex",
-  "Rank",
-  "Date of Birth",
-  "Place of Birth",
-  "Nationality",
-  "Embarkation Port",
-  "Embarkation Date",
-  "Disembarkation Port",
-  "Disembarkation Date",
-  "End of Contract",
-  "Plus Months",
-  "Passport Number",
-  "Issue Place",
-  "Issue Date",
-  "Expiry Date",
-  "Seaman's Book Number",
-  "Issue Date.1",
-  "Expiry Date.1",
-];
+const getByAliases = (row, aliases) => {
+  const keys = Object.keys(row || {});
+  for (const alias of aliases) {
+    const wanted = normalizeKey(alias);
+    const found = keys.find((k) => normalizeKey(k) === wanted);
+    if (found) return row[found];
+  }
+  return null;
+};
 
-// Finds the header row index (0-based) by scanning rows for enough required headers
-const detectHeaderRowIndex = (sheet) => {
-  const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" }); // 2D array
-  const required = new Set(REQUIRED_EXCEL_HEADERS.map(normalizeKey));
+// ✅ Build objects from a matrix (handles "blank header" columns safely)
+const matrixToObjects = (matrix, headerRowIdx) => {
+  const headersRaw = (matrix[headerRowIdx] || []).map((h) => (h == null ? "" : String(h).trim()));
+  const headers = headersRaw.map((h, i) => (h ? h : `__col_${i + 1}`)); // unique placeholder keys
 
-  for (let r = 0; r < Math.min(matrix.length, 30); r++) {
+  const out = [];
+  for (let r = headerRowIdx + 1; r < matrix.length; r++) {
+    const rowArr = matrix[r] || [];
+    // ignore fully empty rows
+    const hasAny = rowArr.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    if (!hasAny) continue;
+
+    const obj = {};
+    for (let c = 0; c < headers.length; c++) obj[headers[c]] = rowArr[c] ?? null;
+    out.push(obj);
+  }
+  return { headers, rows: out };
+};
+
+// Detect header row by scanning first N rows and checking if template matches
+const detectHeaderRowIndex = (matrix) => {
+  const maxScan = Math.min(matrix.length, 80);
+
+  const idSet = new Set(FIELD_ALIASES.seafarer_id.map(normalizeKey));
+  const nameSet = new Set(FIELD_ALIASES.full_name.map(normalizeKey));
+
+  const familySet = new Set(FIELD_ALIASES.family_name.map(normalizeKey));
+  const givenSet = new Set(FIELD_ALIASES.given_names.map(normalizeKey));
+
+  for (let r = 0; r < maxScan; r++) {
     const row = matrix[r] || [];
-    const keys = row.map(normalizeKey);
-    let hits = 0;
-    for (const k of keys) if (required.has(k)) hits++;
+    const normalized = row.map(normalizeKey);
 
-    // if most headers are present, consider it header row
-    if (hits >= 8) return r;
+    const hasId = normalized.some((x) => idSet.has(x));
+    const hasName = normalized.some((x) => nameSet.has(x));
+
+    // ✅ Template A/B: has direct ID + direct Name
+    if (hasId && hasName) return r;
+
+    // ✅ IMO Template: family+given OR family only plus identity doc number
+    const hasFamily = normalized.some((x) => familySet.has(x));
+    const hasGiven = normalized.some((x) => givenSet.has(x));
+    const hasIdentity = normalized.some((x) => idSet.has(x)); // includes "number of identity document"
+
+    if (hasFamily && (hasGiven || hasIdentity)) return r;
   }
   return -1;
 };
 
-const validateExcelHeaders = (rows) => {
-  const headers = Object.keys(rows[0] || {}).map(normalizeKey);
-  const required = REQUIRED_EXCEL_HEADERS.map(normalizeKey);
-  return required.filter((h) => !headers.includes(h));
+// ✅ Full name getter supports split columns (Family/Given)
+const getFullNameSmart = (row) => {
+  const direct = getByAliases(row, FIELD_ALIASES.full_name);
+  if (direct != null && String(direct).trim() !== "") return String(direct).trim();
+
+  const family = getByAliases(row, FIELD_ALIASES.family_name);
+  const given = getByAliases(row, FIELD_ALIASES.given_names);
+
+  const f = family != null ? String(family).trim() : "";
+  const g = given != null ? String(given).trim() : "";
+
+  const combined = `${f} ${g}`.trim();
+  return combined || null;
 };
 
-// Validate company_id + ship_id from form data and enforce role scope
+// Validate company_id + ship_id from form data and enforce role scope (same as yours)
 const resolveImportScope = async (req) => {
   const role = Number(req.user?.role_id);
 
@@ -527,20 +631,15 @@ const resolveImportScope = async (req) => {
   if (!isUuid(company_id)) return { error: "company_id is required and must be a valid UUID" };
   if (ship_id === null || Number.isNaN(ship_id)) return { error: "ship_id is required and must be a number" };
 
-  // company exists?
   const c = await db.query("SELECT company_id FROM company WHERE company_id = $1", [company_id]);
   if (!c.rows.length) return { error: "company_id does not exist" };
 
-  // ship exists and belongs to company?
   const s = await db.query("SELECT ship_id, company_id FROM ships WHERE ship_id = $1", [ship_id]);
   if (!s.rows.length) return { error: "ship_id does not exist" };
-  if (String(s.rows[0].company_id) !== company_id) {
-    return { error: "ship_id does not belong to company_id" };
-  }
+  if (String(s.rows[0].company_id) !== company_id) return { error: "ship_id does not belong to company_id" };
 
-  // Role scope enforcement
-  if (role === 2) {
-    if (String(req.user.company_id) !== company_id) return { error: "Role 2 company scope violation" };
+  if (role === 2 && String(req.user.company_id) !== company_id) {
+    return { error: "Role 2 company scope violation" };
   }
   if (role === 3) {
     if (String(req.user.company_id) !== company_id) return { error: "Role 3 company scope violation" };
@@ -550,7 +649,37 @@ const resolveImportScope = async (req) => {
   return { company_id, ship_id };
 };
 
-// ================== IMPORT ENDPOINT ==================
+// ✅ NEW: pick the first sheet that contains a recognizable header
+const pickSheetWithHeader = (wb, requestedSheetName) => {
+  const trySheet = (name) => {
+    const sheet = wb.Sheets[name];
+    if (!sheet) return null;
+
+    const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+    const headerRowIdx = detectHeaderRowIndex(matrix);
+    if (headerRowIdx === -1) return null;
+
+    return { sheetName: name, sheet, matrix, headerRowIdx };
+  };
+
+  if (requestedSheetName) {
+    const name = String(requestedSheetName).trim();
+    const found = trySheet(name);
+    if (!found) return { error: `sheet_name "${name}" not found OR header not detected in that sheet` };
+    return found;
+  }
+
+  for (const name of wb.SheetNames) {
+    const found = trySheet(name);
+    if (found) return found;
+  }
+
+  return {
+    error:
+      "Could not detect header row in any sheet. Supported templates need either (ID + Name) OR (Family name + Given names / identity document).",
+  };
+};
+
 // POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
@@ -568,38 +697,20 @@ export const importUsersFromExcel = [
       if (scope.error) return res.status(400).json({ error: scope.error });
       const { company_id, ship_id } = scope;
 
-      // 2) Parse workbook + detect correct header row
+      // 2) Parse workbook + find sheet/header
       const wb = xlsx.read(req.file.buffer, { type: "buffer", cellDates: true });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const picked = pickSheetWithHeader(wb, req.body?.sheet_name);
+      if (picked.error) return res.status(400).json({ error: picked.error });
 
-      const headerRowIdx = detectHeaderRowIndex(sheet);
-      if (headerRowIdx === -1) {
-        return res.status(400).json({
-          error: "Could not detect header row. Please use the standard template (headers must exist).",
-        });
-      }
+      const { sheetName, matrix, headerRowIdx } = picked;
 
-      // Start reading from detected header row
-      const rows = xlsx.utils.sheet_to_json(sheet, {
-        range: headerRowIdx, // <-- KEY FIX
-        defval: null,
-        raw: true,
-      });
-
+      // 3) Convert rows using our safe matrix conversion
+      const { rows } = matrixToObjects(matrix, headerRowIdx);
       if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
-
-      // 3) Validate template headers
-      const missingHeaders = validateExcelHeaders(rows);
-      if (missingHeaders.length) {
-        return res.status(400).json({
-          error: "Excel template mismatch: missing required columns",
-          missing_columns: missingHeaders,
-          detected_header_row: headerRowIdx + 1, // human readable
-        });
-      }
 
       const results = {
         import_scope: { company_id, ship_id },
+        detected_sheet: sheetName,
         detected_header_row: headerRowIdx + 1,
         total_rows: rows.length,
         inserted: 0,
@@ -610,73 +721,84 @@ export const importUsersFromExcel = [
 
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
-        const rowNum = i + 2; // relative to header row; good enough for reporting
+        const rowNum = headerRowIdx + 2 + i;
 
-        // Map Excel -> DB fields
-        const seafarer_id = getCell(r, "ID");
-        const full_name = getCell(r, "Seafarer");
-        const sex = getCell(r, "Sex");
-        const rank = getCell(r, "Rank");
+        // Required (smart)
+        const full_name = getFullNameSmart(r);
+        const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
 
-        const date_of_birth = parseDateOrNull(getCell(r, "Date of Birth"));
-        const place_of_birth = getCell(r, "Place of Birth");
-        const nationality = getCell(r, "Nationality");
+        const seafarer_id =
+          sidCandidate != null && String(sidCandidate).trim() !== ""
+            ? String(sidCandidate).replace(/\s+/g, " ").trim()
+            : null;
 
-        const embarkation_port = getCell(r, "Embarkation Port");
-        const embarkation_date = parseDateOrNull(getCell(r, "Embarkation Date"));
-
-        const disembarkation_port = getCell(r, "Disembarkation Port");
-        const disembarkation_date = parseDateOrNull(getCell(r, "Disembarkation Date"));
-
-        const end_of_contract = parseDateOrNull(getCell(r, "End of Contract"));
-        const plus_months = parseIntOrNull(getCell(r, "Plus Months"));
-
-        const passport_number = getCell(r, "Passport Number");
-        const passport_issue_place = getCell(r, "Issue Place");
-        const passport_issue_date = parseDateOrNull(getCell(r, "Issue Date"));
-        const passport_expiry_date = parseDateOrNull(getCell(r, "Expiry Date"));
-
-        const seaman_book_number = getCell(r, "Seaman's Book Number");
-        const seaman_book_issue_date = parseDateOrNull(getCell(r, "Issue Date.1"));
-        const seaman_book_expiry_date = parseDateOrNull(getCell(r, "Expiry Date.1"));
-
-        // Minimal required checks
         if (!seafarer_id || !full_name) {
           results.skipped++;
           results.errors.push({
             row: rowNum,
-            error: "Missing ID (seafarer_id) or Seafarer (full_name)",
+            error:
+              "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
           });
           continue;
         }
 
-        // Validate numbers
+        // Optional fields
+        const rank = getByAliases(r, FIELD_ALIASES.rank);
+        const sex = getByAliases(r, FIELD_ALIASES.sex);
+        const nationality = getByAliases(r, FIELD_ALIASES.nationality);
+        const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
+
+        const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
+
+        const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
+        const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
+
+        const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
+        const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
+
+        const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
+        const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
+
+        // identity-doc style templates often put seaman book / passport in "number of identity document"
+        const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
+        const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
+        const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
+        const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
+
+        const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
+        const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
+        const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
+
+        // Status from excel or computed
+        const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
+        const status =
+          statusFromExcel != null && String(statusFromExcel).trim() !== ""
+            ? String(statusFromExcel)
+            : computeStatusFromDates({ disembarkation_date });
+
+        // Validate numbers/dates if present
         if (plus_months !== null && Number.isNaN(plus_months)) {
           results.skipped++;
-          results.errors.push({ row: rowNum, error: "Plus Months must be a number" });
+          results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
           continue;
         }
 
-        // Validate dates
         const dateFields = [
-          ["Date of Birth", date_of_birth],
-          ["Embarkation Date", embarkation_date],
-          ["Disembarkation Date", disembarkation_date],
-          ["End of Contract", end_of_contract],
-          ["Passport Issue Date", passport_issue_date],
-          ["Passport Expiry Date", passport_expiry_date],
-          ["Seaman Book Issue Date", seaman_book_issue_date],
-          ["Seaman Book Expiry Date", seaman_book_expiry_date],
+          ["date_of_birth", date_of_birth],
+          ["embarkation_date", embarkation_date],
+          ["disembarkation_date", disembarkation_date],
+          ["end_of_contract", end_of_contract],
+          ["passport_issue_date", passport_issue_date],
+          ["passport_expiry_date", passport_expiry_date],
+          ["seaman_book_issue_date", seaman_book_issue_date],
+          ["seaman_book_expiry_date", seaman_book_expiry_date],
         ];
         const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
         if (badDate) {
           results.skipped++;
-          results.errors.push({ row: rowNum, error: `Invalid date in: ${badDate[0]}` });
+          results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
           continue;
         }
-
-        // Status rule
-        const status = computeStatusFromDates({ disembarkation_date });
 
         // Generate credentials if onboard
         let username = null;
@@ -717,10 +839,10 @@ export const importUsersFromExcel = [
                NOW(), NOW())
              RETURNING user_id, seafarer_id, full_name, username, status`,
             [
-              String(seafarer_id),
-              String(full_name),
+              seafarer_id,
+              full_name,
               rank ?? null,
-              null, // trip not in template
+              null,
 
               embarkation_date ?? null,
               disembarkation_date ?? null,
@@ -752,13 +874,12 @@ export const importUsersFromExcel = [
               seaman_book_issue_date ?? null,
               seaman_book_expiry_date ?? null,
 
-              4, // imported crew
+              4,
             ]
           );
 
           results.inserted++;
 
-          // show plaintext password for frontend (as required)
           if (password) {
             results.created_credentials.push({
               row: rowNum,
