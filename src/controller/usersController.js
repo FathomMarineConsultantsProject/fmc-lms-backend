@@ -92,7 +92,12 @@ const createUniqueUsername = async (seafarerId) => {
 };
 
 // ================= GENERAL VALIDATION HELPERS =================
-const normalizeKey = (k) => String(k || "").trim().toLowerCase();
+const normalizeKey = (k) =>
+  String(k || "")
+    .replace(/\s+/g, " ")
+    .replace(/[\r\n]+/g, " ")
+    .trim()
+    .toLowerCase();
 
 const isUuid = (v) =>
   typeof v === "string" &&
@@ -477,6 +482,15 @@ const FIELD_ALIASES = {
     "srn",
     "seafarer no",
     "seafarer number",
+    "seafarer id", "seafarer_id", "id", "cid",
+  "crew id", "crew_id", "crew pin", "crew_pin",
+  "srn", "seafarer no", "seafarer number",
+  "crew ipn", "crew_ipn", "ipn", "crewipn",
+   "employee code",
+  "emp code",
+  "employee id",
+  "emp id",
+  "staff id",
 
     // ✅ format2.xlsx
     "crew ipn",
@@ -511,20 +525,25 @@ const FIELD_ALIASES = {
     // ✅ format2.xlsx weird usage (you said LAST_NAME contains full text sometimes)
     "last_name",
     "last name",
+    // ✅ TRAINING TEMPLATE
+  "employee name",
+  "emp name",
+  "staff name",
   ],
 
   // ✅ IMO template split name
   family_name: ["family name", "surname", "last name"],
   given_names: ["given names", "given  names", "first name", "forename"],
 
-  rank: ["rank", "position", "designation", "rank_code", "rank code", "rank or rating"],
+  rank: ["rank", "position", "designation", "rank_code", "rank code", "rank or rating", "rank", "position", "designation",
+  "job title", "designation name"],
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
   embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
-  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "disemb date"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date","disemb date"],
 
   end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
   plus_months: ["plus months", "extension months", "months", "plus month"],
