@@ -9,6 +9,7 @@ import {
   updateUser,
   deleteUser,
   importUsersFromExcel,
+  bulkUpdateUserStatus,
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -71,7 +72,7 @@ router.get("/:id", getUserById);
  *     responses:
  *       201: { description: Created }
  */
-router.post("/", allowRoles(1,2,3), createUser);
+router.post("/", allowRoles(1, 2, 3), createUser);
 
 /**
  * @openapi
@@ -95,7 +96,7 @@ router.post("/", allowRoles(1,2,3), createUser);
  *     responses:
  *       200: { description: Updated }
  */
-router.put("/:id", allowRoles(1,2,3), updateUser);
+router.put("/:id", allowRoles(1, 2, 3), updateUser);
 
 /**
  * @openapi
@@ -113,7 +114,7 @@ router.put("/:id", allowRoles(1,2,3), updateUser);
  *     responses:
  *       200: { description: Deleted }
  */
-router.delete("/:id", allowRoles(1,2), deleteUser);
+router.delete("/:id", allowRoles(1, 2), deleteUser);
 
 /**
  * @openapi
@@ -141,3 +142,5 @@ router.delete("/:id", allowRoles(1,2), deleteUser);
  *       403: { description: Forbidden }
  */
 router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
+
+router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);

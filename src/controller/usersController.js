@@ -464,6 +464,152 @@ export const deleteUser = async (req, res) => {
   }
 };
 
+// PATCH /users/bulk-status
+export const bulkUpdateUserStatus = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  const user_ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+  const statusRaw = req.body?.status;
+  const remove_credentials = Boolean(req.body?.remove_credentials);
+
+  const status = statusRaw != null ? String(statusRaw).trim() : "";
+  const isTargetOnboard = isOnboard(status);
+  const isTargetOffboard = normalizeStatus(status) === "offboard";
+
+  if (!user_ids.length) {
+    return res.status(400).json({ error: "user_ids must be a non-empty array" });
+  }
+  if (!status || (!isTargetOnboard && !isTargetOffboard)) {
+    return res.status(400).json({ error: 'status must be either "Onboard" or "Offboard"' });
+  }
+
+  // sanitize ids
+  const ids = user_ids
+    .map((x) => Number.parseInt(String(x), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  if (!ids.length) {
+    return res.status(400).json({ error: "user_ids must contain valid integer IDs" });
+  }
+
+  try {
+    await db.query("BEGIN");
+
+    // 1) Fetch users + enforce scope (company/ship) for role 2/3
+    const { rows: users } = await db.query(
+      `SELECT user_id, seafarer_id, company_id, ship_id, status, username, password_hash
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (!users.length) {
+      await db.query("ROLLBACK");
+      return res.status(404).json({ error: "No users found for given user_ids" });
+    }
+
+    // scope check
+    const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
+    const myShip = req.user?.ship_id != null ? Number(req.user.ship_id) : null;
+
+    const violations = [];
+    for (const u of users) {
+      if (role === 2 && myCompany && String(u.company_id) !== myCompany) violations.push(u.user_id);
+      if (role === 3) {
+        if (myCompany && String(u.company_id) !== myCompany) violations.push(u.user_id);
+        if (myShip != null && Number(u.ship_id) !== myShip) violations.push(u.user_id);
+      }
+    }
+    if (violations.length) {
+      await db.query("ROLLBACK");
+      return res.status(403).json({
+        error: "Scope violation: some user_ids are outside your company/ship scope",
+        violations,
+      });
+    }
+
+    // 2) Update each user (need per-user credential generation)
+    const results = {
+      requested: ids.length,
+      found: users.length,
+      updated: 0,
+      generated_credentials: [], // only those newly generated
+      skipped: 0,
+      skipped_reasons: [],
+    };
+
+    for (const u of users) {
+      const hasCreds = !!(u.username && u.password_hash);
+
+      // generate creds only when moving to onboard AND creds missing
+      let username = null;
+      let plainPassword = null;
+      let password_hash = null;
+      let password_enc = null;
+
+      if (isTargetOnboard && !hasCreds) {
+        username = await createUniqueUsername(u.seafarer_id);
+        plainPassword = generatePassword(12);
+        password_hash = hashPassword(plainPassword);
+        password_enc = encryptPassword(plainPassword);
+      }
+
+      // if offboarding and user wants credentials removed
+      const clearCreds = isTargetOffboard && remove_credentials;
+
+      const { rowCount } = await db.query(
+        `UPDATE users
+         SET
+           status = $1,
+           username = CASE WHEN $2::boolean THEN NULL ELSE COALESCE($3::varchar, username) END,
+           password_hash = CASE WHEN $2::boolean THEN NULL ELSE COALESCE($4::varchar, password_hash) END,
+           password_enc = CASE WHEN $2::boolean THEN NULL ELSE COALESCE($5::text, password_enc) END,
+           updated_at = NOW()
+         WHERE user_id = $6`,
+        [
+          status,
+          clearCreds,
+          username,
+          password_hash,
+          password_enc,
+          u.user_id,
+        ]
+      );
+
+      if (!rowCount) {
+        results.skipped++;
+        results.skipped_reasons.push({ user_id: u.user_id, reason: "Not updated" });
+        continue;
+      }
+
+      results.updated++;
+
+      if (plainPassword) {
+        results.generated_credentials.push({
+          user_id: u.user_id,
+          seafarer_id: u.seafarer_id,
+          username,
+          password: plainPassword,
+        });
+      }
+    }
+
+    await db.query("COMMIT");
+    return res.json({
+      message: "Bulk status update completed",
+      status,
+      remove_credentials,
+      ...results,
+    });
+  } catch (err) {
+    await db.query("ROLLBACK");
+    console.error("bulkUpdateUserStatus error:", err);
+    return res.status(500).json({ error: "Failed to bulk update user status" });
+  }
+};
+
+
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
 
