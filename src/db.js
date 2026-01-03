@@ -1,15 +1,18 @@
-// src/db.js
-import dotenv from 'dotenv';
-import pkg from 'pg';
-
+import pg from "pg";
+import dotenv from "dotenv";
 dotenv.config();
 
-const { Pool } = pkg;
+const { Pool } = pg;
 
-export const db = new Pool({
+export const pool = new Pool({
   host: process.env.PG_HOST,
-  port: process.env.PG_PORT,
+  port: Number(process.env.PG_PORT || 5432),
   user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD, // must be a string from .env
+  password: process.env.PG_PASSWORD,
   database: process.env.PG_DATABASE,
+
+  // ✅ SSL for RDS (common fix for Vercel)
+  ssl: process.env.PG_SSL === "true"
+    ? { rejectUnauthorized: false }
+    : false
 });
