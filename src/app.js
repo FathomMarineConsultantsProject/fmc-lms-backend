@@ -37,7 +37,7 @@ app.use('/certificates', certificateRoutes);
 app.use('/assessments', assessmentRoutes);
 app.use('/activity', activityRoutes);
 
-export default app; // ✅ important
+export default app; // vercel important
 
 // app.listen(PORT, () => {
 //   console.log(`FMC backend listening on http://localhost:${PORT}`);
