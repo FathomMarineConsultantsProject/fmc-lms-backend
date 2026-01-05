@@ -56,24 +56,34 @@ export const trackActivity = async (req, res) => {
 
     // Option B (loose): if not found -> store null ids but keep username
     const insert = await db.query(
-      `
-      INSERT INTO activity_logs
-        (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at)
-      VALUES
-        ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-      RETURNING activity_id, user_id, username, company_id, ship_id, activity_type, training_type, occurred_at, created_at
-      `,
-      [
-        userRow?.user_id ?? null,
-        String(username),
-        userRow?.company_id ?? null,
-        userRow?.ship_id ?? null,
-        String(finalActivityType),
-        trainingType ?? null,
-        JSON.stringify({ username, trainingType, timestamp, activityType, ...rest }),
-        occurredAt,
-      ]
-    );
+  `
+  INSERT INTO activity_logs
+    (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at)
+  VALUES
+    ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+  RETURNING
+    activity_id,
+    user_id,
+    username,
+    company_id,
+    ship_id,
+    activity_type,
+    training_type,
+    occurred_at,
+    created_at
+  `,
+  [
+    userRow?.user_id ?? null,
+    String(username),
+    userRow?.company_id ?? null,
+    userRow?.ship_id ?? null,
+    String(finalActivityType),
+    trainingType ?? null,
+    JSON.stringify({ username, trainingType, timestamp, activityType, ...rest }),
+    occurredAt,
+  ]
+);
+
 
     return res.status(201).json({
       message: "Activity logged",
@@ -186,3 +196,6 @@ export const getActivityLogs = async (req, res) => {
 };
 
 
+// ==============================================================================
+// this changes to be added in dev manually later after vercel deploy undo
+// ==============================================================================

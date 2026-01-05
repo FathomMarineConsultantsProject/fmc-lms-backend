@@ -86,3 +86,9 @@ router.post('/track', trackActivity);
  *       500: { description: Server error }
  */
 router.get('/', requireAuth, getActivityLogs);
+
+
+
+// ==============================================================================
+// this changes to be added in dev manually later after vercel deploy undo
+// ==============================================================================
