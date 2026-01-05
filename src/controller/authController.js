@@ -16,6 +16,10 @@ const REFRESH_EXPIRES_DAYS = Number(process.env.REFRESH_EXPIRES_DAYS || 7);
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
 const isOnboard = (s) => normalizeStatus(s) === 'onboard';
 
+// ✅ Admin roles are "Onboard" by default (status doesn't matter for login)
+const isAdminRole = (roleId) =>
+  [ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN].includes(Number(roleId));
+
 // sha256 hash (your current approach)
 const hashPassword = (plain) =>
   crypto.createHash('sha256').update(String(plain)).digest('hex');
@@ -135,7 +139,8 @@ export const login = async (req, res) => {
 
     const user = rows[0];
 
-    if (!isOnboard(user.status)) {
+    // ✅ Only ROLE_CREW must be onboard to login
+    if (!isAdminRole(user.role_id) && !isOnboard(user.status)) {
       return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
     }
 
@@ -202,6 +207,11 @@ export const signup = async (req, res) => {
     const password_hash = hashPassword(password);
     const password_enc = encryptPassword(password);
 
+    const finalRoleId = Number(role_id);
+    // ✅ Admin roles default onboard
+    const finalStatus =
+      isAdminRole(finalRoleId) ? 'Onboard' : (status ?? null);
+
     const { rows } = await db.query(
       `
       INSERT INTO users
@@ -223,13 +233,13 @@ export const signup = async (req, res) => {
         trip ?? null,
         embarkation_date ?? null,
         disembarkation_date ?? null,
-        status ?? null,
+        finalStatus,
         String(username),
         password_hash,
         password_enc,
         ship_id != null ? Number(ship_id) : null,
         company_id ?? null,
-        Number(role_id),
+        finalRoleId,
       ]
     );
 
@@ -376,7 +386,11 @@ export const refreshAccessToken = async (req, res) => {
     if (!u.rows.length) return res.status(401).json({ error: 'User not found' });
 
     const user = u.rows[0];
-    if (!isOnboard(user.status)) return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
+
+    // ✅ Only ROLE_CREW must be onboard
+    if (!isAdminRole(user.role_id) && !isOnboard(user.status)) {
+      return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
+    }
 
     const access_token = signAccessToken(user);
     return res.json({ access_token });
