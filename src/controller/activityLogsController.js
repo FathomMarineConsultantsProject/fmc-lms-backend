@@ -48,56 +48,57 @@ export const trackActivity = async (req, res) => {
   try {
     // resolve user_id/company_id/ship_id from username
     const u = await db.query(
-      `SELECT user_id, company_id, ship_id FROM users WHERE username = $1 LIMIT 1`,
+      `SELECT user_id, company_id, ship_id, role_id FROM users WHERE username = $1 LIMIT 1`,
       [String(username)]
     );
-
     const userRow = u.rows[0] || null;
 
-    // Option B (loose): if not found -> store null ids but keep username
-    const insert = await db.query(
-  `
-  INSERT INTO activity_logs
-    (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at)
-  VALUES
-    ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-  RETURNING
-    activity_id,
-    user_id,
-    username,
-    company_id,
-    ship_id,
-    activity_type,
-    training_type,
-    occurred_at,
-    created_at
-  `,
-  [
-    userRow?.user_id ?? null,
-    String(username),
-    userRow?.company_id ?? null,
-    userRow?.ship_id ?? null,
-    String(finalActivityType),
-    trainingType ?? null,
-    JSON.stringify({ username, trainingType, timestamp, activityType, ...rest }),
-    occurredAt,
-  ]
-);
+    // (optional safety) if caller is logged-in crew, don’t allow logging for other users
+    // If Unity won’t send Authorization header, this won’t run.
+    if (req.user?.role_id && Number(req.user.role_id) === 4) {
+      if (userRow?.user_id && Number(req.user.user_id) !== Number(userRow.user_id)) {
+        return res.status(403).json({ error: "Crew can only log their own activity" });
+      }
+    }
 
+    const insert = await db.query(
+      `
+      INSERT INTO activity_logs
+        (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+      RETURNING
+        activity_id,
+        user_id,
+        username,
+        company_id,
+        ship_id,
+        activity_type,
+        training_type,
+        occurred_at,
+        created_at
+      `,
+      [
+        userRow?.user_id ?? null,
+        String(username),
+        userRow?.company_id ?? null,
+        userRow?.ship_id ?? null,
+        String(finalActivityType),
+        trainingType ?? null,
+        JSON.stringify({ username, trainingType, timestamp, activityType, ...rest }),
+        occurredAt,
+      ]
+    );
 
     return res.status(201).json({
       message: "Activity logged",
       log: insert.rows[0],
-      // helpful for frontend debugging (optional)
-      resolved: Boolean(userRow),
     });
   } catch (err) {
     console.error("Error trackActivity:", err);
     return res.status(500).json({ error: "Failed to log activity" });
   }
 };
-
-
 
 /**
  * GET /activity
@@ -108,7 +109,7 @@ export const trackActivity = async (req, res) => {
  */
 export const getActivityLogs = async (req, res) => {
   try {
-    const { role_id, company_id, ship_id } = req.user;
+    const { role_id, company_id, ship_id, user_id } = req.user;
 
     const {
       company_id: qCompanyId,
@@ -120,7 +121,7 @@ export const getActivityLogs = async (req, res) => {
 
     const lim = Math.min(Number(limit) || 100, 500);
 
-    // role 1: all logs, optional filters
+    // ROLE 1: superadmin (can filter anything)
     if (Number(role_id) === 1) {
       const filters = [];
       const values = [];
@@ -144,7 +145,7 @@ export const getActivityLogs = async (req, res) => {
       return res.json(rows);
     }
 
-    // role 2: company scoped
+    // ROLE 2: admin (company scoped)
     if (Number(role_id) === 2) {
       const filters = [`company_id = $1`];
       const values = [company_id];
@@ -167,34 +168,49 @@ export const getActivityLogs = async (req, res) => {
       return res.json(rows);
     }
 
-    // role 3/4: ship scoped
-    if (!ship_id) return res.json([]);
+    // ROLE 3: subadmin (ship scoped)
+    if (Number(role_id) === 3) {
+      if (!ship_id) return res.json([]);
 
-    const filters = [`ship_id = $1`];
-    const values = [ship_id];
-    let i = 2;
+      const filters = [`ship_id = $1`];
+      const values = [ship_id];
+      let i = 2;
 
-    if (qUsername) { filters.push(`username = $${i++}`); values.push(String(qUsername)); }
-    if (qUserId) { filters.push(`user_id = $${i++}`); values.push(Number(qUserId)); }
+      if (qUsername) { filters.push(`username = $${i++}`); values.push(String(qUsername)); }
+      if (qUserId) { filters.push(`user_id = $${i++}`); values.push(Number(qUserId)); }
 
-    const sql = `
-      SELECT *
-      FROM activity_logs
-      WHERE ${filters.join(" AND ")}
-      ORDER BY occurred_at DESC
-      LIMIT $${i}
-    `;
-    values.push(lim);
+      const sql = `
+        SELECT *
+        FROM activity_logs
+        WHERE ${filters.join(" AND ")}
+        ORDER BY occurred_at DESC
+        LIMIT $${i}
+      `;
+      values.push(lim);
 
-    const { rows } = await db.query(sql, values);
-    return res.json(rows);
+      const { rows } = await db.query(sql, values);
+      return res.json(rows);
+    }
 
+    // ROLE 4: crew (ONLY own logs)
+    if (Number(role_id) === 4) {
+      const sql = `
+        SELECT *
+        FROM activity_logs
+        WHERE user_id = $1
+        ORDER BY occurred_at DESC
+        LIMIT $2
+      `;
+      const { rows } = await db.query(sql, [user_id, lim]);
+      return res.json(rows);
+    }
+
+    return res.json([]);
   } catch (err) {
     console.error("Error getActivityLogs:", err);
     return res.status(500).json({ error: "Failed to fetch activity logs" });
   }
 };
-
 
 // ==============================================================================
 // this changes to be added in dev manually later after vercel deploy undo
