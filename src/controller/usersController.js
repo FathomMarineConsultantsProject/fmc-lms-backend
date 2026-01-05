@@ -8,6 +8,35 @@ import xlsx from "xlsx";
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
 const isOnboard = (s) => normalizeStatus(s) === "onboard";
 
+// ✅ Ship-admin rank detection (role_id=3)
+const normalizeRank = (r) =>
+  String(r || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+const isShipAdminRank = (rankValue) => {
+  const r = normalizeRank(rankValue);
+
+  // keywords that indicate senior officers / ship admins
+  const keywords = [
+    "master",
+    "captain",
+    "chief officer",
+    "chief mate",
+    "c/o",
+    "1st officer",
+    "first officer",
+    "chief engineer",
+    "c/e",
+    "1st engineer",
+    "first engineer",
+  ];
+
+  return keywords.some((k) => r.includes(k));
+};
+
+
 // If Excel doesn't contain status: compute from disembarkation_date
 const computeStatusFromDates = ({ disembarkation_date }) => {
   if (!disembarkation_date) return "Onboard";
@@ -610,6 +639,7 @@ export const bulkUpdateUserStatus = async (req, res) => {
 };
 
 
+
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -629,14 +659,14 @@ const FIELD_ALIASES = {
     "seafarer no",
     "seafarer number",
     "seafarer id", "seafarer_id", "id", "cid",
-  "crew id", "crew_id", "crew pin", "crew_pin",
-  "srn", "seafarer no", "seafarer number",
-  "crew ipn", "crew_ipn", "ipn", "crewipn",
-   "employee code",
-  "emp code",
-  "employee id",
-  "emp id",
-  "staff id",
+    "crew id", "crew_id", "crew pin", "crew_pin",
+    "srn", "seafarer no", "seafarer number",
+    "crew ipn", "crew_ipn", "ipn", "crewipn",
+    "employee code",
+    "emp code",
+    "employee id",
+    "emp id",
+    "staff id",
 
     // ✅ format2.xlsx
     "crew ipn",
@@ -672,9 +702,9 @@ const FIELD_ALIASES = {
     "last_name",
     "last name",
     // ✅ TRAINING TEMPLATE
-  "employee name",
-  "emp name",
-  "staff name",
+    "employee name",
+    "emp name",
+    "staff name",
   ],
 
   // ✅ IMO template split name
@@ -682,14 +712,14 @@ const FIELD_ALIASES = {
   given_names: ["given names", "given  names", "first name", "forename"],
 
   rank: ["rank", "position", "designation", "rank_code", "rank code", "rank or rating", "rank", "position", "designation",
-  "job title", "designation name"],
+    "job title", "designation name"],
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
   embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
-  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date","disemb date"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date"],
 
   end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
   plus_months: ["plus months", "extension months", "months", "plus month"],
@@ -846,6 +876,7 @@ const pickSheetWithHeader = (wb, requestedSheetName) => {
 };
 
 // POST /users/import (roles 1/2/3)
+// POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
   async (req, res) => {
@@ -924,7 +955,6 @@ export const importUsersFromExcel = [
         const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
         const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
 
-        // identity-doc style templates often put seaman book / passport in "number of identity document"
         const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
         const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
         const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
@@ -936,10 +966,18 @@ export const importUsersFromExcel = [
 
         // Status from excel or computed
         const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
-        const status =
+        let status =
           statusFromExcel != null && String(statusFromExcel).trim() !== ""
             ? String(statusFromExcel)
             : computeStatusFromDates({ disembarkation_date });
+
+        // ✅ Auto role assignment:
+        // If rank is senior → role_id=3 + force Onboard
+        const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
+
+        if (role_id_to_insert === 3) {
+          status = "Onboard";
+        }
 
         // Validate numbers/dates if present
         if (plus_months !== null && Number.isNaN(plus_months)) {
@@ -965,7 +1003,7 @@ export const importUsersFromExcel = [
           continue;
         }
 
-        // Generate credentials if onboard
+        // ✅ Generate credentials if onboard
         let username = null;
         let password = null;
         let password_hash = null;
@@ -1002,7 +1040,7 @@ export const importUsersFromExcel = [
                $25,$26,$27,
                $28,
                NOW(), NOW())
-             RETURNING user_id, seafarer_id, full_name, username, status`,
+             RETURNING user_id, seafarer_id, full_name, username, status, role_id`,
             [
               seafarer_id,
               full_name,
@@ -1039,7 +1077,7 @@ export const importUsersFromExcel = [
               seaman_book_issue_date ?? null,
               seaman_book_expiry_date ?? null,
 
-              4,
+              role_id_to_insert, // ✅ FIXED: was hardcoded 4
             ]
           );
 
@@ -1052,6 +1090,7 @@ export const importUsersFromExcel = [
               seafarer_id: inserted[0].seafarer_id,
               username: inserted[0].username,
               password,
+              role_id: inserted[0].role_id,
             });
           }
         } catch (e) {
