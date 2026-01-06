@@ -215,6 +215,62 @@ export const getUserById = async (req, res) => {
   }
 };
 
+// =============ships history===================
+// GET /users/:id/ship-history
+export const getUserShipHistory = async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) return res.status(400).json({ error: "user_id must be a number" });
+
+  try {
+    // ✅ scope enforcement using req.user
+    const role = Number(req.user.role_id);
+    const myCompany = req.user.company_id ? String(req.user.company_id) : null;
+    const myShip = req.user.ship_id != null ? Number(req.user.ship_id) : null;
+
+    // fetch target user (for scope checks)
+    const uRes = await db.query(
+      `SELECT user_id, company_id, ship_id
+       FROM users
+       WHERE user_id = $1`,
+      [id]
+    );
+    if (!uRes.rows.length) return res.status(404).json({ error: "User not found" });
+
+    const target = uRes.rows[0];
+
+    if (role === 2 && myCompany && String(target.company_id) !== myCompany) {
+      return res.status(403).json({ error: "Forbidden (company scope)" });
+    }
+    if (role === 3) {
+      if (myCompany && String(target.company_id) !== myCompany) {
+        return res.status(403).json({ error: "Forbidden (company scope)" });
+      }
+      if (myShip != null && Number(target.ship_id) !== myShip) {
+        return res.status(403).json({ error: "Forbidden (ship scope)" });
+      }
+    }
+    if (role === 4 && Number(req.user.user_id) !== Number(id)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const { rows } = await db.query(
+      `SELECT
+         h.*,
+         s.ship_name
+       FROM user_ship_history h
+       LEFT JOIN ships s ON s.ship_id = h.ship_id
+       WHERE h.user_id = $1
+       ORDER BY h.created_at DESC`,
+      [id]
+    );
+
+    return res.json(rows);
+  } catch (err) {
+    console.error("getUserShipHistory error:", err);
+    return res.status(500).json({ error: "Failed to fetch ship history" });
+  }
+};
+
 // POST /users
 export const createUser = async (req, res) => {
   const role = Number(req.user.role_id);

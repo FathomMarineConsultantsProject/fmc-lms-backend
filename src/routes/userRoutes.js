@@ -10,6 +10,7 @@ import {
   deleteUser,
   importUsersFromExcel,
   bulkUpdateUserStatus,
+  getUserShipHistory ,
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -144,3 +145,5 @@ router.delete("/:id", allowRoles(1, 2), deleteUser);
 router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
 
 router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);
+
+router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
