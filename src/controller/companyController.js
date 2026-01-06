@@ -26,9 +26,30 @@ const ensureCompanyScope = (req, res, companyId) => {
   return true;
 };
 
-// ✅ must match your auth/login hashing logic (you use sha256 in usersController)
+// ✅ must match your auth/login hashing logic (you use sha256)
 const hashPassword = (plain) =>
   crypto.createHash("sha256").update(String(plain)).digest("hex");
+
+// ✅ AES-256-GCM reversible encryption (same format as auth/usersController)
+const getEncKey = () => {
+  const b64 = process.env.PASSWORD_ENC_KEY;
+  if (!b64) throw new Error("PASSWORD_ENC_KEY missing in .env");
+  const key = Buffer.from(b64, "base64");
+  if (key.length !== 32) throw new Error("PASSWORD_ENC_KEY must be 32 bytes base64");
+  return key;
+};
+
+const encryptPassword = (plain) => {
+  const key = getEncKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+
+  const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  // base64(iv).base64(tag).base64(ciphertext)
+  return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
+};
 
 // ✅ Make username unique in users table
 const makeUniqueUsername = async (base) => {
@@ -93,6 +114,7 @@ export const getCompanyById = async (req, res) => {
 // POST /companies (role1 only)
 // ✅ Creates company + creates a users row for company admin (role_id=2)
 // ✅ Accepts plain password in req.body.password
+// ✅ Stores password_enc in users so SuperAdmin can view via adminViewPassword / users list
 export const createCompany = async (req, res) => {
   if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
 
@@ -111,7 +133,7 @@ export const createCompany = async (req, res) => {
     phone_no,
     email,
     username,
-    password, // ✅ PLAIN password now
+    password, // ✅ PLAIN password
   } = req.body;
 
   if (!company_name) return res.status(400).json({ error: "company_name is required" });
@@ -135,6 +157,7 @@ export const createCompany = async (req, res) => {
     const uniqueUsername = await makeUniqueUsername(username);
 
     const password_hash = hashPassword(password);
+    const password_enc = encryptPassword(password);
 
     // 1) create company
     const { rows } = await db.query(
@@ -177,18 +200,19 @@ export const createCompany = async (req, res) => {
     // 2) create user row for company admin (role_id=2)
     await db.query(
       `INSERT INTO users
-       (seafarer_id, full_name, username, password_hash,
+       (seafarer_id, full_name, username, password_hash, password_enc,
         company_id, ship_id, role_id,
-        created_at, updated_at, email)
+        status, created_at, updated_at, email)
        VALUES
-       ($1, $2, $3, $4,
-        $5, NULL, 2,
-        NOW(), NOW(), $6)`,
+       ($1, $2, $3, $4, $5,
+        $6, NULL, 2,
+        'Onboard', NOW(), NOW(), $7)`,
       [
         `COMPANY:${company.company_id}`,
         `${company.company_name} Admin`,
         uniqueUsername,
         password_hash,
+        password_enc,
         company.company_id,
         email ?? null,
       ]
@@ -240,6 +264,7 @@ export const updateCompany = async (req, res) => {
     if (username) newUsername = await makeUniqueUsername(username);
 
     const newPasswordHash = password ? hashPassword(password) : null;
+    const newPasswordEnc = password ? encryptPassword(password) : null;
 
     const { rowCount } = await db.query(
       `UPDATE company
@@ -284,19 +309,22 @@ export const updateCompany = async (req, res) => {
     if (!rowCount) return res.status(404).json({ error: "Company not found" });
 
     // Sync company admin user in users table
-    if (newUsername || newPasswordHash || email || company_name) {
+    if (newUsername || newPasswordHash || newPasswordEnc || email || company_name) {
       await db.query(
         `UPDATE users
          SET
            username = COALESCE($1, username),
            password_hash = COALESCE($2, password_hash),
-           email = COALESCE($3, email),
-           full_name = COALESCE($4, full_name),
+           password_enc = COALESCE($3, password_enc),
+           email = COALESCE($4, email),
+           full_name = COALESCE($5, full_name),
+           status = 'Onboard',
            updated_at = NOW()
-         WHERE company_id = $5 AND role_id = 2 AND ship_id IS NULL`,
+         WHERE company_id = $6 AND role_id = 2 AND ship_id IS NULL`,
         [
           newUsername,
           newPasswordHash,
+          newPasswordEnc,
           email ?? null,
           company_name ? `${company_name} Admin` : null,
           id,
