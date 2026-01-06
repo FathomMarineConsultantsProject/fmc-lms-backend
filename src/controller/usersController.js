@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import crypto from "crypto";
 import multer from "multer";
 import xlsx from "xlsx";
+import { handleShipHistoryChange } from "../utils/shipHistory.js";
 
 // ================= STATUS / PASSWORD HELPERS =================
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
@@ -359,7 +360,7 @@ export const updateUser = async (req, res) => {
 
   try {
     const currentRes = await db.query(
-      `SELECT user_id, seafarer_id, status, username, password_hash
+      `SELECT user_id, seafarer_id, status, username, password_hash, ship_id, company_id
        FROM users
        WHERE user_id = $1`,
       [id]
@@ -384,6 +385,11 @@ export const updateUser = async (req, res) => {
       newPasswordHash = hashPassword(newPassword);
       newPasswordEnc = encryptPassword(newPassword);
     }
+
+    // store old ship before update for history
+    const old_ship_id = current.ship_id ?? null;
+    const company_id = current.company_id ?? null;
+    const new_ship_id = body.ship_id ?? old_ship_id;
 
     const { rowCount } = await db.query(
       `UPDATE users
@@ -465,6 +471,20 @@ export const updateUser = async (req, res) => {
 
     if (!rowCount) return res.status(404).json({ error: "User not found" });
 
+    // ✅ ship history auto update ONLY if ship changed
+    await handleShipHistoryChange({
+      user_id: id,
+      company_id,
+      old_ship_id,
+      new_ship_id,
+      embarkation_date: body.embarkation_date,
+      disembarkation_date: body.disembarkation_date,
+      embarkation_port: body.embarkation_port,
+      disembarkation_port: body.disembarkation_port,
+      changed_by_user_id: req.user.user_id,
+      notes: "Manual user update",
+    });
+
     return res.json({
       message: "User updated",
       credentials: newUsername && newPassword ? { username: newUsername, password: newPassword } : null,
@@ -477,6 +497,7 @@ export const updateUser = async (req, res) => {
     return res.status(500).json({ error: "Failed to update user" });
   }
 };
+
 
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
@@ -979,6 +1000,68 @@ export const importUsersFromExcel = [
           status = "Onboard";
         }
 
+        // ✅ If this user already exists in same company, UPDATE instead of INSERT
+        const existingRes = await db.query(
+          `SELECT user_id, ship_id, company_id
+           FROM users
+           WHERE seafarer_id = $1 AND company_id = $2
+           LIMIT 1`,
+          [seafarer_id, company_id]
+        );
+        const existingUser = existingRes.rows[0] || null;
+
+        if (existingUser) {
+          // IMPORTANT: do NOT regenerate password on transfer
+          await db.query(
+            `UPDATE users
+             SET
+               full_name = COALESCE($1, full_name),
+               rank = COALESCE($2, rank),
+               ship_id = $3,
+               status = $4,
+               embarkation_date = COALESCE($5, embarkation_date),
+               disembarkation_date = COALESCE($6, disembarkation_date),
+               embarkation_port = COALESCE($7, embarkation_port),
+               disembarkation_port = COALESCE($8, disembarkation_port),
+               role_id = COALESCE($9, role_id),
+               updated_at = NOW()
+             WHERE user_id = $10`,
+            [
+              full_name,
+              rank ?? null,
+              ship_id,
+              status,
+              embarkation_date ?? null,
+              disembarkation_date ?? null,
+              embarkation_port ?? null,
+              disembarkation_port ?? null,
+              role_id_to_insert,
+              existingUser.user_id,
+            ]
+          );
+
+          const oldShip = existingUser.ship_id ?? null;
+          const newShip = ship_id;
+
+          if (Number(oldShip) !== Number(newShip)) {
+            await handleShipHistoryChange({
+              user_id: existingUser.user_id,
+              company_id,
+              old_ship_id: oldShip,
+              new_ship_id: newShip,
+              embarkation_date,
+              disembarkation_date,
+              embarkation_port,
+              disembarkation_port,
+              changed_by_user_id: req.user.user_id,
+              notes: "Excel import (existing user ship update)",
+            });
+          }
+
+          results.inserted++; // (counts as processed)
+          continue;
+        }
+
         // Validate numbers/dates if present
         if (plus_months !== null && Number.isNaN(plus_months)) {
           results.skipped++;
@@ -1080,6 +1163,22 @@ export const importUsersFromExcel = [
               role_id_to_insert, // ✅ FIXED: was hardcoded 4
             ]
           );
+
+          const insertedUserId = inserted[0]?.user_id;
+
+          await handleShipHistoryChange({
+            user_id: insertedUserId,
+            company_id,
+            old_ship_id: null,
+            new_ship_id: ship_id,
+            embarkation_date,
+            disembarkation_date,
+            embarkation_port,
+            disembarkation_port,
+            changed_by_user_id: req.user.user_id,
+            notes: "Excel import (new user)",
+          });
+
 
           results.inserted++;
 
