@@ -26,11 +26,11 @@ const ensureCompanyScope = (req, res, companyId) => {
   return true;
 };
 
-// ✅ must match your auth/login hashing logic (you use sha256)
+// ✅ sha256 hash (must match authController login)
 const hashPassword = (plain) =>
   crypto.createHash("sha256").update(String(plain)).digest("hex");
 
-// ✅ AES-256-GCM reversible encryption (same format as auth/usersController)
+// ✅ AES-256-GCM reversible encryption helpers (same format as authController/usersController)
 const getEncKey = () => {
   const b64 = process.env.PASSWORD_ENC_KEY;
   if (!b64) throw new Error("PASSWORD_ENC_KEY missing in .env");
@@ -47,8 +47,30 @@ const encryptPassword = (plain) => {
   const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
 
-  // base64(iv).base64(tag).base64(ciphertext)
   return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
+};
+
+const decryptPassword = (enc) => {
+  try {
+    if (!enc) return null;
+    const parts = String(enc).split(".");
+    if (parts.length !== 3) return null;
+
+    const [ivB64, tagB64, ctB64] = parts;
+    const key = getEncKey();
+
+    const iv = Buffer.from(ivB64, "base64");
+    const tag = Buffer.from(tagB64, "base64");
+    const ciphertext = Buffer.from(ctB64, "base64");
+
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return plain.toString("utf8");
+  } catch {
+    return null;
+  }
 };
 
 // ✅ Make username unique in users table
@@ -60,11 +82,9 @@ const makeUniqueUsername = async (base) => {
 
   if (!clean) return null;
 
-  // try base first
   const check1 = await db.query("SELECT 1 FROM users WHERE username = $1 LIMIT 1", [clean]);
   if (check1.rows.length === 0) return clean;
 
-  // add suffix if collision
   for (let i = 0; i < 5; i++) {
     const candidate = `${clean}.${crypto.randomBytes(2).toString("hex")}`;
     const check = await db.query("SELECT 1 FROM users WHERE username = $1 LIMIT 1", [candidate]);
@@ -74,12 +94,37 @@ const makeUniqueUsername = async (base) => {
   throw new Error("Failed to generate unique username for company admin");
 };
 
-// GET /companies
+// -------------------- GET /companies --------------------
+// role1 -> all (with admin password)
+// others -> only their company (NO password)
 export const getAllCompanies = async (req, res) => {
   try {
     if (isRole(req, ROLE_SUPERADMIN)) {
-      const { rows } = await db.query("SELECT * FROM company ORDER BY company_id");
-      return res.json(rows);
+      // Join admin user (role_id=2, ship_id null) to decrypt password
+      const { rows } = await db.query(
+        `
+        SELECT
+          c.*,
+          u.username AS admin_username,
+          u.password_enc AS admin_password_enc
+        FROM company c
+        LEFT JOIN users u
+          ON u.company_id = c.company_id
+         AND u.role_id = 2
+         AND u.ship_id IS NULL
+        ORDER BY c.company_id
+        `
+      );
+
+      const out = rows.map((r) => {
+        const { admin_password_enc, ...rest } = r;
+        return {
+          ...rest,
+          admin_password: decryptPassword(admin_password_enc), // ✅ plain (role1 only)
+        };
+      });
+
+      return res.json(out);
     }
 
     if (!req.user?.company_id) return res.json([]);
@@ -94,13 +139,48 @@ export const getAllCompanies = async (req, res) => {
   }
 };
 
-// GET /companies/:id
+// -------------------- GET /companies/:id --------------------
+// role1 -> any company + admin password
+// role2+ -> only own company (NO password)
 export const getCompanyById = async (req, res) => {
   const id = String(req.params.id);
 
   try {
     if (!ensureCompanyScope(req, res, id)) return;
 
+    if (isRole(req, ROLE_SUPERADMIN)) {
+      const { rows } = await db.query(
+        `
+        SELECT
+          c.*,
+          u.username AS admin_username,
+          u.password_enc AS admin_password_enc
+        FROM company c
+        LEFT JOIN users u
+          ON u.company_id = c.company_id
+         AND u.role_id = 2
+         AND u.ship_id IS NULL
+        WHERE c.company_id = $1
+        LIMIT 1
+        `,
+        [id]
+      );
+
+      if (!rows.length) return res.status(404).json({ error: "Company not found" });
+
+      const row = rows[0];
+      const plain = decryptPassword(row.admin_password_enc);
+
+      // remove enc from response
+      delete row.admin_password_enc;
+
+      return res.json({
+        ...row,
+        admin_password: plain,
+      });
+    }
+
+    // non-superadmin: normal company fetch (no password)
     const { rows } = await db.query("SELECT * FROM company WHERE company_id = $1", [id]);
     if (!rows.length) return res.status(404).json({ error: "Company not found" });
 
@@ -111,10 +191,7 @@ export const getCompanyById = async (req, res) => {
   }
 };
 
-// POST /companies (role1 only)
-// ✅ Creates company + creates a users row for company admin (role_id=2)
-// ✅ Accepts plain password in req.body.password
-// ✅ Stores password_enc in users so SuperAdmin can view via adminViewPassword / users list
+// -------------------- POST /companies (role1 only) --------------------
 export const createCompany = async (req, res) => {
   if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
 
@@ -133,17 +210,15 @@ export const createCompany = async (req, res) => {
     phone_no,
     email,
     username,
-    password, // ✅ PLAIN password
+    password, // plain
   } = req.body;
 
   if (!company_name) return res.status(400).json({ error: "company_name is required" });
-
   if (!username || !password) {
     return res.status(400).json({ error: "username and password are required for company admin login" });
   }
 
   try {
-    // prevent duplicate company.username
     const existingCompany = await db.query("SELECT 1 FROM company WHERE username = $1 LIMIT 1", [
       String(username).trim(),
     ]);
@@ -153,13 +228,11 @@ export const createCompany = async (req, res) => {
 
     await db.query("BEGIN");
 
-    // ensure unique in users as well (avoid collision with crew)
     const uniqueUsername = await makeUniqueUsername(username);
 
     const password_hash = hashPassword(password);
     const password_enc = encryptPassword(password);
 
-    // 1) create company
     const { rows } = await db.query(
       `INSERT INTO company
        (company_name, code, email_domain, is_active,
@@ -190,14 +263,13 @@ export const createCompany = async (req, res) => {
         contact_person_name ?? null,
         phone_no ?? null,
         email ?? null,
-        uniqueUsername, // ✅ synced with users username
+        uniqueUsername,
         password_hash,
       ]
     );
 
     const company = rows[0];
 
-    // 2) create user row for company admin (role_id=2)
     await db.query(
       `INSERT INTO users
        (seafarer_id, full_name, username, password_hash, password_enc,
@@ -220,12 +292,11 @@ export const createCompany = async (req, res) => {
 
     await db.query("COMMIT");
 
-    // ⚠️ returning plain password is optional; helps you test quickly
     return res.status(201).json({
       ...company,
       admin_user_created: true,
       admin_username: uniqueUsername,
-      admin_password: password, // remove in production if you don’t want to expose it
+      admin_password: password, // optional (only for immediate response)
     });
   } catch (err) {
     await db.query("ROLLBACK");
@@ -234,7 +305,7 @@ export const createCompany = async (req, res) => {
   }
 };
 
-// PUT /companies/:id
+// -------------------- PUT /companies/:id --------------------
 export const updateCompany = async (req, res) => {
   const id = String(req.params.id);
 
@@ -256,7 +327,7 @@ export const updateCompany = async (req, res) => {
     phone_no,
     email,
     username,
-    password, // ✅ plain password allowed on update too
+    password, // plain password allowed
   } = req.body;
 
   try {
@@ -308,7 +379,7 @@ export const updateCompany = async (req, res) => {
 
     if (!rowCount) return res.status(404).json({ error: "Company not found" });
 
-    // Sync company admin user in users table
+    // Sync company admin user
     if (newUsername || newPasswordHash || newPasswordEnc || email || company_name) {
       await db.query(
         `UPDATE users
@@ -339,7 +410,7 @@ export const updateCompany = async (req, res) => {
   }
 };
 
-// DELETE /companies/:id (role1 only)
+// -------------------- DELETE /companies/:id (role1 only) --------------------
 export const deleteCompany = async (req, res) => {
   if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
 
