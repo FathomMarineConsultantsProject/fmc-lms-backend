@@ -14,7 +14,122 @@ const normalizeRank = (r) =>
   String(r || "")
     .trim()
     .toLowerCase()
+    .replace(/[\.\-_,]/g, " ")     
+    .replace(/[\/\\]/g, " ")      
     .replace(/\s+/g, " ");
+
+// ================= RANK SORTING HELPERS =================
+
+// canonical rank order (lower = higher priority)
+const RANK_WEIGHT = {
+  MASTER: 1,
+  CHIEF_OFFICER: 2,
+  SECOND_OFFICER: 3,
+  THIRD_OFFICER: 4,
+  CHIEF_ENGINEER: 5,
+  SECOND_ENGINEER: 6,
+  THIRD_ENGINEER: 7,
+  ELECTRICIAN: 8,
+  BOSUN: 9,
+  AB: 10,
+  OS: 11,
+  OILER: 12,
+  WIPER: 13,
+  COOK: 14,
+  OTHER: 999,
+};
+
+// aliases per canonical rank (add more anytime)
+const RANK_ALIASES = {
+  MASTER: [
+    "master", "mstr", "mster", "mst", "mtr",
+    "captain", "cap", "capt"
+  ],
+
+  CHIEF_OFFICER: [
+    "chief officer", "chief mate", "c/o", "coff", "c off",
+    "1st officer", "first officer", "1/off", "1off", "1o"
+  ],
+
+  SECOND_OFFICER: [
+    "second officer", "2nd officer", "2/off", "2off", "2o", "2officer"
+  ],
+
+  THIRD_OFFICER: [
+    "third officer", "3rd officer", "3/off", "3off", "3o", "3officer"
+  ],
+
+  CHIEF_ENGINEER: [
+    "chief engineer", "c/e", "ce", "c eng", "cheng", "ch eng"
+  ],
+
+  SECOND_ENGINEER: [
+    "second engineer", "2nd engineer", "2/e", "2e", "2 eng", "2eng"
+  ],
+
+  THIRD_ENGINEER: [
+    "third engineer", "3rd engineer", "3/e", "3e", "3 eng", "3eng"
+  ],
+
+  ELECTRICIAN: [
+    "electrician", "elec", "ee", "j/ee", "jele", "elect"
+  ],
+
+  BOSUN: [
+    "bosun", "bosn", "boatswain"
+  ],
+
+  AB: [
+    "ab", "able", "able seaman", "able seafarer", "a/b"
+  ],
+
+  OS: [
+    "os", "ordinary seaman", "orse"
+  ],
+
+  OILER: [
+    "oiler"
+  ],
+
+  WIPER: [
+    "wiper"
+  ],
+
+  COOK: [
+    "cook", "ccok", "cok", "2cok", "2/cok", "2 cook"
+  ],
+};
+
+// find canonical rank key from raw rank string
+const canonicalRankKey = (rankRaw) => {
+  const r = normalizeRank(rankRaw);
+
+  if (!r) return "OTHER";
+
+  // exact / contains match
+  for (const [key, list] of Object.entries(RANK_ALIASES)) {
+    for (const a of list) {
+      const aa = normalizeRank(a);
+      if (r === aa) return key;
+      if (r.includes(aa)) return key;
+    }
+  }
+
+  // fallback: handle things like "2OFF", "3ENG", etc.
+  // normalizeRank already lowercases, so check patterns
+  if (/\b2\s*off\b|\b2off\b/.test(r)) return "SECOND_OFFICER";
+  if (/\b3\s*off\b|\b3off\b/.test(r)) return "THIRD_OFFICER";
+  if (/\b2\s*eng\b|\b2eng\b/.test(r)) return "SECOND_ENGINEER";
+  if (/\b3\s*eng\b|\b3eng\b/.test(r)) return "THIRD_ENGINEER";
+
+  return "OTHER";
+};
+
+const rankSortValue = (rankRaw) => {
+  const key = canonicalRankKey(rankRaw);
+  return RANK_WEIGHT[key] ?? RANK_WEIGHT.OTHER;
+};
+
 
 const isShipAdminRank = (rankValue) => {
   const r = normalizeRank(rankValue);
@@ -191,7 +306,21 @@ export const getAllUsers = async (req, res) => {
     }
 
     const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
+
+    // ✅ Sort by rank hierarchy, then by name
+    out.sort((a, b) => {
+      const ra = rankSortValue(a.rank);
+      const rb = rankSortValue(b.rank);
+      if (ra !== rb) return ra - rb;
+
+      const na = String(a.full_name || "").toLowerCase();
+      const nb = String(b.full_name || "").toLowerCase();
+      return na.localeCompare(nb);
+    });
+
     return res.json(out);
+
+
   } catch (err) {
     console.error("Error getting users:", err);
     return res.status(500).json({ error: "Failed to fetch users" });
@@ -716,7 +845,6 @@ export const bulkUpdateUserStatus = async (req, res) => {
 };
 
 
-
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -1216,7 +1344,7 @@ export const importUsersFromExcel = [
               seaman_book_issue_date ?? null,
               seaman_book_expiry_date ?? null,
 
-              role_id_to_insert, // ✅ FIXED: was hardcoded 4
+              role_id_to_insert,
             ]
           );
 
