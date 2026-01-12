@@ -343,7 +343,7 @@ export const getUserById = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch user" });
   }
 };
-f 
+
 // =============ships history===================
 // GET /users/:id/ship-history
 export const getUserShipHistory = async (req, res) => {
