@@ -11,7 +11,7 @@ import {
   importUsersFromExcel,
   bulkUpdateUserStatus,
   getUserShipHistory ,
-  getUsersByCompanyAndShip ,
+  getUsersByShipId ,
 } from "../controller/usersController.js";
 
 export const router = Router();
