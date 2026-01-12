@@ -415,31 +415,27 @@ export const getUsersByShipId = async (req, res) => {
       return res.status(400).json({ error: "ship_id must be a number" });
     }
 
-    // crew blocked (adjust if you want crew to view own ship list)
+    // block crew (role 4)
     if (role === 4) return res.status(403).json({ error: "Forbidden" });
 
-    // fetch ship info (needed for scope checks + safe validation)
+    // ship lookup (for scope + metadata)
     const shipRes = await db.query(
       `SELECT ship_id, company_id, ship_name
        FROM ships
        WHERE ship_id = $1`,
       [ship_id]
     );
-
-    if (!shipRes.rows.length) {
-      return res.status(404).json({ error: "Ship not found" });
-    }
+    if (!shipRes.rows.length) return res.status(404).json({ error: "Ship not found" });
 
     const ship = shipRes.rows[0];
 
-    // ✅ Scope enforcement
+    // scope enforcement
     if (role === 2) {
       // role 2 must match company
       if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
         return res.status(403).json({ error: "Forbidden (company scope)" });
       }
     }
-
     if (role === 3) {
       // role 3 must match company AND ship
       if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
@@ -450,19 +446,37 @@ export const getUsersByShipId = async (req, res) => {
       }
     }
 
-    // fetch users for ship
+    // ✅ Only pick the fields you want (NO password_hash, NO password_enc, NO reset tokens, etc.)
     const { rows } = await db.query(
-      `SELECT *
+      `SELECT
+         user_id,
+         seafarer_id,
+         full_name,
+         rank,
+         trip,
+         embarkation_date,
+         disembarkation_date,
+         status,
+         username,
+         ship_id,
+         company_id,
+         created_at,
+         updated_at,
+         role_id,
+         sex,
+         date_of_birth,
+         place_of_birth,
+         nationality,
+         embarkation_port,
+         disembarkation_port
        FROM users
        WHERE ship_id = $1
        ORDER BY user_id`,
       [ship_id]
     );
 
-    const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
-
-    // ✅ Sort by rank hierarchy, then by name
-    out.sort((a, b) => {
+    // sort by rank hierarchy then name (same logic)
+    rows.sort((a, b) => {
       const ra = rankSortValue(a.rank);
       const rb = rankSortValue(b.rank);
       if (ra !== rb) return ra - rb;
@@ -476,8 +490,8 @@ export const getUsersByShipId = async (req, res) => {
       ship_id,
       ship_name: ship.ship_name || null,
       company_id: ship.company_id,
-      count: out.length,
-      users: out,
+      count: rows.length,
+      users: rows,
     });
   } catch (err) {
     console.error("getUsersByShipId error:", err);
