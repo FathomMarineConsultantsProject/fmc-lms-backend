@@ -343,7 +343,7 @@ export const getUserById = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch user" });
   }
 };
-
+f 
 // =============ships history===================
 // GET /users/:id/ship-history
 export const getUserShipHistory = async (req, res) => {
@@ -399,6 +399,90 @@ export const getUserShipHistory = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch ship history" });
   }
 };
+
+// GET /users/by-scope?company_id=...&ship_id=...
+// roles:
+// 1 (superadmin) -> can query any company/ship
+// 2 (admin) -> only their company
+// 3 (subadmin/ship admin) -> only their company + their ship
+// 4 (crew) -> forbidden (or restrict to own ship if you want)
+export const getUsersByCompanyAndShip = async (req, res) => {
+  try {
+    const role = Number(req.user.role_id);
+
+    const companyIdQuery = String(req.query.company_id || "").trim();
+    const shipIdQuery = req.query.ship_id;
+
+    if (!companyIdQuery || !isUuid(companyIdQuery)) {
+      return res.status(400).json({ error: "company_id is required and must be a valid UUID" });
+    }
+
+    const ship_id = parseIntOrNull(shipIdQuery);
+    if (ship_id === null || Number.isNaN(ship_id)) {
+      return res.status(400).json({ error: "ship_id is required and must be a number" });
+    }
+
+    // ✅ scope enforcement
+    if (role === 4) return res.status(403).json({ error: "Forbidden" });
+
+    if (role === 2) {
+      if (!req.user.company_id || String(req.user.company_id) !== companyIdQuery) {
+        return res.status(403).json({ error: "Forbidden (company scope)" });
+      }
+    }
+
+    if (role === 3) {
+      if (!req.user.company_id || String(req.user.company_id) !== companyIdQuery) {
+        return res.status(403).json({ error: "Forbidden (company scope)" });
+      }
+      if (req.user.ship_id == null || Number(req.user.ship_id) !== Number(ship_id)) {
+        return res.status(403).json({ error: "Forbidden (ship scope)" });
+      }
+    }
+
+    // optional: verify ship belongs to company (avoids mismatched queries)
+    const shipCheck = await db.query(
+      "SELECT ship_id FROM ships WHERE ship_id = $1 AND company_id = $2",
+      [ship_id, companyIdQuery]
+    );
+    if (!shipCheck.rows.length) {
+      return res.status(400).json({ error: "ship_id does not belong to company_id" });
+    }
+
+    // fetch users
+    const { rows } = await db.query(
+      `SELECT *
+       FROM users
+       WHERE company_id = $1 AND ship_id = $2
+       ORDER BY user_id`,
+      [companyIdQuery, ship_id]
+    );
+
+    const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
+
+    // ✅ Sort by rank hierarchy, then by name (same as /users)
+    out.sort((a, b) => {
+      const ra = rankSortValue(a.rank);
+      const rb = rankSortValue(b.rank);
+      if (ra !== rb) return ra - rb;
+
+      const na = String(a.full_name || "").toLowerCase();
+      const nb = String(b.full_name || "").toLowerCase();
+      return na.localeCompare(nb);
+    });
+
+    return res.json({
+      company_id: companyIdQuery,
+      ship_id,
+      count: out.length,
+      users: out,
+    });
+  } catch (err) {
+    console.error("getUsersByCompanyAndShip error:", err);
+    return res.status(500).json({ error: "Failed to fetch users for company+ship" });
+  }
+};
+
 
 // POST /users
 export const createUser = async (req, res) => {
@@ -1395,3 +1479,4 @@ export const importUsersFromExcel = [
     }
   },
 ];
+
