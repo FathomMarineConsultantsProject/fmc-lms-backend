@@ -11,6 +11,7 @@ import {
   importUsersFromExcel,
   bulkUpdateUserStatus,
   getUserShipHistory ,
+  getUsersByCompanyAndShip ,
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -147,3 +148,5 @@ router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
 router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);
 
 router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
+
+router.get("/by-scope", requireAuth, allowRoles(1, 2, 3), getUsersByCompanyAndShip);
