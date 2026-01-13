@@ -782,31 +782,30 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// ✅ POST /users/sync-status
+// POST /users/sync-status
 // Runs daily via Vercel Cron (or manually via Postman).
 // Security: either
 // 1) x-cron-secret header matches CRON_SECRET env, OR
 // 2) Authorization Bearer token of role_id=1 (superadmin)
 export const syncUserStatusByDates = async (req, res) => {
   try {
-    // ----- Auth guard (CRON SECRET OR SUPERADMIN TOKEN) -----
-    const cronSecret = req.headers["x-cron-secret"];
+    // Allow either:
+    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
+    // 2) Manual: Authorization Bearer token (superadmin)
+
     const expected = process.env.CRON_SECRET;
 
-    const isCronAllowed = expected && cronSecret && String(cronSecret) === String(expected);
+    const secretFromQuery = req.query?.secret;
+    const isCronAllowed =
+      expected && secretFromQuery && String(secretFromQuery) === String(expected);
 
-    const isSuperAdmin =
-      req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
+    const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
 
     if (!isCronAllowed && !isSuperAdmin) {
       return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
     }
 
     // ----- Date-based sync rules -----
-    // ✅ Offboard if disembarkation_date <= today
-    // ✅ Set ship_id = NULL when offboarded
-    // ✅ (Optional) If today is within [embarkation_date, disembarkation_date) and ship_id exists => set Onboard
-
     const offboardRes = await db.query(
       `UPDATE users
        SET
@@ -847,7 +846,6 @@ export const syncUserStatusByDates = async (req, res) => {
     return res.status(500).json({ error: "Failed to sync user status" });
   }
 };
-
 
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {

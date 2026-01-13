@@ -10,19 +10,22 @@ import {
   deleteUser,
   importUsersFromExcel,
   bulkUpdateUserStatus,
-  getUserShipHistory ,
-  getUsersByShipId ,
+  getUserShipHistory,
+  getUsersByShipId,
   syncUserStatusByDates,
 } from "../controller/usersController.js";
 
 export const router = Router();
 
-/**
+  /**
  * @openapi
  * tags:
  *   - name: Users
  *     description: User management
  */
+
+router.get("/sync-status", syncUserStatusByDates);
+router.post("/sync-status", syncUserStatusByDates); // optional for Postman manual trigger
 
 router.use(requireAuth);
 
@@ -152,6 +155,3 @@ router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
 
 router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
 
-// Option A: allow BOTH cron-secret calls and superadmin calls.
-// If you always want requireAuth, keep requireAuth.
-router.post("/sync-status", syncUserStatusByDates);
