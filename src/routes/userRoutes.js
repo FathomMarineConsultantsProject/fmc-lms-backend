@@ -154,5 +154,4 @@ router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
 
 // Option A: allow BOTH cron-secret calls and superadmin calls.
 // If you always want requireAuth, keep requireAuth.
-// If you want cron to run without JWT, remove requireAuth here.
 router.post("/sync-status", syncUserStatusByDates);

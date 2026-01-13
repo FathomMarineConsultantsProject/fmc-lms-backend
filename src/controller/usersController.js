@@ -1086,10 +1086,10 @@ const FIELD_ALIASES = {
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
-  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date", "startdate", "start-date" , "start - date"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
-  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date", "end date", "enddate", "end-date", "end - date"],
 
   end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
   plus_months: ["plus months", "extension months", "months", "plus month"],
