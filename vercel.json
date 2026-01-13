@@ -5,5 +5,11 @@
   ],
   "routes": [
     { "src": "/(.*)", "dest": "api/index.js" }
+  ],
+  "crons": [
+    {
+      "path": "/users/users/sync-status",
+      "schedule": "35 18 * * *"
+    }
   ]
 }

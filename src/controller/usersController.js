@@ -152,7 +152,6 @@ const isShipAdminRank = (rankValue) => {
   return keywords.some((k) => r.includes(k));
 };
 
-
 // If Excel doesn't contain status: compute from disembarkation_date
 const computeStatusFromDates = ({ disembarkation_date }) => {
   if (!disembarkation_date) return "Onboard";
@@ -783,6 +782,72 @@ export const updateUser = async (req, res) => {
   }
 };
 
+// ✅ POST /users/sync-status
+// Runs daily via Vercel Cron (or manually via Postman).
+// Security: either
+// 1) x-cron-secret header matches CRON_SECRET env, OR
+// 2) Authorization Bearer token of role_id=1 (superadmin)
+export const syncUserStatusByDates = async (req, res) => {
+  try {
+    // ----- Auth guard (CRON SECRET OR SUPERADMIN TOKEN) -----
+    const cronSecret = req.headers["x-cron-secret"];
+    const expected = process.env.CRON_SECRET;
+
+    const isCronAllowed = expected && cronSecret && String(cronSecret) === String(expected);
+
+    const isSuperAdmin =
+      req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
+
+    if (!isCronAllowed && !isSuperAdmin) {
+      return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
+    }
+
+    // ----- Date-based sync rules -----
+    // ✅ Offboard if disembarkation_date <= today
+    // ✅ Set ship_id = NULL when offboarded
+    // ✅ (Optional) If today is within [embarkation_date, disembarkation_date) and ship_id exists => set Onboard
+
+    const offboardRes = await db.query(
+      `UPDATE users
+       SET
+         status = 'Offboard',
+         ship_id = NULL,
+         updated_at = NOW()
+       WHERE
+         disembarkation_date IS NOT NULL
+         AND disembarkation_date::date <= CURRENT_DATE
+         AND (status IS NULL OR lower(status) <> 'offboard')
+       RETURNING user_id`
+    );
+
+    const onboardRes = await db.query(
+      `UPDATE users
+       SET
+         status = 'Onboard',
+         updated_at = NOW()
+       WHERE
+         ship_id IS NOT NULL
+         AND embarkation_date IS NOT NULL
+         AND embarkation_date::date <= CURRENT_DATE
+         AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
+         AND (status IS NULL OR lower(status) <> 'onboard')
+       RETURNING user_id`
+    );
+
+    return res.json({
+      message: "Sync completed",
+      today: new Date().toISOString().slice(0, 10),
+      offboarded_count: offboardRes.rowCount,
+      onboarded_count: onboardRes.rowCount,
+      offboarded_user_ids: offboardRes.rows.map((r) => r.user_id),
+      onboarded_user_ids: onboardRes.rows.map((r) => r.user_id),
+    });
+  } catch (err) {
+    console.error("syncUserStatusByDates error:", err);
+    return res.status(500).json({ error: "Failed to sync user status" });
+  }
+};
+
 
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
@@ -1021,7 +1086,7 @@ const FIELD_ALIASES = {
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
-  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
   disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date"],
@@ -1495,4 +1560,3 @@ export const importUsersFromExcel = [
     }
   },
 ];
-
