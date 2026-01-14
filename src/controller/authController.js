@@ -2,6 +2,8 @@
 import { db } from '../db.js';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
+
 
 // -------------------- constants --------------------
 const ROLE_SUPERADMIN = 1;
