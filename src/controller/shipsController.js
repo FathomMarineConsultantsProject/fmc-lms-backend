@@ -66,25 +66,35 @@ export const getAllShips = async (req, res) => {
 export const getShipById = async (req, res) => {
   try {
     const shipId = parseInt(req.params.id, 10);
-    if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
+    if (Number.isNaN(shipId)) return res.status(400).json({ error: "ship_id must be a number" });
 
     const { role_id, company_id, ship_id } = req.user;
 
-    // fetch ship first
-    const shipRes = await db.query('SELECT * FROM ships WHERE ship_id = $1', [shipId]);
-    if (!shipRes.rows.length) return res.status(404).json({ error: 'Ship not found' });
+    const shipRes = await db.query("SELECT * FROM ships WHERE ship_id = $1", [shipId]);
+    if (!shipRes.rows.length) return res.status(404).json({ error: "Ship not found" });
 
     const ship = shipRes.rows[0];
 
-    // authorize
     if (role_id === ROLE_SUPERADMIN) return res.json(ship);
-    if (role_id === ROLE_ADMIN && String(ship.company_id) === String(company_id)) return res.json(ship);
-    if ((role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) && shipId === ship_id) return res.json(ship);
 
-    return res.status(403).json({ error: 'Forbidden' });
+    if (role_id === ROLE_ADMIN) {
+      if (String(ship.company_id) !== String(company_id)) {
+        return res.status(403).json({ error: "Forbidden (company scope)" });
+      }
+      return res.json(ship);
+    }
+
+    if (role_id === ROLE_SUBADMIN) {
+      if (Number(shipId) !== Number(ship_id)) {
+        return res.status(403).json({ error: "Forbidden (ship scope)" });
+      }
+      return res.json(ship);
+    }
+
+    return res.status(403).json({ error: "Forbidden" });
   } catch (err) {
-    console.error('Error getting ship:', err);
-    res.status(500).json({ error: 'Failed to fetch ship' });
+    console.error("Error getting ship:", err);
+    return res.status(500).json({ error: "Failed to fetch ship" });
   }
 };
 
@@ -144,22 +154,24 @@ export const createShip = async (req, res) => {
   }
 };
 
-
 //PUT SHIP
 export const updateShip = async (req, res) => {
   const { role_id, company_id } = req.user;
-  if (!canWriteShips(role_id)) return res.status(403).json({ error: 'Forbidden' });
+  if (!canWriteShips(role_id)) return res.status(403).json({ error: "Forbidden" });
 
   const shipId = parseInt(req.params.id, 10);
-  if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
+  if (Number.isNaN(shipId)) return res.status(400).json({ error: "ship_id must be a number" });
 
   try {
-    // scope check
-    const current = await db.query('SELECT company_id FROM ships WHERE ship_id = $1', [shipId]);
-    if (!current.rows.length) return res.status(404).json({ error: 'Ship not found' });
+    // fetch current ship for scope check
+    const current = await db.query("SELECT company_id FROM ships WHERE ship_id = $1", [shipId]);
+    if (!current.rows.length) return res.status(404).json({ error: "Ship not found" });
 
-    if (role_id === ROLE_ADMIN && String(current.rows[0].company_id) !== String(company_id)) {
-      return res.status(403).json({ error: 'Forbidden (company scope)' });
+    const shipCompanyId = current.rows[0].company_id;
+
+    // role2 can only update ships in their company
+    if (role_id === ROLE_ADMIN && String(shipCompanyId) !== String(company_id)) {
+      return res.status(403).json({ error: "Forbidden (company scope)" });
     }
 
     const {
@@ -172,13 +184,16 @@ export const updateShip = async (req, res) => {
       ship_type,
       capacity,
       powered_by,
-      company_id: newCompanyId,
+      company_id: newCompanyId, // incoming attempt
     } = req.body;
 
-    // role2 cannot move ship to another company
-    if (role_id === ROLE_ADMIN && newCompanyId && String(newCompanyId) !== String(company_id)) {
-      return res.status(403).json({ error: 'Forbidden (cannot change company_id)' });
+    // 🔒 role2 cannot change company_id EVER
+    if (role_id === ROLE_ADMIN && newCompanyId && String(newCompanyId) !== String(shipCompanyId)) {
+      return res.status(403).json({ error: "Forbidden (cannot change company_id)" });
     }
+
+    // ✅ Set company_id only for role1, otherwise keep existing
+    const companyIdToSet = role_id === ROLE_SUPERADMIN ? (newCompanyId ?? null) : null;
 
     const { rowCount } = await db.query(
       `UPDATE ships
@@ -196,50 +211,51 @@ export const updateShip = async (req, res) => {
          updated_at = NOW()
        WHERE ship_id = $11`,
       [
-        ship_name,
-        imo_number,
-        flag,
-        ship_class,
-        owner,
-        validity,
-        ship_type,
-        capacity,
-        powered_by,
-        newCompanyId,
+        ship_name ?? null,
+        imo_number ?? null,
+        flag ?? null,
+        ship_class ?? null,
+        owner ?? null,
+        validity ?? null,
+        ship_type ?? null,
+        capacity ?? null,
+        powered_by ?? null,
+        companyIdToSet, // role1 can set, role2 passes null => stays unchanged
         shipId,
       ]
     );
 
-    if (!rowCount) return res.status(404).json({ error: 'Ship not found' });
-    res.json({ message: 'Ship updated' });
+    if (!rowCount) return res.status(404).json({ error: "Ship not found" });
+    return res.json({ message: "Ship updated" });
   } catch (err) {
-    console.error('Error updating ship:', err);
-    res.status(500).json({ error: 'Failed to update ship' });
+    console.error("Error updating ship:", err);
+    return res.status(500).json({ error: "Failed to update ship" });
   }
 };
 
 //DELETE SHIP
 export const deleteShip = async (req, res) => {
   const { role_id, company_id } = req.user;
-  if (!canWriteShips(role_id)) return res.status(403).json({ error: 'Forbidden' });
+  if (!canWriteShips(role_id)) return res.status(403).json({ error: "Forbidden" });
 
   const shipId = parseInt(req.params.id, 10);
-  if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
+  if (Number.isNaN(shipId)) return res.status(400).json({ error: "ship_id must be a number" });
 
   try {
-    const current = await db.query('SELECT company_id FROM ships WHERE ship_id = $1', [shipId]);
-    if (!current.rows.length) return res.status(404).json({ error: 'Ship not found' });
+    const current = await db.query("SELECT company_id FROM ships WHERE ship_id = $1", [shipId]);
+    if (!current.rows.length) return res.status(404).json({ error: "Ship not found" });
 
     if (role_id === ROLE_ADMIN && String(current.rows[0].company_id) !== String(company_id)) {
-      return res.status(403).json({ error: 'Forbidden (company scope)' });
+      return res.status(403).json({ error: "Forbidden (company scope)" });
     }
 
-    const { rowCount } = await db.query('DELETE FROM ships WHERE ship_id = $1', [shipId]);
-    if (!rowCount) return res.status(404).json({ error: 'Ship not found' });
-    res.json({ message: 'Ship deleted' });
+    const { rowCount } = await db.query("DELETE FROM ships WHERE ship_id = $1", [shipId]);
+    if (!rowCount) return res.status(404).json({ error: "Ship not found" });
+
+    return res.json({ message: "Ship deleted" });
   } catch (err) {
-    console.error('Error deleting ship:', err);
-    res.status(500).json({ error: 'Failed to delete ship' });
+    console.error("Error deleting ship:", err);
+    return res.status(500).json({ error: "Failed to delete ship" });
   }
 };
 
