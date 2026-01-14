@@ -49,22 +49,22 @@ const hashPassword = (plain) =>
 //   return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
 // };
 
-const decryptPassword = (enc) => {
-  if (!enc) return null;
-  const key = getEncKey();
-  const parts = String(enc).split('.');
-  if (parts.length !== 3) throw new Error('Invalid password_enc format');
+// const decryptPassword = (enc) => {
+//   if (!enc) return null;
+//   const key = getEncKey();
+//   const parts = String(enc).split('.');
+//   if (parts.length !== 3) throw new Error('Invalid password_enc format');
 
-  const iv = Buffer.from(parts[0], 'base64');
-  const tag = Buffer.from(parts[1], 'base64');
-  const ciphertext = Buffer.from(parts[2], 'base64');
+//   const iv = Buffer.from(parts[0], 'base64');
+//   const tag = Buffer.from(parts[1], 'base64');
+//   const ciphertext = Buffer.from(parts[2], 'base64');
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
+//   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+//   decipher.setAuthTag(tag);
 
-  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plain.toString('utf8');
-};
+//   const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+//   return plain.toString('utf8');
+// };
 
 // reset token flow (forgot/reset password)
 const generateResetToken = () => crypto.randomBytes(24).toString('hex');
