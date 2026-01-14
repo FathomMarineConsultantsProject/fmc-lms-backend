@@ -9,6 +9,7 @@ import {
   deleteShip,
   getShipsByCompanyId,
 } from '../controller/shipsController.js';
+import { allowRoles } from "../middleware/rbac.js"; 
 
 export const router = Router();
 
@@ -125,7 +126,7 @@ router.get('/', getAllShips);
  *       401: { description: Unauthorized }
  *       403: { description: Forbidden }
  */
-router.get('/company/:company_id', getShipsByCompanyId);
+router.get('/company/:company_id', allowRoles(1), getShipsByCompanyId);
 
 /**
  * @openapi
