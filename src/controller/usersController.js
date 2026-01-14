@@ -279,6 +279,26 @@ const attachPlainPasswordIfAllowed = (roleId, userRow) => {
   };
 };
 
+const USER_SAFE_COLUMNS = `
+  user_id,
+  seafarer_id,
+  full_name,
+  rank,
+  trip,
+  embarkation_date,
+  disembarkation_date,
+  status,
+  username,
+  ship_id,
+  company_id,
+  created_at,
+  updated_at,
+  role_id,
+  sex,
+  password_enc
+`;
+
+
 // ================= CRUD =================
 
 // GET /users
@@ -290,36 +310,51 @@ export const getAllUsers = async (req, res) => {
     let rows;
 
     if (role === 1) {
-      ({ rows } = await db.query("SELECT * FROM users ORDER BY user_id"));
+      ({ rows } = await db.query(
+        `SELECT ${USER_SAFE_COLUMNS} FROM users ORDER BY user_id`
+      ));
     } else if (role === 2) {
-      ({ rows } = await db.query("SELECT * FROM users WHERE company_id = $1 ORDER BY user_id", [
-        company_id,
-      ]));
+      ({ rows } = await db.query(
+        `SELECT ${USER_SAFE_COLUMNS}
+         FROM users
+         WHERE company_id = $1
+         ORDER BY user_id`,
+        [company_id]
+      ));
     } else if (role === 3) {
       ({ rows } = await db.query(
-        "SELECT * FROM users WHERE company_id = $1 AND ship_id = $2 ORDER BY user_id",
+        `SELECT ${USER_SAFE_COLUMNS}
+         FROM users
+         WHERE company_id = $1 AND ship_id = $2
+         ORDER BY user_id`,
         [company_id, ship_id]
       ));
     } else {
-      ({ rows } = await db.query("SELECT * FROM users WHERE user_id = $1", [user_id]));
+      ({ rows } = await db.query(
+        `SELECT ${USER_SAFE_COLUMNS}
+         FROM users
+         WHERE user_id = $1`,
+        [user_id]
+      ));
     }
 
+    // attach plain_password ONLY for allowed roles
     const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
 
-    // ✅ Sort by rank hierarchy, then by name
+    // sort by rank hierarchy then name
     out.sort((a, b) => {
       const ra = rankSortValue(a.rank);
       const rb = rankSortValue(b.rank);
       if (ra !== rb) return ra - rb;
 
-      const na = String(a.full_name || "").toLowerCase();
-      const nb = String(b.full_name || "").toLowerCase();
-      return na.localeCompare(nb);
+      return String(a.full_name || "").localeCompare(
+        String(b.full_name || ""),
+        undefined,
+        { sensitivity: "base" }
+      );
     });
 
     return res.json(out);
-
-
   } catch (err) {
     console.error("Error getting users:", err);
     return res.status(500).json({ error: "Failed to fetch users" });
@@ -329,11 +364,21 @@ export const getAllUsers = async (req, res) => {
 // GET /users/:id
 export const getUserById = async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (Number.isNaN(id)) return res.status(400).json({ error: "user_id must be a number" });
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ error: "user_id must be a number" });
+  }
 
   try {
-    const { rows } = await db.query("SELECT * FROM users WHERE user_id = $1", [id]);
-    if (!rows.length) return res.status(404).json({ error: "User not found" });
+    const { rows } = await db.query(
+      `SELECT ${USER_SAFE_COLUMNS}
+       FROM users
+       WHERE user_id = $1`,
+      [id]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
     const role = Number(req.user.role_id);
     return res.json(attachPlainPasswordIfAllowed(role, rows[0]));
@@ -782,31 +827,30 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// ✅ POST /users/sync-status
+// POST /users/sync-status
 // Runs daily via Vercel Cron (or manually via Postman).
 // Security: either
 // 1) x-cron-secret header matches CRON_SECRET env, OR
 // 2) Authorization Bearer token of role_id=1 (superadmin)
 export const syncUserStatusByDates = async (req, res) => {
   try {
-    // ----- Auth guard (CRON SECRET OR SUPERADMIN TOKEN) -----
-    const cronSecret = req.headers["x-cron-secret"];
+    // Allow either:
+    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
+    // 2) Manual: Authorization Bearer token (superadmin)
+
     const expected = process.env.CRON_SECRET;
 
-    const isCronAllowed = expected && cronSecret && String(cronSecret) === String(expected);
+    const secretFromQuery = req.query?.secret;
+    const isCronAllowed =
+      expected && secretFromQuery && String(secretFromQuery) === String(expected);
 
-    const isSuperAdmin =
-      req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
+    const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
 
     if (!isCronAllowed && !isSuperAdmin) {
       return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
     }
 
     // ----- Date-based sync rules -----
-    // ✅ Offboard if disembarkation_date <= today
-    // ✅ Set ship_id = NULL when offboarded
-    // ✅ (Optional) If today is within [embarkation_date, disembarkation_date) and ship_id exists => set Onboard
-
     const offboardRes = await db.query(
       `UPDATE users
        SET
@@ -847,7 +891,6 @@ export const syncUserStatusByDates = async (req, res) => {
     return res.status(500).json({ error: "Failed to sync user status" });
   }
 };
-
 
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
@@ -1086,10 +1129,10 @@ const FIELD_ALIASES = {
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
-  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date", "startdate", "start-date" , "start - date"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
-  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date", "end date", "enddate", "end-date", "end - date"],
 
   end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
   plus_months: ["plus months", "extension months", "months", "plus month"],

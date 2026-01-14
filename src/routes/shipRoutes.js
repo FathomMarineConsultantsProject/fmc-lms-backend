@@ -163,7 +163,7 @@ router.get('/company/:company_id', getShipsByCompanyId);
  *       500:
  *         description: Server error
  */
-router.get('/:id', getShipById);
+router.get("/:id", allowRoles(1,2,3), getShipById);
 
 /**
  * @openapi
@@ -200,7 +200,7 @@ router.get('/:id', getShipById);
  *       500:
  *         description: Server error
  */
-router.post('/', createShip);
+router.post("/", allowRoles(1,2), createShip);
 
 /**
  * @openapi
@@ -248,7 +248,7 @@ router.post('/', createShip);
  *       500:
  *         description: Server error
  */
-router.put('/:id', updateShip);
+router.put("/:id", allowRoles(1,2), updateShip);
 
 /**
  * @openapi
@@ -287,4 +287,5 @@ router.put('/:id', updateShip);
  *       500:
  *         description: Server error
  */
-router.delete('/:id', deleteShip);
+router.delete("/:id", allowRoles(1,2), deleteShip);
+
