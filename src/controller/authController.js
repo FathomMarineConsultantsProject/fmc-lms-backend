@@ -26,28 +26,28 @@ const isAdminRole = (roleId) =>
 const hashPassword = (plain) =>
   crypto.createHash('sha256').update(String(plain)).digest('hex');
 
-// AES-256-GCM reversible encryption (Option B)
-const getEncKey = () => {
-  const b64 = process.env.PASSWORD_ENC_KEY;
-  if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
-  const key = Buffer.from(b64, 'base64');
-  if (key.length !== 32) throw new Error('PASSWORD_ENC_KEY must be 32 bytes base64');
-  return key;
-};
+// AES-256-GCM reversible encryption (Option B)===================== mail change 
+// const getEncKey = () => {
+//   const b64 = process.env.PASSWORD_ENC_KEY;
+//   if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
+//   const key = Buffer.from(b64, 'base64');
+//   if (key.length !== 32) throw new Error('PASSWORD_ENC_KEY must be 32 bytes base64');
+//   return key;
+// };
 
 /**
  * Returns: base64(iv).base64(tag).base64(ciphertext)
  */
-const encryptPassword = (plain) => {
-  const key = getEncKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+// const encryptPassword = (plain) => {
+//   const key = getEncKey();
+//   const iv = crypto.randomBytes(12);
+//   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
 
-  const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
+//   const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+//   const tag = cipher.getAuthTag();
 
-  return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
-};
+//   return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
+// };
 
 const decryptPassword = (enc) => {
   if (!enc) return null;
