@@ -4,6 +4,7 @@ import crypto from "crypto";
 import multer from "multer";
 import xlsx from "xlsx";
 import { handleShipHistoryChange } from "../utils/shipHistory.js";
+import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
 
 // ================= STATUS / PASSWORD HELPERS =================
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
