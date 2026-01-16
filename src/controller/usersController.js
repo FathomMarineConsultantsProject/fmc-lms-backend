@@ -14,8 +14,8 @@ const normalizeRank = (r) =>
   String(r || "")
     .trim()
     .toLowerCase()
-    .replace(/[\.\-_,]/g, " ")     
-    .replace(/[\/\\]/g, " ")      
+    .replace(/[\.\-_,]/g, " ")
+    .replace(/[\/\\]/g, " ")
     .replace(/\s+/g, " ");
 
 // ================= RANK SORTING HELPERS =================
@@ -183,37 +183,37 @@ const getEncKey = () => {
 /**
  * returns: base64(iv).base64(tag).base64(ciphertext)
  */
-const encryptPassword = (plain) => {
-  const key = getEncKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+// const encryptPassword = (plain) => {
+//   const key = getEncKey();
+//   const iv = crypto.randomBytes(12);
+//   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
 
-  const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
+//   const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
+//   const tag = cipher.getAuthTag();
 
-  return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
-};
+//   return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
+// };
 
-const decryptPassword = (enc) => {
-  try {
-    if (!enc) return null;
-    const [ivB64, tagB64, ctB64] = String(enc).split(".");
-    if (!ivB64 || !tagB64 || !ctB64) return null;
+// const decryptPassword = (enc) => {
+//   try {
+//     if (!enc) return null;
+//     const [ivB64, tagB64, ctB64] = String(enc).split(".");
+//     if (!ivB64 || !tagB64 || !ctB64) return null;
 
-    const key = getEncKey();
-    const iv = Buffer.from(ivB64, "base64");
-    const tag = Buffer.from(tagB64, "base64");
-    const ciphertext = Buffer.from(ctB64, "base64");
+//     const key = getEncKey();
+//     const iv = Buffer.from(ivB64, "base64");
+//     const tag = Buffer.from(tagB64, "base64");
+//     const ciphertext = Buffer.from(ctB64, "base64");
 
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAuthTag(tag);
+//     const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+//     decipher.setAuthTag(tag);
 
-    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    return plain.toString("utf8");
-  } catch {
-    return null;
-  }
-};
+//     const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+//     return plain.toString("utf8");
+//   } catch {
+//     return null;
+//   }
+// };
 
 // generate username based on seafarer_id + random suffix to avoid collisions
 const generateUsername = (seafarerId) => {
@@ -297,7 +297,6 @@ const USER_SAFE_COLUMNS = `
   sex,
   password_enc
 `;
-
 
 // ================= CRUD =================
 
@@ -853,29 +852,33 @@ export const syncUserStatusByDates = async (req, res) => {
     // ----- Date-based sync rules -----
     const offboardRes = await db.query(
       `UPDATE users
-       SET
-         status = 'Offboard',
-         ship_id = NULL,
-         updated_at = NOW()
-       WHERE
-         disembarkation_date IS NOT NULL
-         AND disembarkation_date::date <= CURRENT_DATE
-         AND (status IS NULL OR lower(status) <> 'offboard')
-       RETURNING user_id`
+SET
+  status = 'Offboard',
+  ship_id = NULL,
+  updated_at = NOW()
+WHERE
+  disembarkation_date IS NOT NULL
+  AND (embarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
+  AND disembarkation_date::date <= CURRENT_DATE
+  AND (status IS NULL OR lower(status) <> 'offboard')
+RETURNING user_id;
+`
     );
 
     const onboardRes = await db.query(
       `UPDATE users
-       SET
-         status = 'Onboard',
-         updated_at = NOW()
-       WHERE
-         ship_id IS NOT NULL
-         AND embarkation_date IS NOT NULL
-         AND embarkation_date::date <= CURRENT_DATE
-         AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
-         AND (status IS NULL OR lower(status) <> 'onboard')
-       RETURNING user_id`
+SET
+  status = 'Onboard',
+  updated_at = NOW()
+WHERE
+  ship_id IS NOT NULL
+  AND embarkation_date IS NOT NULL
+  AND (disembarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
+  AND embarkation_date::date <= CURRENT_DATE
+  AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
+  AND (status IS NULL OR lower(status) <> 'onboard')
+RETURNING user_id;
+`
     );
 
     return res.json({
@@ -1129,7 +1132,7 @@ const FIELD_ALIASES = {
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
-  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date", "startdate", "start-date" , "start - date"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date", "startdate", "start-date", "start - date"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
   disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date", "end date", "enddate", "end-date", "end - date"],
@@ -1365,6 +1368,19 @@ export const importUsersFromExcel = [
         const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
         const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
 
+        // ✅ Fix invalid ranges coming from Excel (disembark < embark)
+        let emb = embarkation_date;
+        let dis = disembarkation_date;
+
+        if (emb && dis) {
+          const embD = new Date(emb);
+          const disD = new Date(dis);
+          if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
+            dis = null;
+          }
+        }
+
+
         const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
         const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
 
@@ -1382,13 +1398,13 @@ export const importUsersFromExcel = [
         let status =
           statusFromExcel != null && String(statusFromExcel).trim() !== ""
             ? String(statusFromExcel)
-            : computeStatusFromDates({ disembarkation_date });
+            : computeStatusFromDates({ disembarkation_date: dis });
 
         // ✅ Auto role assignment:
         // If rank is senior → role_id=3 + force Onboard
         const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
 
-        if (role_id_to_insert === 3) {
+        if (role_id_to_insert === 3 && ship_id) {
           status = "Onboard";
         }
 
@@ -1423,8 +1439,8 @@ export const importUsersFromExcel = [
               rank ?? null,
               ship_id,
               status,
-              embarkation_date ?? null,
-              disembarkation_date ?? null,
+              emb ?? null,
+              dis ?? null,
               embarkation_port ?? null,
               disembarkation_port ?? null,
               role_id_to_insert,
@@ -1441,8 +1457,8 @@ export const importUsersFromExcel = [
               company_id,
               old_ship_id: oldShip,
               new_ship_id: newShip,
-              embarkation_date,
-              disembarkation_date,
+              embarkation_date: emb,
+              disembarkation_date: dis,
               embarkation_port,
               disembarkation_port,
               changed_by_user_id: req.user.user_id,
@@ -1463,8 +1479,8 @@ export const importUsersFromExcel = [
 
         const dateFields = [
           ["date_of_birth", date_of_birth],
-          ["embarkation_date", embarkation_date],
-          ["disembarkation_date", disembarkation_date],
+          ["embarkation_date", emb],
+          ["disembarkation_date", dis],
           ["end_of_contract", end_of_contract],
           ["passport_issue_date", passport_issue_date],
           ["passport_expiry_date", passport_expiry_date],
@@ -1522,8 +1538,8 @@ export const importUsersFromExcel = [
               rank ?? null,
               null,
 
-              embarkation_date ?? null,
-              disembarkation_date ?? null,
+              emb ?? null,
+              dis ?? null,
               status,
 
               username,
@@ -1563,8 +1579,8 @@ export const importUsersFromExcel = [
             company_id,
             old_ship_id: null,
             new_ship_id: ship_id,
-            embarkation_date,
-            disembarkation_date,
+            embarkation_date: emb,
+            disembarkation_date: dis,
             embarkation_port,
             disembarkation_port,
             changed_by_user_id: req.user.user_id,
