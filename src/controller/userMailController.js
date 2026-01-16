@@ -62,16 +62,28 @@ const fetchCompanyName = async (company_id) => {
   return rows[0]?.company_name || null;
 };
 
-const logMailEvent = async ({ actor_user_id, action, meta }) => {
-  // If you already log activity in activity_logs, do it here
-  // Adjust columns to your table
-  await db.query(
-    `
-    INSERT INTO activity_logs (user_id, action, meta, created_at)
-    VALUES ($1, $2, $3, NOW())
-    `,
-    [actor_user_id, action, JSON.stringify(meta || {})]
-  );
+const logMailEvent = async ({ actor_user_id, activity_type, payload }) => {
+  try {
+    await db.query(
+      `
+      INSERT INTO activity_logs
+        (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at, created_at)
+      VALUES
+        ($1, $2, $3, $4, $5, NULL, $6, NOW(), NOW())
+      `,
+      [
+        actor_user_id,
+        req.user?.username || null,
+        req.user?.company_id || null,
+        req.user?.ship_id || null,
+        activity_type,
+        JSON.stringify(payload || {}),
+      ]
+    );
+  } catch (e) {
+    // don't break mail if logging fails
+    console.warn("activity_logs insert failed:", e?.message || e);
+  }
 };
 
 // POST /api/users/send-credentials
@@ -117,8 +129,8 @@ export const sendCredentialsSingle = async (req, res) => {
 
     await logMailEvent({
       actor_user_id: requester.user_id,
-      action: "SEND_CREDENTIALS_SINGLE",
-      meta: { target_user_id: target.user_id, to: email },
+      activity_type: "SEND_CREDENTIALS_SINGLE",
+      payload: { target_user_id: target.user_id, to: email },
     });
 
     return res.json({ message: "Mail sent successfully." });
@@ -185,9 +197,10 @@ export const sendCredentialsBulk = async (req, res) => {
 
     await logMailEvent({
       actor_user_id: requester.user_id,
-      action: "SEND_CREDENTIALS_BULK",
-      meta: { count: rowsWithPlain.length, to: email, requested_ids: user_ids },
+      activity_type: "SEND_CREDENTIALS_BULK",
+      payload: { count: rowsWithPlain.length, to: email, requested_ids: user_ids },
     });
+
 
     return res.json({
       message: "Bulk mail sent successfully.",
