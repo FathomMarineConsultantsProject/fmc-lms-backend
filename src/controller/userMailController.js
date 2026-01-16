@@ -35,7 +35,6 @@ const fetchUserForCredentials = async (user_id) => {
       u.role_id,
       u.username,
       u.password_enc as password_encrypted,
-      u.employee_no,
       u.full_name,
       u.rank
     FROM users u
@@ -69,7 +68,7 @@ export const sendCredentialsSingle = async (req, res) => {
   try {
     const requester = req.user;
     const role = Number(requester.role_id);
-    if (![2, 3].includes(role)) {
+    if (![1, 2, 3].includes(role)) {
       return res.status(403).json({ error: "Not allowed." });
     }
 
@@ -145,7 +144,6 @@ export const sendCredentialsBulk = async (req, res) => {
         u.role_id,
         u.username,
         u.password_enc as password_encrypted,
-        u.employee_no,
         u.full_name,
         u.rank
       FROM users u
