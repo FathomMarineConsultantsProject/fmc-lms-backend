@@ -6,7 +6,7 @@ import {
 } from "../utils/credentialTemplates.js";
 
 // TODO: import your existing decrypt helper from wherever you have it
-import { decryptPassword } from "../utils/cryptoPasswords.js"; 
+import { decryptPassword } from "../utils/cryptoPasswords.js";
 // If you don't have this file, create it and move decrypt logic there.
 
 // Prevent sending creds for these roles
@@ -14,15 +14,26 @@ const DISALLOWED_TARGET_ROLES = new Set([1, 2, 3]); // Only crew should be maile
 
 const assertCanAccessUser = (requester, targetUser) => {
   const role = Number(requester.role_id);
-  if (role === 1) return true; // if you ever allow superadmin
-  if (role === 2) return Number(targetUser.company_id) === Number(requester.company_id);
-  if (role === 3)
-    return (
-      Number(targetUser.company_id) === Number(requester.company_id) &&
-      Number(targetUser.ship_id) === Number(requester.ship_id)
-    );
+
+  if (role === 1) return true;
+
+  const reqCompany = requester.company_id ? String(requester.company_id) : null;
+  const tgtCompany = targetUser.company_id ? String(targetUser.company_id) : null;
+
+  if (role === 2) {
+    return reqCompany && tgtCompany && reqCompany === tgtCompany;
+  }
+
+  if (role === 3) {
+    const reqShip = requester.ship_id != null ? Number(requester.ship_id) : null;
+    const tgtShip = targetUser.ship_id != null ? Number(targetUser.ship_id) : null;
+
+    return reqCompany && tgtCompany && reqCompany === tgtCompany && reqShip != null && tgtShip != null && reqShip === tgtShip;
+  }
+
   return false;
 };
+
 
 const fetchUserForCredentials = async (user_id) => {
   // Adjust fields to match your schema
@@ -122,8 +133,8 @@ export const sendCredentialsBulk = async (req, res) => {
   try {
     const requester = req.user;
     const role = Number(requester.role_id);
-    if (role !== 2) {
-      return res.status(403).json({ error: "Only company admin can send bulk credentials." });
+    if (![1, 2].includes(role)) {
+      return res.status(403).json({ error: "Only admins can send bulk credentials." });
     }
 
     const { user_ids, email } = req.body;
@@ -154,7 +165,7 @@ export const sendCredentialsBulk = async (req, res) => {
 
     // Filter to same company + allowed role
     const allowed = rows
-      .filter((u) => Number(u.company_id) === Number(requester.company_id))
+      .filter((u) => (role === 1 ? true : String(u.company_id) === String(requester.company_id)))
       .filter((u) => !DISALLOWED_TARGET_ROLES.has(Number(u.role_id)))
       .filter((u) => u.password_encrypted);
 
