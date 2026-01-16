@@ -12,8 +12,7 @@ import { router as incidentRoutes } from './routes/incidentRoutes.js';
 import { router as certificateRoutes } from './routes/certificateRoutes.js';
 import { router as assessmentRoutes } from './routes/assessmentRoutes.js';
 import { router as activityRoutes } from './routes/activityRoutes.js';
-
-import mailTestRoutes from "./routes/mailTestRoutes.js";
+import { mailTestRoutes } from "./routes/mailTestRoutes.js";
 
 
 const app = express();
@@ -38,6 +37,10 @@ app.use('/incidents', incidentRoutes);
 app.use('/certificates', certificateRoutes);
 app.use('/assessments', assessmentRoutes);
 app.use('/activity', activityRoutes);
+
+// testing
+app.use("/api/mail", mailTestRoutes);
+
 
 export default app; // vercel important
 
