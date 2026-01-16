@@ -34,7 +34,7 @@ const fetchUserForCredentials = async (user_id) => {
       u.ship_id,
       u.role_id,
       u.username,
-      u.password as password_encrypted,
+      u.password_enc as password_encrypted,
       u.employee_no,
       u.full_name,
       u.rank_name
@@ -144,7 +144,7 @@ export const sendCredentialsBulk = async (req, res) => {
         u.ship_id,
         u.role_id,
         u.username,
-        u.password as password_encrypted,
+        u.password_enc as password_encrypted,
         u.employee_no,
         u.full_name,
         u.rank_name
@@ -190,3 +190,6 @@ export const sendCredentialsBulk = async (req, res) => {
     return res.status(500).json({ error: "Failed to send bulk mail." });
   }
 };
+
+
+

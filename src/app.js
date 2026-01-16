@@ -12,7 +12,8 @@ import { router as incidentRoutes } from './routes/incidentRoutes.js';
 import { router as certificateRoutes } from './routes/certificateRoutes.js';
 import { router as assessmentRoutes } from './routes/assessmentRoutes.js';
 import { router as activityRoutes } from './routes/activityRoutes.js';
-import { mailTestRoutes } from "./routes/mailTestRoutes.js";
+import mailTestRoutes from "./routes/mailTestRoutes.js";
+
 
 
 const app = express();
