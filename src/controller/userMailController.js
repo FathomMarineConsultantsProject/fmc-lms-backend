@@ -37,7 +37,7 @@ const fetchUserForCredentials = async (user_id) => {
       u.password_enc as password_encrypted,
       u.employee_no,
       u.full_name,
-      u.rank_name
+      u.rank
     FROM users u
     WHERE u.user_id = $1
     `,
@@ -147,7 +147,7 @@ export const sendCredentialsBulk = async (req, res) => {
         u.password_enc as password_encrypted,
         u.employee_no,
         u.full_name,
-        u.rank_name
+        u.rank
       FROM users u
       WHERE u.user_id = ANY($1::int[])
       `,
