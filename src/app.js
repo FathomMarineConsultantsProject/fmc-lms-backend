@@ -13,6 +13,7 @@ import { router as certificateRoutes } from './routes/certificateRoutes.js';
 import { router as assessmentRoutes } from './routes/assessmentRoutes.js';
 import { router as activityRoutes } from './routes/activityRoutes.js';
 import mailTestRoutes from "./routes/mailTestRoutes.js";
+import userMailRoutes from "./routes/userMailRoutes.js";
 
 
 
@@ -38,6 +39,8 @@ app.use('/incidents', incidentRoutes);
 app.use('/certificates', certificateRoutes);
 app.use('/assessments', assessmentRoutes);
 app.use('/activity', activityRoutes);
+// actual credential mail APIs
+app.use("/api/users", userMailRoutes);
 
 // testing
 app.use("/api/mail", mailTestRoutes);
