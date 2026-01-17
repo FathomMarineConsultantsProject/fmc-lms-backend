@@ -34,20 +34,21 @@ const assertCanAccessUser = (requester, targetUser) => {
   return false;
 };
 
-
 const fetchUserForCredentials = async (user_id) => {
-  // Adjust fields to match your schema
   const { rows } = await db.query(
     `
     SELECT 
       u.user_id,
+      u.seafarer_id,
+      u.seafarer_id,     -- ✅ for template column
       u.company_id,
       u.ship_id,
       u.role_id,
       u.username,
-      u.password_enc as password_encrypted,
+      u.password_enc,
       u.full_name,
-      u.rank
+      u.rank,
+      u.rank AS rank_name               -- ✅ for template column
     FROM users u
     WHERE u.user_id = $1
     `,
@@ -160,18 +161,21 @@ export const sendCredentialsBulk = async (req, res) => {
     // Fetch users in one query
     const { rows } = await db.query(
       `
-      SELECT 
-        u.user_id,
-        u.company_id,
-        u.ship_id,
-        u.role_id,
-        u.username,
-        u.password_enc as password_encrypted,
-        u.full_name,
-        u.rank
-      FROM users u
-      WHERE u.user_id = ANY($1::int[])
-      `,
+  SELECT 
+    u.user_id,
+    u.seafarer_id,
+    u.seafarer_id,      -- ✅ for template
+    u.company_id,
+    u.ship_id,
+    u.role_id,
+    u.username,
+    u.password_enc AS password_encrypted,
+    u.full_name,
+    u.rank,
+    u.rank                -- ✅ for template
+  FROM users u
+  WHERE u.user_id = ANY($1::int[])
+  `,
       [user_ids]
     );
 
