@@ -39,13 +39,12 @@ const fetchUserForCredentials = async (user_id) => {
     `
     SELECT 
       u.user_id,
-      u.seafarer_id,
       u.seafarer_id,     -- ✅ for template column
       u.company_id,
       u.ship_id,
       u.role_id,
       u.username,
-      u.password_enc,
+      u.password_enc as password_encrypted,
       u.full_name,
       u.rank,
       u.rank AS rank_name               -- ✅ for template column
@@ -163,7 +162,6 @@ export const sendCredentialsBulk = async (req, res) => {
       `
   SELECT 
     u.user_id,
-    u.seafarer_id,
     u.seafarer_id,      -- ✅ for template
     u.company_id,
     u.ship_id,
