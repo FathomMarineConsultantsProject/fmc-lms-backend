@@ -60,8 +60,8 @@ const tableHtml = (rowsHtml) => `
   <div style="margin-top:10px;">
     <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:12px;border:1px solid #E3ECF3;">
       <thead>
-        <tr style="background:${brand.secondary};color:white;">
-          <th style="text-align:left;padding:10px 12px;font-size:12px;">Employee No.</th>
+          <tr style="background:${brand.secondary};color:white;">
+          <th style="text-align:left;padding:10px 12px;font-size:12px;">Seafarer ID</th>
           <th style="text-align:left;padding:10px 12px;font-size:12px;">Rank</th>
           <th style="text-align:left;padding:10px 12px;font-size:12px;">Name</th>
           <th style="text-align:left;padding:10px 12px;font-size:12px;">User ID</th>
