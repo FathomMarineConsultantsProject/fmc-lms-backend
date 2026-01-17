@@ -23,11 +23,10 @@ const wrap = ({ title, contentHtml }) => {
     <div style="max-width:760px;margin:0 auto;padding:24px;">
       
       <div style="background:${brand.primary};border-radius:14px 14px 0 0;padding:18px 20px;display:flex;align-items:center;gap:12px;">
-        ${
-          logoUrl
-            ? `<img src="${escapeHtml(logoUrl)}" alt="Fathom Marine" style="height:34px;display:block;border-radius:6px;" />`
-            : `<div style="width:34px;height:34px;border-radius:8px;background:${brand.accent};display:flex;align-items:center;justify-content:center;color:white;font-weight:700;">FM</div>`
-        }
+        ${logoUrl
+      ? `<img src="${escapeHtml(logoUrl)}" alt="Fathom Marine" style="height:34px;display:block;border-radius:6px;" />`
+      : `<div style="width:34px;height:34px;border-radius:8px;background:${brand.accent};display:flex;align-items:center;justify-content:center;color:white;font-weight:700;">FM</div>`
+    }
         <div style="color:white;">
           <div style="font-size:16px;font-weight:700;letter-spacing:0.3px;">Fathom Marine</div>
           <div style="font-size:12px;opacity:0.85;">Credential Delivery</div>
@@ -77,13 +76,28 @@ const tableHtml = (rowsHtml) => `
 
 const rowHtml = (r) => `
   <tr>
-    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">${escapeHtml(r.employee_no)}</td>
-    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">${escapeHtml(r.rank_name)}</td>
-    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">${escapeHtml(r.full_name)}</td>
-    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;font-weight:700;color:${brand.primary};">${escapeHtml(r.username)}</td>
-    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;font-weight:700;">${escapeHtml(r.plain_password)}</td>
+    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">
+      ${escapeHtml(r.seafarer_id)}
+    </td>
+
+    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">
+      ${escapeHtml(r.rank)}
+    </td>
+
+    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;">
+      ${escapeHtml(r.full_name)}
+    </td>
+
+    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;font-weight:700;color:${brand.primary};">
+      ${escapeHtml(r.username)}
+    </td>
+
+    <td style="padding:10px 12px;border-top:1px solid #E3ECF3;font-size:13px;font-weight:700;">
+      ${escapeHtml(r.plain_password)}
+    </td>
   </tr>
 `;
+;
 
 export const buildSingleCredentialEmail = ({ companyName, row }) => {
   const subject = `Fathom Marine | Login Credentials`;
