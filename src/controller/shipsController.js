@@ -8,46 +8,127 @@ const ROLE_CREW = 4;
 
 const canWriteShips = (roleId) => roleId === ROLE_SUPERADMIN || roleId === ROLE_ADMIN;
 
+const isUuid = (v) =>
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
+const parsePositiveInt = (v, def) => {
+  const n = Number.parseInt(String(v ?? ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+
 export const getAllShips = async (req, res) => {
   try {
-    const { role_id, company_id, ship_id } = req.user;
-    const { company_id: queryCompanyId } = req.query;
+    const roleId = Number(req.user?.role_id);
+    const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
+    const myShipId = req.user?.ship_id != null ? Number(req.user.ship_id) : null;
 
-    // ✅ Role 1 (SuperAdmin)
-    if (role_id === ROLE_SUPERADMIN) {
-      // Optional filter by company_id
-      if (queryCompanyId) {
-        const { rows } = await db.query(
-          'SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id',
-          [queryCompanyId]
-        );
-        return res.json(rows);
-      }
+    // query params
+    const queryCompanyIdRaw = req.query?.company_id;
+    const qRaw = req.query?.q;
+    const includeCounts = String(req.query?.include_counts || "").toLowerCase() === "true";
 
-      const { rows } = await db.query('SELECT * FROM ships ORDER BY ship_id');
-      return res.json(rows);
-    }
+    const page = parsePositiveInt(req.query?.page, 1);
+    const limit = Math.min(parsePositiveInt(req.query?.limit, 200), 500); // cap
+    const offset = (page - 1) * limit;
 
-    // ✅ Role 2 (Admin) → only their company
-    if (role_id === ROLE_ADMIN) {
+    // ---------------- Role 3/4: only their ship ----------------
+    if (roleId === ROLE_SUBADMIN || roleId === ROLE_CREW) {
+      if (!myShipId) return res.json({ page: 1, limit, total: 0, rows: [] });
+
       const { rows } = await db.query(
-        'SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id',
-        [company_id]
+        `SELECT * FROM ships WHERE ship_id = $1 ORDER BY ship_id`,
+        [myShipId]
       );
-      return res.json(rows);
+
+      return res.json({ page: 1, limit, total: rows.length, rows });
     }
 
-    // ✅ Role 3 / 4 → only their ship
-    if (!ship_id) return res.json([]);
-    const { rows } = await db.query(
-      'SELECT * FROM ships WHERE ship_id = $1',
-      [ship_id]
-    );
-    return res.json(rows);
+    // ---------------- Role 1/2: list ships (with filters) ----------------
+    const where = [];
+    const params = [];
+    let p = 1;
 
+    // company scope
+    if (roleId === ROLE_ADMIN) {
+      // role2 is forced to their own company always
+      if (!myCompanyId) return res.json({ page, limit, total: 0, rows: [] });
+      where.push(`s.company_id = $${p++}`);
+      params.push(myCompanyId);
+    } else if (roleId === ROLE_SUPERADMIN) {
+      // superadmin can optionally filter by company_id
+      if (queryCompanyIdRaw != null && String(queryCompanyIdRaw).trim() !== "") {
+        const queryCompanyId = String(queryCompanyIdRaw).trim();
+        if (!isUuid(queryCompanyId)) {
+          return res.status(400).json({ error: "company_id must be a valid UUID" });
+        }
+        where.push(`s.company_id = $${p++}`);
+        params.push(queryCompanyId);
+      }
+    } else {
+      // unknown role
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // search filter
+    const q = qRaw != null ? String(qRaw).trim() : "";
+    if (q) {
+      where.push(
+        `(s.ship_name ILIKE $${p} OR s.imo_number ILIKE $${p})`
+      );
+      params.push(`%${q}%`);
+      p++;
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    // ---- optional: include crew counts per ship ----
+    // Note: this uses users table; status assumed Onboard/Offboard.
+    // If you use Active/Paused, change the CASE conditions accordingly.
+    const selectSql = includeCounts
+      ? `
+        SELECT
+          s.*,
+          COUNT(u.user_id) FILTER (WHERE u.user_id IS NOT NULL) AS crew_total,
+          COUNT(u.user_id) FILTER (WHERE lower(u.status) = 'onboard') AS crew_onboard,
+          COUNT(u.user_id) FILTER (WHERE lower(u.status) = 'offboard') AS crew_offboard
+        FROM ships s
+        LEFT JOIN users u
+          ON u.ship_id = s.ship_id
+      `
+      : `
+        SELECT s.*
+        FROM ships s
+      `;
+
+    const groupSql = includeCounts ? `GROUP BY s.ship_id` : ``;
+
+    // total count for pagination (distinct ships)
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM ships s
+       ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.total ?? 0;
+
+    // data query
+    const dataParams = [...params, limit, offset];
+    const { rows } = await db.query(
+      `
+      ${selectSql}
+      ${whereSql}
+      ${groupSql}
+      ORDER BY s.ship_id
+      LIMIT $${p++} OFFSET $${p++}
+      `,
+      dataParams
+    );
+
+    return res.json({ page, limit, total, rows });
   } catch (err) {
-    console.error('Error getting ships:', err);
-    res.status(500).json({ error: 'Failed to fetch ships' });
+    console.error("Error getting ships:", err);
+    return res.status(500).json({ error: "Failed to fetch ships" });
   }
 };
 
@@ -282,4 +363,3 @@ export const getShipsByCompanyId = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch ships" });
   }
 };
-
