@@ -475,13 +475,11 @@ export const getUsersByShipId = async (req, res) => {
 
     // scope enforcement
     if (role === 2) {
-      // role 2 must match company
       if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
         return res.status(403).json({ error: "Forbidden (company scope)" });
       }
     }
     if (role === 3) {
-      // role 3 must match company AND ship
       if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
         return res.status(403).json({ error: "Forbidden (company scope)" });
       }
@@ -490,52 +488,132 @@ export const getUsersByShipId = async (req, res) => {
       }
     }
 
-    // ✅ Only pick the fields you want (NO password_hash, NO password_enc, NO reset tokens, etc.)
+    // ------------------ ✅ Query Params ------------------
+    const q = String(req.query.q ?? "").trim();
+    const rank = String(req.query.rank ?? "").trim();
+    const status = String(req.query.status ?? "").trim();
+    const role_id_q = req.query.role_id != null ? Number(req.query.role_id) : null;
+
+    const sort = String(req.query.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
+    const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+
+    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? "100"), 10) || 100));
+    const offset = (page - 1) * limit;
+
+    const where = [`u.ship_id = $1`];
+    const params = [ship_id];
+    let idx = 2;
+
+    // q search: full_name / seafarer_id / username
+    if (q) {
+      where.push(`(
+        u.full_name ILIKE $${idx}
+        OR u.seafarer_id ILIKE $${idx}
+        OR u.username ILIKE $${idx}
+      )`);
+      params.push(`%${q}%`);
+      idx++;
+    }
+
+    // rank filter (partial match to be friendly)
+    if (rank) {
+      where.push(`u.rank ILIKE $${idx}`);
+      params.push(`%${rank}%`);
+      idx++;
+    }
+
+    // status filter (Onboard/Offboard)
+    if (status) {
+      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${idx})`);
+      params.push(status);
+      idx++;
+    }
+
+    // role_id filter
+    if (Number.isFinite(role_id_q)) {
+      where.push(`u.role_id = $${idx}`);
+      params.push(role_id_q);
+      idx++;
+    }
+
+    // Sort mapping (avoid SQL injection by whitelisting)
+    const sortColumn =
+      sort === "name" ? "u.full_name" :
+      sort === "created_at" ? "u.created_at" :
+      "u.user_id"; // default stable (we'll rank-sort in JS below if you want)
+
+    // total count (for pagination UI)
+    const countRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM users u
+       WHERE ${where.join(" AND ")}`,
+      params
+    );
+    const total = countRes.rows[0]?.total ?? 0;
+
+    // data query
+    const dataParams = [...params, limit, offset];
     const { rows } = await db.query(
       `SELECT
-         user_id,
-         seafarer_id,
-         full_name,
-         rank,
-         trip,
-         embarkation_date,
-         disembarkation_date,
-         status,
-         username,
-         ship_id,
-         company_id,
-         created_at,
-         updated_at,
-         role_id,
-         sex,
-         date_of_birth,
-         place_of_birth,
-         nationality,
-         embarkation_port,
-         disembarkation_port
-       FROM users
-       WHERE ship_id = $1
-       ORDER BY user_id`,
-      [ship_id]
+         u.user_id,
+         u.seafarer_id,
+         u.full_name,
+         u.rank,
+         u.trip,
+         u.embarkation_date,
+         u.disembarkation_date,
+         u.status,
+         u.username,
+         u.ship_id,
+         u.company_id,
+         u.created_at,
+         u.updated_at,
+         u.role_id,
+         u.sex,
+         u.date_of_birth,
+         u.place_of_birth,
+         u.nationality,
+         u.embarkation_port,
+         u.disembarkation_port
+       FROM users u
+       WHERE ${where.join(" AND ")}
+       ORDER BY ${sortColumn} ${order}
+       LIMIT $${idx} OFFSET $${idx + 1}`,
+      dataParams
     );
 
-    // sort by rank hierarchy then name (same logic)
-    rows.sort((a, b) => {
-      const ra = rankSortValue(a.rank);
-      const rb = rankSortValue(b.rank);
-      if (ra !== rb) return ra - rb;
+    // ✅ If you want your special rank ordering, keep it here:
+    // (only makes sense when sort=rank)
+    if (sort === "rank") {
+      rows.sort((a, b) => {
+        const ra = rankSortValue(a.rank);
+        const rb = rankSortValue(b.rank);
+        if (ra !== rb) return ra - rb;
 
-      const na = String(a.full_name || "").toLowerCase();
-      const nb = String(b.full_name || "").toLowerCase();
-      return na.localeCompare(nb);
-    });
+        const na = String(a.full_name || "").toLowerCase();
+        const nb = String(b.full_name || "").toLowerCase();
+        return na.localeCompare(nb);
+      });
+    }
 
     return res.json({
       ship_id,
       ship_name: ship.ship_name || null,
       company_id: ship.company_id,
+      page,
+      limit,
+      total,
       count: rows.length,
       users: rows,
+      applied_filters: {
+        q: q || null,
+        rank: rank || null,
+        status: status || null,
+        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
+        sort,
+        order: order.toLowerCase(),
+      },
     });
   } catch (err) {
     console.error("getUsersByShipId error:", err);
@@ -1620,3 +1698,4 @@ export const importUsersFromExcel = [
     }
   },
 ];
+9
