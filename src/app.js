@@ -14,8 +14,7 @@ import { router as assessmentRoutes } from './routes/assessmentRoutes.js';
 import { router as activityRoutes } from './routes/activityRoutes.js';
 import mailTestRoutes from "./routes/mailTestRoutes.js";
 import userMailRoutes from "./routes/userMailRoutes.js";
-
-
+import userExportRoutes from "./routes/userExportRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -41,6 +40,7 @@ app.use('/assessments', assessmentRoutes);
 app.use('/activity', activityRoutes);
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
+app.use("/api/users", userExportRoutes);
 
 // testing
 app.use("/api/mail", mailTestRoutes);
