@@ -342,6 +342,7 @@ export const deleteShip = async (req, res) => {
 
 // GET /ships/company/:company_id
 // SuperAdmin only: get ships filtered by company_id
+// GET /ships/company/:company_id?page=1&limit=50&q=sea
 export const getShipsByCompanyId = async (req, res) => {
   try {
     const { role_id } = req.user;
@@ -351,13 +352,47 @@ export const getShipsByCompanyId = async (req, res) => {
 
     const companyId = String(req.params.company_id || "").trim();
     if (!companyId) return res.status(400).json({ error: "company_id is required" });
+    if (!isUuid(companyId)) return res.status(400).json({ error: "company_id must be a valid UUID" });
 
+    const q = String(req.query.q ?? "").trim();
+    const { page, limit, offset } = (() => {
+      // shipsController doesn't have your getPagination helper, so keep style similar:
+      const p = parsePositiveInt(req.query?.page, 1);
+      const l = Math.min(Math.max(parsePositiveInt(req.query?.limit, 50), 10), 100); // min10 max100
+      return { page: p, limit: l, offset: (p - 1) * l };
+    })();
+
+    const where = [`s.company_id = $1`];
+    const params = [companyId];
+    let idx = 2;
+
+    if (q) {
+      where.push(`(s.ship_name ILIKE $${idx} OR s.imo_number ILIKE $${idx})`);
+      params.push(`%${q}%`);
+      idx++;
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`;
+
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM ships s
+       ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.total ?? 0;
+
+    const dataParams = [...params, limit, offset];
     const { rows } = await db.query(
-      "SELECT * FROM ships WHERE company_id = $1 ORDER BY ship_id",
-      [companyId]
+      `SELECT s.*
+       FROM ships s
+       ${whereSql}
+       ORDER BY s.ship_id
+       LIMIT $${idx} OFFSET $${idx + 1}`,
+      dataParams
     );
 
-    return res.json(rows);
+    return res.json({ company_id: companyId, page, limit, total, count: rows.length, rows });
   } catch (err) {
     console.error("Error getting ships by company:", err);
     return res.status(500).json({ error: "Failed to fetch ships" });

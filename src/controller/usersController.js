@@ -19,8 +19,26 @@ const normalizeRank = (r) =>
     .replace(/[\/\\]/g, " ")
     .replace(/\s+/g, " ");
 
-// ================= RANK SORTING HELPERS =================
+const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
+const getPagination = (req, defaults = { page: 1, limit: 20 }) => {
+  const pageRaw = parseInt(String(req.query.page ?? defaults.page), 10);
+  const limitRaw = parseInt(String(req.query.limit ?? defaults.limit), 10);
+
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : defaults.page;
+
+  // ✅ enforce min 10, max 100 always
+  const limit = clamp(
+    Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
+    10,
+    100
+  );
+
+  const offset = (page - 1) * limit;
+  return { page, limit, offset };
+};
+ 
+// ================= RANK SORTING HELPERS =================
 // canonical rank order (lower = higher priority)
 const RANK_WEIGHT = {
   MASTER: 1,
@@ -302,59 +320,179 @@ const USER_SAFE_COLUMNS = `
 // ================= CRUD =================
 
 // GET /users
+// GET /users
 export const getAllUsers = async (req, res) => {
   try {
     const role = Number(req.user.role_id);
-    const { company_id, ship_id, user_id } = req.user;
+    const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
+    const myShipId = req.user?.ship_id != null ? Number(req.user.ship_id) : null;
+    const myUserId = req.user?.user_id;
 
-    let rows;
-
-    if (role === 1) {
-      ({ rows } = await db.query(
-        `SELECT ${USER_SAFE_COLUMNS} FROM users ORDER BY user_id`
-      ));
-    } else if (role === 2) {
-      ({ rows } = await db.query(
-        `SELECT ${USER_SAFE_COLUMNS}
-         FROM users
-         WHERE company_id = $1
-         ORDER BY user_id`,
-        [company_id]
-      ));
-    } else if (role === 3) {
-      ({ rows } = await db.query(
-        `SELECT ${USER_SAFE_COLUMNS}
-         FROM users
-         WHERE company_id = $1 AND ship_id = $2
-         ORDER BY user_id`,
-        [company_id, ship_id]
-      ));
-    } else {
-      ({ rows } = await db.query(
+    // role 4 unchanged: only self
+    if (role === 4) {
+      const { rows } = await db.query(
         `SELECT ${USER_SAFE_COLUMNS}
          FROM users
          WHERE user_id = $1`,
-        [user_id]
-      ));
+        [myUserId]
+      );
+      if (!rows.length) return res.status(404).json({ error: "User not found" });
+      return res.json(attachPlainPasswordIfAllowed(role, rows[0]));
     }
+
+    // pagination (min 10 max 100)
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
+
+    // filters
+    const q = String(req.query.q ?? "").trim();
+    const rank = String(req.query.rank ?? "").trim();
+    const status = String(req.query.status ?? "").trim();
+
+    // for superadmin/admin use:
+    const company_id_q = String(req.query.company_id ?? "").trim();
+    const ship_id_q_raw = req.query.ship_id;
+    const ship_id_q =
+      ship_id_q_raw != null && String(ship_id_q_raw).trim() !== ""
+        ? Number.parseInt(String(ship_id_q_raw), 10)
+        : null;
+
+    // sort whitelist
+    const sort = String(req.query.sort ?? "user_id").trim().toLowerCase(); // user_id | name | created_at | rank
+    const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+
+    const sortColumn =
+      sort === "name" ? "u.full_name" :
+      sort === "created_at" ? "u.created_at" :
+      "u.user_id";
+
+    // dynamic where
+    const where = [];
+    const params = [];
+    let idx = 1;
+
+    // ---- role scope enforcement ----
+    if (role === 1) {
+      // superadmin optional company filter
+      if (company_id_q) {
+        if (!isUuid(company_id_q)) {
+          return res.status(400).json({ error: "company_id must be a valid UUID" });
+        }
+        where.push(`u.company_id = $${idx++}`);
+        params.push(company_id_q);
+      }
+      // superadmin optional ship filter
+      if (Number.isFinite(ship_id_q)) {
+        where.push(`u.ship_id = $${idx++}`);
+        params.push(ship_id_q);
+      }
+    }
+
+    if (role === 2) {
+      // admin forced to own company
+      if (!myCompanyId) return res.json({ page, limit, total: 0, count: 0, users: [] });
+
+      where.push(`u.company_id = $${idx++}`);
+      params.push(myCompanyId);
+
+      // optional ship filter (must be within company implicitly)
+      if (Number.isFinite(ship_id_q)) {
+        where.push(`u.ship_id = $${idx++}`);
+        params.push(ship_id_q);
+      }
+    }
+
+    if (role === 3) {
+      // subadmin forced to own company + ship
+      if (!myCompanyId || myShipId == null) return res.json({ page, limit, total: 0, count: 0, users: [] });
+
+      where.push(`u.company_id = $${idx++}`);
+      params.push(myCompanyId);
+
+      where.push(`u.ship_id = $${idx++}`);
+      params.push(myShipId);
+    }
+
+    // ---- search filters ----
+    if (q) {
+      where.push(`(
+        u.full_name ILIKE $${idx}
+        OR u.seafarer_id ILIKE $${idx}
+        OR u.username ILIKE $${idx}
+      )`);
+      params.push(`%${q}%`);
+      idx++;
+    }
+
+    if (rank) {
+      where.push(`u.rank ILIKE $${idx++}`);
+      params.push(`%${rank}%`);
+    }
+
+    if (status) {
+      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${idx++})`);
+      params.push(status);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    // total
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM users u
+       ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.total ?? 0;
+
+    // data
+    const dataParams = [...params, limit, offset];
+    const { rows } = await db.query(
+      `SELECT ${USER_SAFE_COLUMNS}
+       FROM users u
+       ${whereSql}
+       ORDER BY ${sortColumn} ${order}
+       LIMIT $${idx} OFFSET $${idx + 1}`,
+      dataParams
+    );
 
     // attach plain_password ONLY for allowed roles
     const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
 
-    // sort by rank hierarchy then name
-    out.sort((a, b) => {
-      const ra = rankSortValue(a.rank);
-      const rb = rankSortValue(b.rank);
-      if (ra !== rb) return ra - rb;
+    // if frontend asks sort=rank, keep your JS rank ordering (within page)
+    if (sort === "rank") {
+      out.sort((a, b) => {
+        const ra = rankSortValue(a.rank);
+        const rb = rankSortValue(b.rank);
+        if (ra !== rb) return ra - rb;
 
-      return String(a.full_name || "").localeCompare(
-        String(b.full_name || ""),
-        undefined,
-        { sensitivity: "base" }
-      );
+        return String(a.full_name || "").localeCompare(
+          String(b.full_name || ""),
+          undefined,
+          { sensitivity: "base" }
+        );
+      });
+    }
+
+    return res.json({
+      page,
+      limit,
+      total,
+      count: out.length,
+      users: out,
+      applied_filters: {
+        q: q || null,
+        rank: rank || null,
+        status: status || null,
+        company_id: role === 1 ? (company_id_q || null) : (role === 2 || role === 3 ? myCompanyId : null),
+        ship_id:
+          role === 1 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
+          : role === 2 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
+          : role === 3 ? myShipId
+          : null,
+        sort,
+        order: order.toLowerCase(),
+      },
     });
-
-    return res.json(out);
   } catch (err) {
     console.error("Error getting users:", err);
     return res.status(500).json({ error: "Failed to fetch users" });
@@ -395,12 +533,10 @@ export const getUserShipHistory = async (req, res) => {
   if (Number.isNaN(id)) return res.status(400).json({ error: "user_id must be a number" });
 
   try {
-    // ✅ scope enforcement using req.user
     const role = Number(req.user.role_id);
     const myCompany = req.user.company_id ? String(req.user.company_id) : null;
     const myShip = req.user.ship_id != null ? Number(req.user.ship_id) : null;
 
-    // fetch target user (for scope checks)
     const uRes = await db.query(
       `SELECT user_id, company_id, ship_id
        FROM users
@@ -426,6 +562,19 @@ export const getUserShipHistory = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    // pagination (min 10 max 100)
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 20 });
+
+    // total count
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM user_ship_history
+       WHERE user_id = $1`,
+      [id]
+    );
+    const total = totalRes.rows[0]?.total ?? 0;
+
+    // paginated data
     const { rows } = await db.query(
       `SELECT
          h.*,
@@ -433,16 +582,25 @@ export const getUserShipHistory = async (req, res) => {
        FROM user_ship_history h
        LEFT JOIN ships s ON s.ship_id = h.ship_id
        WHERE h.user_id = $1
-       ORDER BY h.created_at DESC`,
-      [id]
+       ORDER BY h.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [id, limit, offset]
     );
 
-    return res.json(rows);
+    return res.json({
+      user_id: id,
+      page,
+      limit,
+      total,
+      count: rows.length,
+      history: rows,
+    });
   } catch (err) {
     console.error("getUserShipHistory error:", err);
     return res.status(500).json({ error: "Failed to fetch ship history" });
   }
 };
+
 
 // GET /users/by-ship/:ship_id
 // roles:
@@ -497,9 +655,7 @@ export const getUsersByShipId = async (req, res) => {
     const sort = String(req.query.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
     const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
 
-    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? "100"), 10) || 100));
-    const offset = (page - 1) * limit;
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 100 });
 
     const where = [`u.ship_id = $1`];
     const params = [ship_id];
@@ -1698,4 +1854,3 @@ export const importUsersFromExcel = [
     }
   },
 ];
-9
