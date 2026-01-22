@@ -155,3 +155,5 @@ router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
 
 router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
 
+// in userRoutes.js
+router.post("/users/search", requireAuth, allowRoles(1,2,3), searchUsers);
