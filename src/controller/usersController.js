@@ -1290,6 +1290,222 @@ export const bulkUpdateUserStatus = async (req, res) => {
   }
 };
 
+// POST /users/search
+export const searchUsers = async (req, res) => {
+  try {
+    const role = Number(req.user.role_id);
+
+    // incoming filters from body
+    const body = req.body || {};
+    const q = String(body.q ?? "").trim();
+    const rank = String(body.rank ?? "").trim();
+    const status = String(body.status ?? "").trim();
+    const role_id_q = body.role_id != null ? Number(body.role_id) : null;
+
+    // sorting
+    const sort = String(body.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
+    const order =
+      String(body.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+
+    // pagination (min10 max100)
+    const pageRaw = parseInt(String(body.page ?? "1"), 10);
+    const limitRaw = parseInt(String(body.limit ?? "50"), 10);
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const limit = Math.min(
+      100,
+      Math.max(10, Number.isFinite(limitRaw) ? limitRaw : 50)
+    );
+    const offset = (page - 1) * limit;
+
+    // company/ship from body (may be ignored depending on role scope)
+    const requestedCompanyId =
+      body.company_id != null && String(body.company_id).trim() !== ""
+        ? String(body.company_id).trim()
+        : null;
+
+    const requestedShipId =
+      body.ship_id != null && String(body.ship_id).trim() !== ""
+        ? Number.parseInt(String(body.ship_id), 10)
+        : null;
+
+    // VALIDATION (only validate when provided)
+    // company_id must be UUID (only meaningful for role 1, but validate anyway if sent)
+    if (requestedCompanyId && !isUuid(requestedCompanyId)) {
+      return res.status(400).json({ error: "company_id must be a valid UUID" });
+    }
+
+    // ship_id must be a valid integer when provided
+    if (body.ship_id != null && String(body.ship_id).trim() !== "") {
+      if (!Number.isInteger(requestedShipId) || requestedShipId <= 0) {
+        return res.status(400).json({ error: "ship_id must be a positive integer" });
+      }
+    }
+
+    // role_id filter must be valid integer if provided
+    if (body.role_id != null && !Number.isFinite(role_id_q)) {
+      return res.status(400).json({ error: "role_id must be a number" });
+    }
+
+    // status validation (optional but nice)
+    if (status) {
+      const s = String(status).trim().toLowerCase();
+      if (s !== "onboard" && s !== "offboard") {
+        return res
+          .status(400)
+          .json({ error: 'status must be either "Onboard" or "Offboard"' });
+      }
+    }
+
+    // ---------------- WHERE builder ----------------
+    const where = [];
+    const params = [];
+    let p = 1;
+
+    // role scope enforcement
+    if (role === 1) {
+      // superadmin: optional company filter
+      if (requestedCompanyId) {
+        where.push(`u.company_id = $${p++}`);
+        params.push(requestedCompanyId);
+      }
+      // optional ship filter
+      if (Number.isFinite(requestedShipId)) {
+        where.push(`u.ship_id = $${p++}`);
+        params.push(requestedShipId);
+      }
+    } else if (role === 2) {
+      // admin: forced company_id from token
+      where.push(`u.company_id = $${p++}`);
+      params.push(req.user.company_id);
+
+      // optional ship filter (must still be inside company)
+      if (Number.isFinite(requestedShipId)) {
+        where.push(`u.ship_id = $${p++}`);
+        params.push(requestedShipId);
+      }
+    } else if (role === 3) {
+      // subadmin: forced company + ship
+      where.push(`u.company_id = $${p++}`);
+      params.push(req.user.company_id);
+
+      where.push(`u.ship_id = $${p++}`);
+      params.push(req.user.ship_id);
+    } else {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // q search
+    if (q) {
+      where.push(`(
+        u.full_name ILIKE $${p}
+        OR u.seafarer_id ILIKE $${p}
+        OR u.username ILIKE $${p}
+      )`);
+      params.push(`%${q}%`);
+      p++;
+    }
+
+    // rank filter
+    if (rank) {
+      where.push(`u.rank ILIKE $${p++}`);
+      params.push(`%${rank}%`);
+    }
+
+    // status filter
+    if (status) {
+      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${p++})`);
+      params.push(status);
+    }
+
+    // role_id filter
+    if (Number.isFinite(role_id_q)) {
+      where.push(`u.role_id = $${p++}`);
+      params.push(role_id_q);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    // whitelist sort column (avoid SQL injection)
+    const sortColumn =
+      sort === "name" ? "u.full_name" :
+      sort === "created_at" ? "u.created_at" :
+      "u.user_id";
+
+    // total count
+    const totalRes = await db.query(
+      `SELECT COUNT(*)::int AS total FROM users u ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.total ?? 0;
+
+    // data query
+    const dataParams = [...params, limit, offset];
+    const { rows } = await db.query(
+      `SELECT
+         u.user_id,
+         u.seafarer_id,
+         u.full_name,
+         u.rank,
+         u.trip,
+         u.embarkation_date,
+         u.disembarkation_date,
+         u.status,
+         u.username,
+         u.ship_id,
+         u.company_id,
+         u.created_at,
+         u.updated_at,
+         u.role_id,
+         u.sex,
+         u.date_of_birth,
+         u.place_of_birth,
+         u.nationality,
+         u.embarkation_port,
+         u.disembarkation_port
+       FROM users u
+       ${whereSql}
+       ORDER BY ${sortColumn} ${order}
+       LIMIT $${p} OFFSET $${p + 1}`,
+      dataParams
+    );
+
+    // custom rank ordering when sort=rank
+    if (sort === "rank") {
+      rows.sort((a, b) => {
+        const ra = rankSortValue(a.rank);
+        const rb = rankSortValue(b.rank);
+        if (ra !== rb) return ra - rb;
+        return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
+          sensitivity: "base",
+        });
+      });
+    }
+
+    return res.json({
+      page,
+      limit,
+      total,
+      count: rows.length,
+      users: rows,
+      applied_filters: {
+        company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
+        ship_id:
+          role === 3 ? Number(req.user.ship_id) :
+          Number.isFinite(requestedShipId) ? requestedShipId :
+          null,
+        q: q || null,
+        rank: rank || null,
+        status: status || null,
+        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
+        sort,
+        order: order.toLowerCase(),
+      },
+    });
+  } catch (err) {
+    console.error("searchUsers error:", err);
+    return res.status(500).json({ error: "Failed to search users" });
+  }
+};
 
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
