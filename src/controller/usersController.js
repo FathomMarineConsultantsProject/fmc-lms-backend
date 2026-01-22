@@ -37,7 +37,7 @@ const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 };
- 
+
 // ================= RANK SORTING HELPERS =================
 // canonical rank order (lower = higher priority)
 const RANK_WEIGHT = {
@@ -362,8 +362,8 @@ export const getAllUsers = async (req, res) => {
 
     const sortColumn =
       sort === "name" ? "u.full_name" :
-      sort === "created_at" ? "u.created_at" :
-      "u.user_id";
+        sort === "created_at" ? "u.created_at" :
+          "u.user_id";
 
     // dynamic where
     const where = [];
@@ -411,6 +411,9 @@ export const getAllUsers = async (req, res) => {
       where.push(`u.ship_id = $${idx++}`);
       params.push(myShipId);
     }
+
+    // Hide Superadmin (1) & Admin (2) from user listings
+    where.push(`u.role_id IN (3, 4)`);
 
     // ---- search filters ----
     if (q) {
@@ -486,9 +489,9 @@ export const getAllUsers = async (req, res) => {
         company_id: role === 1 ? (company_id_q || null) : (role === 2 || role === 3 ? myCompanyId : null),
         ship_id:
           role === 1 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
-          : role === 2 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
-          : role === 3 ? myShipId
-          : null,
+            : role === 2 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
+              : role === 3 ? myShipId
+                : null,
         sort,
         order: order.toLowerCase(),
       },
@@ -657,7 +660,10 @@ export const getUsersByShipId = async (req, res) => {
 
     const { page, limit, offset } = getPagination(req, { page: 1, limit: 100 });
 
-    const where = [`u.ship_id = $1`];
+    const where = [
+      `u.ship_id = $1`,
+      `u.role_id IN (3, 4)` // hide role 1 & 2
+    ];
     const params = [ship_id];
     let idx = 2;
 
@@ -696,8 +702,8 @@ export const getUsersByShipId = async (req, res) => {
     // Sort mapping (avoid SQL injection by whitelisting)
     const sortColumn =
       sort === "name" ? "u.full_name" :
-      sort === "created_at" ? "u.created_at" :
-      "u.user_id"; // default stable (we'll rank-sort in JS below if you want)
+        sort === "created_at" ? "u.created_at" :
+          "u.user_id"; // default stable (we'll rank-sort in JS below if you want)
 
     // total count (for pagination UI)
     const countRes = await db.query(
@@ -1313,7 +1319,7 @@ export const searchUsers = async (req, res) => {
     const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
     const limit = Math.min(
       100,
-      Math.max(10, Number.isFinite(limitRaw) ? limitRaw : 50)
+      Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
     );
     const offset = (page - 1) * limit;
 
@@ -1393,6 +1399,8 @@ export const searchUsers = async (req, res) => {
     } else {
       return res.status(403).json({ error: "Forbidden" });
     }
+    // Only return Subadmins & Crew
+    where.push(`u.role_id IN (3, 4)`);
 
     // q search
     if (q) {
@@ -1428,8 +1436,8 @@ export const searchUsers = async (req, res) => {
     // whitelist sort column (avoid SQL injection)
     const sortColumn =
       sort === "name" ? "u.full_name" :
-      sort === "created_at" ? "u.created_at" :
-      "u.user_id";
+        sort === "created_at" ? "u.created_at" :
+          "u.user_id";
 
     // total count
     const totalRes = await db.query(
@@ -1491,8 +1499,8 @@ export const searchUsers = async (req, res) => {
         company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
         ship_id:
           role === 3 ? Number(req.user.ship_id) :
-          Number.isFinite(requestedShipId) ? requestedShipId :
-          null,
+            Number.isFinite(requestedShipId) ? requestedShipId :
+              null,
         q: q || null,
         rank: rank || null,
         status: status || null,

@@ -5,6 +5,10 @@ import crypto from "crypto";
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
 
+const isUuid = (v) =>
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
 const isRole = (req, roleId) => Number(req.user?.role_id) === Number(roleId);
 
 const ensureRole = (req, res, allowedRoles) => {
@@ -17,6 +21,12 @@ const ensureRole = (req, res, allowedRoles) => {
 };
 
 const ensureCompanyScope = (req, res, companyId) => {
+  // ✅ validate UUID always (prevents bad queries + weird comparisons)
+  if (!isUuid(String(companyId || "").trim())) {
+    res.status(400).json({ error: "company_id must be a valid UUID" });
+    return false;
+  }
+
   if (isRole(req, ROLE_SUPERADMIN)) return true;
 
   if (!req.user?.company_id || String(req.user.company_id) !== String(companyId)) {
@@ -30,7 +40,7 @@ const ensureCompanyScope = (req, res, companyId) => {
 const hashPassword = (plain) =>
   crypto.createHash("sha256").update(String(plain)).digest("hex");
 
-// ✅ AES-256-GCM reversible encryption helpers (same format as authController/usersController)
+// ✅ AES-256-GCM reversible encryption helpers
 const getEncKey = () => {
   const b64 = process.env.PASSWORD_ENC_KEY;
   if (!b64) throw new Error("PASSWORD_ENC_KEY missing in .env");
@@ -115,7 +125,6 @@ export const getAllCompanies = async (req, res) => {
 
     // ---------------- SUPERADMIN (role 1) ----------------
     if (roleId === ROLE_SUPERADMIN) {
-      // total count
       const totalRes = await db.query(
         `
         SELECT COUNT(*)::int AS total
@@ -126,7 +135,6 @@ export const getAllCompanies = async (req, res) => {
       );
       const total = totalRes.rows[0]?.total ?? 0;
 
-      // data
       const { rows } = await db.query(
         `
         SELECT
@@ -149,7 +157,7 @@ export const getAllCompanies = async (req, res) => {
         const { admin_password_enc, ...rest } = r;
         return {
           ...rest,
-          admin_password: decryptPassword(admin_password_enc), // ✅ plain (role1 only)
+          admin_password: decryptPassword(admin_password_enc),
         };
       });
 
@@ -164,14 +172,17 @@ export const getAllCompanies = async (req, res) => {
     }
 
     // ---------------- NON-SUPERADMIN ----------------
-    // return only their company (no password)
     if (!req.user?.company_id) {
       return res.json({ page: 1, limit: 50, total: 0, count: 0, rows: [] });
     }
 
-    const { rows } = await db.query("SELECT * FROM company WHERE company_id = $1", [
-      req.user.company_id,
-    ]);
+    // ✅ validate token company_id just in case
+    const myCompanyId = String(req.user.company_id);
+    if (!isUuid(myCompanyId)) {
+      return res.status(400).json({ error: "Invalid company_id in token (must be UUID)" });
+    }
+
+    const { rows } = await db.query("SELECT * FROM company WHERE company_id = $1", [myCompanyId]);
 
     return res.json({
       page: 1,
@@ -188,10 +199,13 @@ export const getAllCompanies = async (req, res) => {
 };
 
 // -------------------- GET /companies/:id --------------------
-// role1 -> any company + admin password
-// role2+ -> only own company (NO password)
 export const getCompanyById = async (req, res) => {
-  const id = String(req.params.id);
+  const id = String(req.params.id || "").trim();
+
+  // ✅ UUID validation
+  if (!isUuid(id)) {
+    return res.status(400).json({ error: "company_id must be a valid UUID" });
+  }
 
   try {
     if (!ensureCompanyScope(req, res, id)) return;
@@ -218,17 +232,11 @@ export const getCompanyById = async (req, res) => {
 
       const row = rows[0];
       const plain = decryptPassword(row.admin_password_enc);
-
-      // remove enc from response
       delete row.admin_password_enc;
 
-      return res.json({
-        ...row,
-        admin_password: plain,
-      });
+      return res.json({ ...row, admin_password: plain });
     }
 
-    // non-superadmin: normal company fetch (no password)
     const { rows } = await db.query("SELECT * FROM company WHERE company_id = $1", [id]);
     if (!rows.length) return res.status(404).json({ error: "Company not found" });
 
@@ -258,12 +266,14 @@ export const createCompany = async (req, res) => {
     phone_no,
     email,
     username,
-    password, // plain
+    password,
   } = req.body;
 
   if (!company_name) return res.status(400).json({ error: "company_name is required" });
   if (!username || !password) {
-    return res.status(400).json({ error: "username and password are required for company admin login" });
+    return res
+      .status(400)
+      .json({ error: "username and password are required for company admin login" });
   }
 
   try {
@@ -344,7 +354,7 @@ export const createCompany = async (req, res) => {
       ...company,
       admin_user_created: true,
       admin_username: uniqueUsername,
-      admin_password: password, // optional (only for immediate response)
+      admin_password: password,
     });
   } catch (err) {
     await db.query("ROLLBACK");
@@ -355,7 +365,12 @@ export const createCompany = async (req, res) => {
 
 // -------------------- PUT /companies/:id --------------------
 export const updateCompany = async (req, res) => {
-  const id = String(req.params.id);
+  const id = String(req.params.id || "").trim();
+
+  // ✅ UUID validation
+  if (!isUuid(id)) {
+    return res.status(400).json({ error: "company_id must be a valid UUID" });
+  }
 
   if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
   if (!ensureCompanyScope(req, res, id)) return;
@@ -375,7 +390,7 @@ export const updateCompany = async (req, res) => {
     phone_no,
     email,
     username,
-    password, // plain password allowed
+    password,
   } = req.body;
 
   try {
@@ -460,9 +475,14 @@ export const updateCompany = async (req, res) => {
 
 // -------------------- DELETE /companies/:id (role1 only) --------------------
 export const deleteCompany = async (req, res) => {
-  if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
+  const id = String(req.params.id || "").trim();
 
-  const id = String(req.params.id);
+  // ✅ UUID validation
+  if (!isUuid(id)) {
+    return res.status(400).json({ error: "company_id must be a valid UUID" });
+  }
+
+  if (!ensureRole(req, res, [ROLE_SUPERADMIN])) return;
 
   try {
     await db.query("BEGIN");
