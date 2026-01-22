@@ -21,7 +21,7 @@ const normalizeRank = (r) =>
 
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
-const getPagination = (req, defaults = { page: 1, limit: 20 }) => {
+const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
   const pageRaw = parseInt(String(req.query.page ?? defaults.page), 10);
   const limitRaw = parseInt(String(req.query.limit ?? defaults.limit), 10);
 
@@ -30,7 +30,7 @@ const getPagination = (req, defaults = { page: 1, limit: 20 }) => {
   // ✅ enforce min 10, max 100 always
   const limit = clamp(
     Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
-    10,
+    50,
     100
   );
 
@@ -562,8 +562,8 @@ export const getUserShipHistory = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // pagination (min 10 max 100)
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 20 });
+    // pagination (min 50 max 100)
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
 
     // total count
     const totalRes = await db.query(

@@ -29,7 +29,8 @@ export const getAllShips = async (req, res) => {
     const includeCounts = String(req.query?.include_counts || "").toLowerCase() === "true";
 
     const page = parsePositiveInt(req.query?.page, 1);
-    const limit = Math.min(parsePositiveInt(req.query?.limit, 200), 500); // cap
+    const limitRaw = parsePositiveInt(req.query?.limit, 50);
+    const limit = Math.min(100, Math.max(50, limitRaw)); // ✅ min 50 max 100
     const offset = (page - 1) * limit;
 
     // ---------------- Role 3/4: only their ship ----------------
@@ -358,7 +359,7 @@ export const getShipsByCompanyId = async (req, res) => {
     const { page, limit, offset } = (() => {
       // shipsController doesn't have your getPagination helper, so keep style similar:
       const p = parsePositiveInt(req.query?.page, 1);
-      const l = Math.min(Math.max(parsePositiveInt(req.query?.limit, 50), 10), 100); // min10 max100
+      const l = Math.min(Math.max(parsePositiveInt(req.query?.limit, 50), 50), 100); // ✅ min50 max100
       return { page: p, limit: l, offset: (p - 1) * l };
     })();
 
