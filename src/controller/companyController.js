@@ -95,12 +95,38 @@ const makeUniqueUsername = async (base) => {
 };
 
 // -------------------- GET /companies --------------------
-// role1 -> all (with admin password)
+// role1 -> all (with admin password) + pagination
 // others -> only their company (NO password)
 export const getAllCompanies = async (req, res) => {
   try {
-    if (isRole(req, ROLE_SUPERADMIN)) {
-      // Join admin user (role_id=2, ship_id null) to decrypt password
+    const roleId = Number(req.user?.role_id);
+
+    // pagination: min 50 max 100
+    const pageRaw = Number.parseInt(String(req.query?.page ?? "1"), 10);
+    const limitRaw = Number.parseInt(String(req.query?.limit ?? "50"), 10);
+
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const limit = Math.min(100, Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50));
+    const offset = (page - 1) * limit;
+
+    // optional search
+    const q = String(req.query?.q ?? "").trim();
+    const qLike = `%${q}%`;
+
+    // ---------------- SUPERADMIN (role 1) ----------------
+    if (roleId === ROLE_SUPERADMIN) {
+      // total count
+      const totalRes = await db.query(
+        `
+        SELECT COUNT(*)::int AS total
+        FROM company c
+        WHERE ($1 = '' OR c.company_name ILIKE $2 OR c.code ILIKE $2)
+        `,
+        [q, qLike]
+      );
+      const total = totalRes.rows[0]?.total ?? 0;
+
+      // data
       const { rows } = await db.query(
         `
         SELECT
@@ -112,8 +138,11 @@ export const getAllCompanies = async (req, res) => {
           ON u.company_id = c.company_id
          AND u.role_id = 2
          AND u.ship_id IS NULL
+        WHERE ($1 = '' OR c.company_name ILIKE $2 OR c.code ILIKE $2)
         ORDER BY c.company_id
-        `
+        LIMIT $3 OFFSET $4
+        `,
+        [q, qLike, limit, offset]
       );
 
       const out = rows.map((r) => {
@@ -124,15 +153,34 @@ export const getAllCompanies = async (req, res) => {
         };
       });
 
-      return res.json(out);
+      return res.json({
+        page,
+        limit,
+        total,
+        count: out.length,
+        rows: out,
+        applied_filters: { q: q || null },
+      });
     }
 
-    if (!req.user?.company_id) return res.json([]);
+    // ---------------- NON-SUPERADMIN ----------------
+    // return only their company (no password)
+    if (!req.user?.company_id) {
+      return res.json({ page: 1, limit: 50, total: 0, count: 0, rows: [] });
+    }
 
     const { rows } = await db.query("SELECT * FROM company WHERE company_id = $1", [
       req.user.company_id,
     ]);
-    return res.json(rows);
+
+    return res.json({
+      page: 1,
+      limit: 50,
+      total: rows.length,
+      count: rows.length,
+      rows,
+      applied_filters: { q: null },
+    });
   } catch (err) {
     console.error("Error getting companies:", err);
     return res.status(500).json({ error: "Failed to fetch companies" });
