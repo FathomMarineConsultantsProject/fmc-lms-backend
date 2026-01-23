@@ -91,7 +91,7 @@ export const sendCredentialsSingle = async (req, res) => {
   try {
     const requester = req.user;
     const role = Number(requester.role_id);
-    if (![1, 2, 3].includes(role)) {
+    if (![1, 2].includes(role)) {
       return res.status(403).json({ error: "Not allowed." });
     }
 
