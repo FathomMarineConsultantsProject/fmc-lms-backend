@@ -10,7 +10,7 @@ import { decryptPassword } from "../utils/cryptoPasswords.js";
 // If you don't have this file, create it and move decrypt logic there.
 
 // Prevent sending creds for these roles
-const DISALLOWED_TARGET_ROLES = new Set([1, 2, 3]); // Only crew should be mailed typically (role 4)
+const DISALLOWED_TARGET_ROLES = new Set([1, 2]); // allow 3 & 4
 
 const assertCanAccessUser = (requester, targetUser) => {
   const role = Number(requester.role_id);
@@ -62,7 +62,7 @@ const fetchCompanyName = async (company_id) => {
   return rows[0]?.company_name || null;
 };
 
-const logMailEvent = async ({ actor_user_id, activity_type, payload }) => {
+const logMailEvent = async ({ requester, actor_user_id, activity_type, payload }) => {
   try {
     await db.query(
       `
@@ -73,18 +73,18 @@ const logMailEvent = async ({ actor_user_id, activity_type, payload }) => {
       `,
       [
         actor_user_id,
-        req.user?.username || null,
-        req.user?.company_id || null,
-        req.user?.ship_id || null,
+        requester?.username || null,
+        requester?.company_id || null,
+        requester?.ship_id || null,
         activity_type,
         JSON.stringify(payload || {}),
       ]
     );
   } catch (e) {
-    // don't break mail if logging fails
     console.warn("activity_logs insert failed:", e?.message || e);
   }
 };
+
 
 // POST /api/users/send-credentials
 export const sendCredentialsSingle = async (req, res) => {
@@ -128,6 +128,7 @@ export const sendCredentialsSingle = async (req, res) => {
     await sendEmail({ to: email, subject, html });
 
     await logMailEvent({
+      requester,
       actor_user_id: requester.user_id,
       activity_type: "SEND_CREDENTIALS_SINGLE",
       payload: { target_user_id: target.user_id, to: email },
@@ -198,10 +199,12 @@ export const sendCredentialsBulk = async (req, res) => {
     await sendEmail({ to: email, subject, html });
 
     await logMailEvent({
+      requester,
       actor_user_id: requester.user_id,
       activity_type: "SEND_CREDENTIALS_BULK",
       payload: { count: rowsWithPlain.length, to: email, requested_ids: user_ids },
     });
+
 
 
     return res.json({
@@ -214,6 +217,5 @@ export const sendCredentialsBulk = async (req, res) => {
     return res.status(500).json({ error: "Failed to send bulk mail." });
   }
 };
-
 
 
