@@ -4,6 +4,7 @@ import {
   buildSingleCredentialEmail,
   buildBulkCredentialEmail,
 } from "../utils/credentialTemplates.js";
+import { rankSortValue } from "../utils/rankSort.js";
 
 // TODO: import your existing decrypt helper from wherever you have it
 import { decryptPassword } from "../utils/cryptoPasswords.js";
@@ -190,6 +191,17 @@ export const sendCredentialsBulk = async (req, res) => {
       ...u,
       plain_password: decryptPassword(u.password_encrypted),
     }));
+
+    // ✅ sort rank first, then name
+    rowsWithPlain.sort((a, b) => {
+      const ra = rankSortValue(a.rank);
+      const rb = rankSortValue(b.rank);
+      if (ra !== rb) return ra - rb;
+
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
+        sensitivity: "base",
+      });
+    });
 
     const { subject, html } = buildBulkCredentialEmail({
       companyName,
