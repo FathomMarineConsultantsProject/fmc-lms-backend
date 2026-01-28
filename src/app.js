@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./swagger.js";
+import { requireHttps } from "./middleware/requireHttps.js";
 
 import { router as companyRoutes } from './routes/companyRoutes.js';
 import { router as shipRoutes } from './routes/shipRoutes.js';
@@ -18,6 +19,11 @@ import userExportRoutes from "./routes/userExportRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+
+
+app.set("trust proxy", 1); // IMPORTANT for x-forwarded-* headers
+app.use(requireHttps);
 
 app.use(cors());
 app.use(express.json());
