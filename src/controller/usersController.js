@@ -18,7 +18,7 @@ const normalizeRank = (r) =>
     .replace(/[\.\-_,]/g, " ")
     .replace(/[\/\\]/g, " ")
     .replace(/\s+/g, " ");
-
+b
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
 const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
@@ -275,15 +275,49 @@ const parseIntOrNull = (v) => {
 const parseDateOrNull = (v) => {
   if (v === null || v === undefined || String(v).trim() === "") return null;
 
-  // Excel may pass Date objects or strings
+  // 1) Date object from xlsx (cellDates: true)
   if (v instanceof Date) {
-    if (Number.isNaN(v.getTime())) return NaN;
+    if (Number.isNaN(v.getTime())) return null;
     return v.toISOString().slice(0, 10);
   }
 
-  const d = new Date(String(v));
-  if (Number.isNaN(d.getTime())) return NaN;
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  // 2) Excel serial number (sometimes comes as number)
+  if (typeof v === "number" && Number.isFinite(v)) {
+    // Excel epoch: 1899-12-30
+    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  const s = String(v).trim();
+
+  // 3) DD-MM-YYYY or DD/MM/YYYY (your training sheet uses this)
+  const m1 = s.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})$/);
+  if (m1) {
+    const dd = Number(m1[1]);
+    const mm = Number(m1[2]);
+    const yyyy = Number(m1[3]);
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  // 4) YYYY-MM-DD or YYYY/MM/DD
+  const m2 = s.match(/^(\d{4})[\/-](\d{2})[\/-](\d{2})$/);
+  if (m2) {
+    const yyyy = Number(m2[1]);
+    const mm = Number(m2[2]);
+    const dd = Number(m2[3]);
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  // 5) fallback
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
 };
 
 // If role is allowed, attach plaintext password via decrypt(password_enc)
@@ -1751,7 +1785,6 @@ const pickSheetWithHeader = (wb, requestedSheetName) => {
 };
 
 // POST /users/import (roles 1/2/3)
-// POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
   async (req, res) => {
@@ -1830,6 +1863,9 @@ export const importUsersFromExcel = [
         // ✅ Fix invalid ranges coming from Excel (disembark < embark)
         let emb = embarkation_date;
         let dis = disembarkation_date;
+        // ✅ Safety: never allow NaN to flow into DB params
+        if (emb !== null && Number.isNaN(emb)) emb = null;
+        if (dis !== null && Number.isNaN(dis)) dis = null;
 
         if (emb && dis) {
           const embD = new Date(emb);
@@ -1876,6 +1912,25 @@ export const importUsersFromExcel = [
           [seafarer_id, company_id]
         );
         const existingUser = existingRes.rows[0] || null;
+
+        const dateFieldsForUpdate = [
+          ["date_of_birth", date_of_birth],
+          ["embarkation_date", emb],
+          ["disembarkation_date", dis],
+          ["end_of_contract", end_of_contract],
+          ["passport_issue_date", passport_issue_date],
+          ["passport_expiry_date", passport_expiry_date],
+          ["seaman_book_issue_date", seaman_book_issue_date],
+          ["seaman_book_expiry_date", seaman_book_expiry_date],
+        ];
+
+        // if any is NaN (shouldn't happen after fix, but guard anyway)
+        const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
+        if (badDateUpdate) {
+          results.skipped++;
+          results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
+          continue;
+        }
 
         if (existingUser) {
           // IMPORTANT: do NOT regenerate password on transfer
