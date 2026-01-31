@@ -18,7 +18,6 @@ const normalizeRank = (r) =>
     .replace(/[\.\-_,]/g, " ")
     .replace(/[\/\\]/g, " ")
     .replace(/\s+/g, " ");
-b
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
 const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
@@ -27,7 +26,7 @@ const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
 
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : defaults.page;
 
-  // ✅ enforce min 10, max 100 always
+  // ✅ enforce min 50, max 100 always
   const limit = clamp(
     Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
     50,
@@ -1812,6 +1811,37 @@ export const importUsersFromExcel = [
       const { rows } = matrixToObjects(matrix, headerRowIdx);
       if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
 
+      // ✅ PRELOAD existing users once for the whole sheet (company scope)
+      const allSids = Array.from(
+        new Set(
+          rows
+            .map((r) => {
+              const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
+              return sidCandidate != null && String(sidCandidate).trim() !== ""
+                ? String(sidCandidate).replace(/\s+/g, " ").trim()
+                : null;
+            })
+            .filter(Boolean)
+        )
+      );
+
+      const existingAllRes =
+        allSids.length > 0
+          ? await db.query(
+            `SELECT user_id, seafarer_id, ship_id
+         FROM users
+         WHERE company_id = $1 AND seafarer_id = ANY($2::text[])`,
+            [company_id, allSids]
+          )
+          : { rows: [] };
+
+      // Map seafarer_id -> existing user row
+      const existingMap = new Map();
+      for (const u of existingAllRes.rows) {
+        existingMap.set(String(u.seafarer_id), u);
+      }
+
+
       const results = {
         import_scope: { company_id, ship_id },
         detected_sheet: sheetName,
@@ -1823,119 +1853,117 @@ export const importUsersFromExcel = [
         created_credentials: [],
       };
 
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        const rowNum = headerRowIdx + 2 + i;
+      await db.query("BEGIN");
+      const CHUNK_SIZE = 50; // or 25 if big Excel
+      for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
+        const chunk = rows.slice(start, start + CHUNK_SIZE);
 
-        // Required (smart)
-        const full_name = getFullNameSmart(r);
-        const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
+        for (let i = 0; i < chunk.length; i++) {
+          const r = chunk[i];
+          const rowNum = headerRowIdx + 2 + (start + i);
 
-        const seafarer_id =
-          sidCandidate != null && String(sidCandidate).trim() !== ""
-            ? String(sidCandidate).replace(/\s+/g, " ").trim()
-            : null;
+          // Required (smart)
+          const full_name = getFullNameSmart(r);
+          const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
 
-        if (!seafarer_id || !full_name) {
-          results.skipped++;
-          results.errors.push({
-            row: rowNum,
-            error:
-              "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
-          });
-          continue;
-        }
+          const seafarer_id =
+            sidCandidate != null && String(sidCandidate).trim() !== ""
+              ? String(sidCandidate).replace(/\s+/g, " ").trim()
+              : null;
 
-        // Optional fields
-        const rank = getByAliases(r, FIELD_ALIASES.rank);
-        const sex = getByAliases(r, FIELD_ALIASES.sex);
-        const nationality = getByAliases(r, FIELD_ALIASES.nationality);
-        const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
-
-        const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
-
-        const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
-        const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
-
-        const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
-        const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
-
-        // ✅ Fix invalid ranges coming from Excel (disembark < embark)
-        let emb = embarkation_date;
-        let dis = disembarkation_date;
-        // ✅ Safety: never allow NaN to flow into DB params
-        if (emb !== null && Number.isNaN(emb)) emb = null;
-        if (dis !== null && Number.isNaN(dis)) dis = null;
-
-        if (emb && dis) {
-          const embD = new Date(emb);
-          const disD = new Date(dis);
-          if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
-            dis = null;
+          if (!seafarer_id || !full_name) {
+            results.skipped++;
+            results.errors.push({
+              row: rowNum,
+              error:
+                "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
+            });
+            continue;
           }
-        }
+
+          // Optional fields
+          const rank = getByAliases(r, FIELD_ALIASES.rank);
+          const sex = getByAliases(r, FIELD_ALIASES.sex);
+          const nationality = getByAliases(r, FIELD_ALIASES.nationality);
+          const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
+
+          const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
+
+          const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
+          const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
+
+          const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
+          const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
+
+          // ✅ Fix invalid ranges coming from Excel (disembark < embark)
+          let emb = embarkation_date;
+          let dis = disembarkation_date;
+          // ✅ Safety: never allow NaN to flow into DB params
+          if (emb !== null && Number.isNaN(emb)) emb = null;
+          if (dis !== null && Number.isNaN(dis)) dis = null;
+
+          if (emb && dis) {
+            const embD = new Date(emb);
+            const disD = new Date(dis);
+            if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
+              dis = null;
+            }
+          }
 
 
-        const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
-        const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
+          const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
+          const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
 
-        const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
-        const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
-        const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
-        const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
+          const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
+          const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
+          const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
+          const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
 
-        const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
-        const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
-        const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
+          const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
+          const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
+          const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
 
-        // Status from excel or computed
-        const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
-        let status =
-          statusFromExcel != null && String(statusFromExcel).trim() !== ""
-            ? String(statusFromExcel)
-            : computeStatusFromDates({ disembarkation_date: dis });
+          // Status from excel or computed
+          const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
+          let status =
+            statusFromExcel != null && String(statusFromExcel).trim() !== ""
+              ? String(statusFromExcel)
+              : computeStatusFromDates({ disembarkation_date: dis });
 
-        // ✅ Auto role assignment:
-        // If rank is senior → role_id=3 + force Onboard
-        const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
+          // ✅ Auto role assignment:
+          // If rank is senior → role_id=3 + force Onboard
+          const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
 
-        if (role_id_to_insert === 3 && ship_id) {
-          status = "Onboard";
-        }
+          if (role_id_to_insert === 3 && ship_id) {
+            status = "Onboard";
+          }
 
-        // ✅ If this user already exists in same company, UPDATE instead of INSERT
-        const existingRes = await db.query(
-          `SELECT user_id, ship_id, company_id
-           FROM users
-           WHERE seafarer_id = $1 AND company_id = $2
-           LIMIT 1`,
-          [seafarer_id, company_id]
-        );
-        const existingUser = existingRes.rows[0] || null;
+          // ✅ If this user already exists in same company, UPDATE instead of INSERT
+          const existingUser = existingMap.get(seafarer_id) || null;
 
-        const dateFieldsForUpdate = [
-          ["date_of_birth", date_of_birth],
-          ["embarkation_date", emb],
-          ["disembarkation_date", dis],
-          ["end_of_contract", end_of_contract],
-          ["passport_issue_date", passport_issue_date],
-          ["passport_expiry_date", passport_expiry_date],
-          ["seaman_book_issue_date", seaman_book_issue_date],
-          ["seaman_book_expiry_date", seaman_book_expiry_date],
-        ];
+          const dateFieldsForUpdate = [
+            ["date_of_birth", date_of_birth],
+            ["embarkation_date", emb],
+            ["disembarkation_date", dis],
+            ["end_of_contract", end_of_contract],
+            ["passport_issue_date", passport_issue_date],
+            ["passport_expiry_date", passport_expiry_date],
+            ["seaman_book_issue_date", seaman_book_issue_date],
+            ["seaman_book_expiry_date", seaman_book_expiry_date],
+          ];
 
-        // if any is NaN (shouldn't happen after fix, but guard anyway)
-        const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
-        if (badDateUpdate) {
-          results.skipped++;
-          results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
-          continue;
-        }
+          // if any is NaN (shouldn't happen after fix, but guard anyway)
+          const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
+          if (badDateUpdate) {
+            results.skipped++;
+            results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
+            continue;
+          }
 
-        if (existingUser) {
-          // IMPORTANT: do NOT regenerate password on transfer
-          await db.query(
-            `UPDATE users
+          if (existingUser) {
+            // IMPORTANT: do NOT regenerate password on transfer
+            await db.query(
+              `UPDATE users
              SET
                full_name = COALESCE($1, full_name),
                rank = COALESCE($2, rank),
@@ -1948,82 +1976,82 @@ export const importUsersFromExcel = [
                role_id = COALESCE($9, role_id),
                updated_at = NOW()
              WHERE user_id = $10`,
-            [
-              full_name,
-              rank ?? null,
-              ship_id,
-              status,
-              emb ?? null,
-              dis ?? null,
-              embarkation_port ?? null,
-              disembarkation_port ?? null,
-              role_id_to_insert,
-              existingUser.user_id,
-            ]
-          );
+              [
+                full_name,
+                rank ?? null,
+                ship_id,
+                status,
+                emb ?? null,
+                dis ?? null,
+                embarkation_port ?? null,
+                disembarkation_port ?? null,
+                role_id_to_insert,
+                existingUser.user_id,
+              ]
+            );
 
-          const oldShip = existingUser.ship_id ?? null;
-          const newShip = ship_id;
+            const oldShip = existingUser.ship_id ?? null;
+            const newShip = ship_id;
 
-          if (Number(oldShip) !== Number(newShip)) {
-            await handleShipHistoryChange({
-              user_id: existingUser.user_id,
-              company_id,
-              old_ship_id: oldShip,
-              new_ship_id: newShip,
-              embarkation_date: emb,
-              disembarkation_date: dis,
-              embarkation_port,
-              disembarkation_port,
-              changed_by_user_id: req.user.user_id,
-              notes: "Excel import (existing user ship update)",
-            });
+            if (Number(oldShip) !== Number(newShip)) {
+              await handleShipHistoryChange({
+                user_id: existingUser.user_id,
+                company_id,
+                old_ship_id: oldShip,
+                new_ship_id: newShip,
+                embarkation_date: emb,
+                disembarkation_date: dis,
+                embarkation_port,
+                disembarkation_port,
+                changed_by_user_id: req.user.user_id,
+                notes: "Excel import (existing user ship update)",
+              });
+            }
+
+            results.inserted++; // (counts as processed)
+            continue;
           }
 
-          results.inserted++; // (counts as processed)
-          continue;
-        }
+          // Validate numbers/dates if present
+          if (plus_months !== null && Number.isNaN(plus_months)) {
+            results.skipped++;
+            results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
+            continue;
+          }
 
-        // Validate numbers/dates if present
-        if (plus_months !== null && Number.isNaN(plus_months)) {
-          results.skipped++;
-          results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
-          continue;
-        }
+          const dateFields = [
+            ["date_of_birth", date_of_birth],
+            ["embarkation_date", emb],
+            ["disembarkation_date", dis],
+            ["end_of_contract", end_of_contract],
+            ["passport_issue_date", passport_issue_date],
+            ["passport_expiry_date", passport_expiry_date],
+            ["seaman_book_issue_date", seaman_book_issue_date],
+            ["seaman_book_expiry_date", seaman_book_expiry_date],
+          ];
+          const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
+          if (badDate) {
+            results.skipped++;
+            results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
+            continue;
+          }
 
-        const dateFields = [
-          ["date_of_birth", date_of_birth],
-          ["embarkation_date", emb],
-          ["disembarkation_date", dis],
-          ["end_of_contract", end_of_contract],
-          ["passport_issue_date", passport_issue_date],
-          ["passport_expiry_date", passport_expiry_date],
-          ["seaman_book_issue_date", seaman_book_issue_date],
-          ["seaman_book_expiry_date", seaman_book_expiry_date],
-        ];
-        const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
-        if (badDate) {
-          results.skipped++;
-          results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
-          continue;
-        }
+          // ✅ Generate credentials if onboard
+          let username = null;
+          let password = null;
+          let password_hash = null;
+          let password_enc = null;
 
-        // ✅ Generate credentials if onboard
-        let username = null;
-        let password = null;
-        let password_hash = null;
-        let password_enc = null;
+          if (isOnboard(status)) {
+            username = await createUniqueUsername(seafarer_id);
+            password = generatePassword(12);
+            password_hash = hashPassword(password);
+            password_enc = encryptPassword(password);
+          }
 
-        if (isOnboard(status)) {
-          username = await createUniqueUsername(seafarer_id);
-          password = generatePassword(12);
-          password_hash = hashPassword(password);
-          password_enc = encryptPassword(password);
-        }
-
-        try {
-          const { rows: inserted } = await db.query(
-            `INSERT INTO users
+          try {
+            const { rows: inserted } = await db.query(
+              `INSERT INTO users
               (seafarer_id, full_name, rank, trip,
                embarkation_date, disembarkation_date, status,
                username, password_hash, password_enc,
@@ -2046,88 +2074,96 @@ export const importUsersFromExcel = [
                $28,
                NOW(), NOW())
              RETURNING user_id, seafarer_id, full_name, username, status, role_id`,
-            [
-              seafarer_id,
-              full_name,
-              rank ?? null,
-              null,
+              [
+                seafarer_id,
+                full_name,
+                rank ?? null,
+                null,
 
-              emb ?? null,
-              dis ?? null,
-              status,
+                emb ?? null,
+                dis ?? null,
+                status,
 
-              username,
-              password_hash,
-              password_enc,
+                username,
+                password_hash,
+                password_enc,
 
-              ship_id,
+                ship_id,
+                company_id,
+
+                sex ?? null,
+                date_of_birth ?? null,
+                place_of_birth ?? null,
+                nationality ?? null,
+
+                embarkation_port ?? null,
+                disembarkation_port ?? null,
+                end_of_contract ?? null,
+                plus_months ?? null,
+
+                passport_number ?? null,
+                passport_issue_place ?? null,
+                passport_issue_date ?? null,
+                passport_expiry_date ?? null,
+
+                seaman_book_number ?? null,
+                seaman_book_issue_date ?? null,
+                seaman_book_expiry_date ?? null,
+
+                role_id_to_insert,
+              ]
+            );
+
+            const insertedUserId = inserted[0]?.user_id;
+
+            // ✅ update in-memory map so if same seafarer_id appears again in this sheet, it will be treated as existing
+            existingMap.set(seafarer_id, { user_id: insertedUserId, seafarer_id, ship_id });
+
+
+            await handleShipHistoryChange({
+              user_id: insertedUserId,
               company_id,
-
-              sex ?? null,
-              date_of_birth ?? null,
-              place_of_birth ?? null,
-              nationality ?? null,
-
-              embarkation_port ?? null,
-              disembarkation_port ?? null,
-              end_of_contract ?? null,
-              plus_months ?? null,
-
-              passport_number ?? null,
-              passport_issue_place ?? null,
-              passport_issue_date ?? null,
-              passport_expiry_date ?? null,
-
-              seaman_book_number ?? null,
-              seaman_book_issue_date ?? null,
-              seaman_book_expiry_date ?? null,
-
-              role_id_to_insert,
-            ]
-          );
-
-          const insertedUserId = inserted[0]?.user_id;
-
-          await handleShipHistoryChange({
-            user_id: insertedUserId,
-            company_id,
-            old_ship_id: null,
-            new_ship_id: ship_id,
-            embarkation_date: emb,
-            disembarkation_date: dis,
-            embarkation_port,
-            disembarkation_port,
-            changed_by_user_id: req.user.user_id,
-            notes: "Excel import (new user)",
-          });
+              old_ship_id: null,
+              new_ship_id: ship_id,
+              embarkation_date: emb,
+              disembarkation_date: dis,
+              embarkation_port,
+              disembarkation_port,
+              changed_by_user_id: req.user.user_id,
+              notes: "Excel import (new user)",
+            });
 
 
-          results.inserted++;
+            results.inserted++;
 
-          if (password) {
-            results.created_credentials.push({
+            if (password) {
+              results.created_credentials.push({
+                row: rowNum,
+                user_id: inserted[0].user_id,
+                seafarer_id: inserted[0].seafarer_id,
+                username: inserted[0].username,
+                password,
+                role_id: inserted[0].role_id,
+              });
+            }
+          } catch (e) {
+            results.skipped++;
+            results.errors.push({
               row: rowNum,
-              user_id: inserted[0].user_id,
-              seafarer_id: inserted[0].seafarer_id,
-              username: inserted[0].username,
-              password,
-              role_id: inserted[0].role_id,
+              error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
             });
           }
-        } catch (e) {
-          results.skipped++;
-          results.errors.push({
-            row: rowNum,
-            error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
-          });
         }
       }
+
+      await db.query("COMMIT");
 
       return res.status(201).json({
         message: "Excel import completed",
         ...results,
       });
     } catch (err) {
+      try { await db.query("ROLLBACK"); } catch { }
       console.error("importUsersFromExcel error:", err);
       return res.status(500).json({ error: "Failed to import users" });
     }
