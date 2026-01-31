@@ -39,6 +39,14 @@ const corsOptions = {
   credentials: true,
 };
 
+// ✅ CORS error handler (MUST be in app.js, not middleware file)
+app.use((err, req, res, next) => {
+  if (err && err.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "Not allowed by CORS" });
+  }
+  next(err);
+});
+
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
