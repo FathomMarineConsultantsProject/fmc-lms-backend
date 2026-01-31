@@ -28,18 +28,17 @@ const allowedOrigins = [
 app.set("trust proxy", 1); // IMPORTANT for x-forwarded-* headers
 
 // 1) CORS first (so preflight gets headers)
-app.use(cors({
+const corsOptions = {
   origin: function (origin, cb) {
-    // allow requests with no origin (Postman, server-to-server)
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); // Postman / server-to-server
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
   },
-  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
-}));
-// 2) Ensure OPTIONS is answered
+};
+
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
