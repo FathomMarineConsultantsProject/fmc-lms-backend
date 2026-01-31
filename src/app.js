@@ -19,13 +19,32 @@ import userExportRoutes from "./routes/userExportRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-
-
+const allowedOrigins = [
+  "https://fmc-admin-dashboard-frontend.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5173",
+];
 
 app.set("trust proxy", 1); // IMPORTANT for x-forwarded-* headers
-app.use(requireHttps);
 
-app.use(cors());
+// 1) CORS first (so preflight gets headers)
+app.use(cors({
+  origin: function (origin, cb) {
+    // allow requests with no origin (Postman, server-to-server)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"],
+  credentials: true,
+}));
+// 2) Ensure OPTIONS is answered
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// 3) Now enforce https for real requests
+app.use(requireHttps);
 app.use(express.json());
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.get("/openapi.json", (req, res) => res.json(swaggerSpec));

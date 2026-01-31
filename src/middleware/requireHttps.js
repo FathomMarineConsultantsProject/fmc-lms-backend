@@ -1,6 +1,11 @@
 export const requireHttps = (req, res, next) => {
-  const proto = req.headers["x-forwarded-proto"]; // set by Vercel/Proxies
-  if (proto && proto !== "https") {
+  // ✅ allow preflight always
+  if (req.method === "OPTIONS") return next();
+
+  const proto = req.headers["x-forwarded-proto"];
+  const isSecure = req.secure || proto === "https";
+
+  if (!isSecure) {
     return res.status(403).json({ error: "HTTPS required" });
   }
   return next();
