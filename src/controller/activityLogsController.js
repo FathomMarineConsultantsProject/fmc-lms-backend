@@ -276,10 +276,4 @@ export const getRecentActivityStatus = async (req, res) => {
 };
 // ==============================================================================
 // this changes to be added in dev manually later after vercel deploy undo
-// ==============================================================================
-
-
-
-
-basically the new requirment say currently when any user do any activity in game app and we take it from game app it's visible here so the requirment is if any user do any activity in the last 1 hour from when we seeing current time the log ctivity button the frontend dev has made shoukd turn green it's blue currently
-that is when any new activity gets added in activit log of any user in last 1 hour it should turn green
+// =============================================================================
