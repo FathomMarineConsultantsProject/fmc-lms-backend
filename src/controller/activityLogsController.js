@@ -212,6 +212,74 @@ export const getActivityLogs = async (req, res) => {
   }
 };
 
+export const getRecentActivityStatus = async (req, res) => {
+  try {
+    const { role_id, company_id, ship_id, user_id } = req.user;
+
+    const minutes = Math.min(Math.max(Number(req.query.minutes) || 60, 1), 24 * 60); // 1..1440
+    const sinceDate = new Date(Date.now() - minutes * 60 * 1000);
+
+    let sql = `
+      SELECT MAX(occurred_at) AS last_occurred_at
+      FROM activity_logs
+      WHERE occurred_at >= $1
+    `;
+    const values = [sinceDate];
+    let i = 2;
+
+    if (Number(role_id) === 1) {
+      // optional superadmin filters
+      const { company_id: qCompanyId, ship_id: qShipId, username: qUsername, user_id: qUserId } = req.query;
+
+      if (qCompanyId) { sql += ` AND company_id = $${i++}`; values.push(String(qCompanyId)); }
+      if (qShipId) { sql += ` AND ship_id = $${i++}`; values.push(Number(qShipId)); }
+      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
+      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
+    } else if (Number(role_id) === 2) {
+      sql += ` AND company_id = $${i++}`;
+      values.push(company_id);
+
+      const { ship_id: qShipId, username: qUsername, user_id: qUserId } = req.query;
+      if (qShipId) { sql += ` AND ship_id = $${i++}`; values.push(Number(qShipId)); }
+      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
+      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
+    } else if (Number(role_id) === 3) {
+      if (!ship_id) {
+        return res.json({ hasRecent: false, minutes, since: sinceDate.toISOString(), lastOccurredAt: null });
+      }
+      sql += ` AND ship_id = $${i++}`;
+      values.push(ship_id);
+
+      const { username: qUsername, user_id: qUserId } = req.query;
+      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
+      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
+    } else if (Number(role_id) === 4) {
+      sql += ` AND user_id = $${i++}`;
+      values.push(user_id);
+    } else {
+      return res.json({ hasRecent: false, minutes, since: sinceDate.toISOString(), lastOccurredAt: null });
+    }
+
+    const { rows } = await db.query(sql, values);
+    const lastOccurredAt = rows?.[0]?.last_occurred_at || null;
+
+    return res.json({
+      hasRecent: !!lastOccurredAt,
+      minutes,
+      since: sinceDate.toISOString(),
+      lastOccurredAt: lastOccurredAt ? new Date(lastOccurredAt).toISOString() : null,
+    });
+  } catch (err) {
+    console.error("Error getRecentActivityStatus:", err);
+    return res.status(500).json({ error: "Failed to fetch recent activity status" });
+  }
+};
 // ==============================================================================
 // this changes to be added in dev manually later after vercel deploy undo
 // ==============================================================================
+
+
+
+
+basically the new requirment say currently when any user do any activity in game app and we take it from game app it's visible here so the requirment is if any user do any activity in the last 1 hour from when we seeing current time the log ctivity button the frontend dev has made shoukd turn green it's blue currently
+that is when any new activity gets added in activit log of any user in last 1 hour it should turn green

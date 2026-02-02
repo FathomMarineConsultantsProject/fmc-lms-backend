@@ -87,6 +87,8 @@ router.post('/track', trackActivity);
  */
 router.get('/', requireAuth, getActivityLogs);
 
+// GET /activity/recent
+router.get("/recent", requireAuth, getRecentActivityStatus);
 
 
 // ==============================================================================
