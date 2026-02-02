@@ -1,7 +1,7 @@
 // src/routes/activityRoutes.js
 import { Router } from 'express';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { trackActivity, getActivityLogs } from '../controller/activityLogsController.js';
+import { trackActivity, getActivityLogs, getRecentActivityStatus, } from '../controller/activityLogsController.js';
 
 export const router = Router();
 
@@ -87,6 +87,8 @@ router.post('/track', trackActivity);
  */
 router.get('/', requireAuth, getActivityLogs);
 
+// GET /activity/recent
+router.get("/recent", requireAuth, getRecentActivityStatus);
 
 
 // ==============================================================================
