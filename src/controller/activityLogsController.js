@@ -217,7 +217,7 @@ export const getRecentActivityStatus = async (req, res) => {
     const { role_id, company_id, ship_id, user_id } = req.user;
 
     const DAYS = 31;
-    const minutes = DAYS * 24 * 60; // 44,640 minutes
+    const minutes = DAYS * 24 * 60;
     const sinceDate = new Date(Date.now() - minutes * 60 * 1000);
 
     let sql = `

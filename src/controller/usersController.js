@@ -1168,8 +1168,6 @@ RETURNING user_id;
     return res.status(500).json({ error: "Failed to sync user status" });
   }
 };
-const body = req.body ?? {};
-const recentMinutesRaw = body.recent_activity_minutes;
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
   const id = parseInt(req.params.id, 10);
