@@ -272,48 +272,55 @@ const parseIntOrNull = (v) => {
 };
 
 const parseDateOrNull = (v) => {
-  if (v === null || v === undefined || String(v).trim() === "") return null;
+  if (v === null || v === undefined) return null;
 
-  // 1) Date object from xlsx (cellDates: true)
+  // 1) Date object (xlsx cellDates: true)
   if (v instanceof Date) {
     if (Number.isNaN(v.getTime())) return null;
     return v.toISOString().slice(0, 10);
   }
 
-  // 2) Excel serial number (sometimes comes as number)
+  // 2) Excel serial number
   if (typeof v === "number" && Number.isFinite(v)) {
-    // Excel epoch: 1899-12-30
-    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const ms = Math.round((v - 25569) * 86400 * 1000); // Excel epoch
     const d = new Date(ms);
     if (Number.isNaN(d.getTime())) return null;
     return d.toISOString().slice(0, 10);
   }
 
-  const s = String(v).trim();
+  // 3) Clean strings (your file has newlines/spaces)
+  let s = String(v).trim();
+  if (!s) return null;
+  s = s.replace(/\s+/g, ""); // remove spaces/newlines like "07.12.2025 \n"
 
-  // 3) DD-MM-YYYY or DD/MM/YYYY (your training sheet uses this)
-  const m1 = s.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})$/);
-  if (m1) {
-    const dd = Number(m1[1]);
-    const mm = Number(m1[2]);
-    const yyyy = Number(m1[3]);
+  // 4) ISO formats: YYYY-MM-DD or YYYY/MM/DD
+  let m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (m) {
+    const yyyy = Number(m[1]);
+    const mm = Number(m[2]);
+    const dd = Number(m[3]);
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   }
 
-  // 4) YYYY-MM-DD or YYYY/MM/DD
-  const m2 = s.match(/^(\d{4})[\/-](\d{2})[\/-](\d{2})$/);
-  if (m2) {
-    const yyyy = Number(m2[1]);
-    const mm = Number(m2[2]);
-    const dd = Number(m2[3]);
+  // 5) DMY formats with ".", "/", "-" and 2-digit OR 4-digit year
+  // examples: 29.09.2025, 21.01.26, 07/12/2025, 6-9-2025
+  m = s.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})$/);
+  if (m) {
+    let dd = Number(m[1]);
+    let mm = Number(m[2]);
+    let yy = Number(m[3]);
+
+    // your sheets are DMY; also protects from JS MM/DD confusion
+    let yyyy = yy < 100 ? 2000 + yy : yy;
+
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   }
 
-  // 5) fallback
+  // 6) LAST fallback: only for month-name formats like "12 Sep 2025"
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
