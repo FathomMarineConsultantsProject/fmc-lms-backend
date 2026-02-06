@@ -1168,7 +1168,6 @@ RETURNING user_id;
     return res.status(500).json({ error: "Failed to sync user status" });
   }
 };
-
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -1510,6 +1509,40 @@ export const searchUsers = async (req, res) => {
       dataParams
     );
 
+    // ===================== RECENT ACTIVITY (single query for this page) =====================
+    // Business rule: green stays for 31 days (not configurable from frontend)
+    const DAYS = 31;
+    const recent_activity_minutes = DAYS * 24 * 60; // 44,640 minutes
+
+    let activityMap = new Map(); // user_id -> last_activity_at ISO
+
+    if (recent_activity_minutes && rows.length) {
+      const sinceDate = new Date(Date.now() - recent_activity_minutes * 60 * 1000);
+
+      // Only for user_ids returned in this page
+      const ids = rows.map((u) => Number(u.user_id)).filter((n) => Number.isInteger(n));
+
+      if (ids.length) {
+        // IMPORTANT: scope activity logs SAME AS user scope.
+        // Since your rows already follow scope, we just filter by these ids.
+        const actRes = await db.query(
+          `
+      SELECT user_id, MAX(occurred_at) AS last_activity_at
+      FROM activity_logs
+      WHERE occurred_at >= $1
+        AND user_id = ANY($2::int[])
+      GROUP BY user_id
+      `,
+          [sinceDate, ids]
+        );
+
+        for (const r of actRes.rows) {
+          activityMap.set(Number(r.user_id), r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null);
+        }
+      }
+    }
+
+
     // custom rank ordering when sort=rank
     if (sort === "rank") {
       rows.sort((a, b) => {
@@ -1527,7 +1560,15 @@ export const searchUsers = async (req, res) => {
       limit,
       total,
       count: rows.length,
-      users: rows,
+      recent_activity_minutes: recent_activity_minutes,
+      users: rows.map((u) => {
+        const last = activityMap.get(Number(u.user_id)) || null;
+        return {
+          ...u,
+          has_recent_activity: !!last,
+          last_activity_at: last,
+        };
+      }),
       applied_filters: {
         company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
         ship_id:
