@@ -31,18 +31,22 @@ export const RANK_ALIASES = {
 
   CHIEF_OFFICER: [
     "chief officer", "chief mate", "c/o", "coff", "c off",
-    "1st officer", "first officer", "1/off", "1off", "1o",
+    "1st officer", "first officer", "1/off", "1off", "1o", "chef off" ,"chefoff",
   ],
 
-  SECOND_OFFICER: ["second officer", "2nd officer", "2/off", "2off", "2o", "2officer"],
+  SECOND_OFFICER: ["second officer", "2nd officer", "2/off", "2off", "2o", "2officer", "ADD 2OFF", "ADD 2/O" , "2/O"],
 
-  THIRD_OFFICER: ["third officer", "3rd officer", "3/off", "3off", "3o", "3officer"],
+  THIRD_OFFICER: ["third officer", "3rd officer", "3/off", "3off", "3o", "3officer", "ADD 3OFF", "ADD 3/O", "2/O"],
+
+  DECK_CADET: ["DECK CADET", "DC", "deck c", "deck cadet", "deck", "dcadet", "d cadet"],
 
   CHIEF_ENGINEER: ["chief engineer", "c/e", "ce", "c eng", "cheng", "ch eng"],
 
-  SECOND_ENGINEER: ["second engineer", "2nd engineer", "2/e", "2e", "2 eng", "2eng"],
+  SECOND_ENGINEER: ["second engineer", "2nd engineer", "2/e", "2e", "2 eng", "2eng", "ADD 2/E"],
 
-  THIRD_ENGINEER: ["third engineer", "3rd engineer", "3/e", "3e", "3 eng", "3eng"],
+  THIRD_ENGINEER: ["third engineer", "3rd engineer", "3/e", "3e", "3 eng", "3eng", "ADD 3/E"],
+
+  FOURTH_ENGINEER: ["fourth engineer", "4th engineer", "4/e", "4e", "4 eng", "4eng", "ADD 4/E", "E/E",],
 
   ELECTRICIAN: ["electrician", "elec", "ee", "j/ee", "jele", "elect"],
 
@@ -50,9 +54,9 @@ export const RANK_ALIASES = {
 
   AB: ["ab", "able", "able seaman", "able seafarer", "a/b"],
 
-  OS: ["os", "ordinary seaman", "orse"],
+  OS: ["os", "ordinary seaman", "orse", "FTR", ],
 
-  OILER: ["oiler"],
+  OILER: ["oiler", "GRES"],
 
   WIPER: ["wiper"],
 
