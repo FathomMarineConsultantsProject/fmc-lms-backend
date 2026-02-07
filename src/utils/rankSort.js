@@ -13,16 +13,17 @@ export const RANK_WEIGHT = {
   CHIEF_OFFICER: 2,
   SECOND_OFFICER: 3,
   THIRD_OFFICER: 4,
-  CHIEF_ENGINEER: 5,
-  SECOND_ENGINEER: 6,
-  THIRD_ENGINEER: 7,
-  ELECTRICIAN: 8,
-  BOSUN: 9,
-  AB: 10,
-  OS: 11,
-  OILER: 12,
-  WIPER: 13,
-  COOK: 14,
+  DECK_CADET: 5,
+  CHIEF_ENGINEER: 6,
+  SECOND_ENGINEER: 7,
+  THIRD_ENGINEER: 8,
+  ELECTRICIAN: 9,
+  BOSUN: 10,
+  AB: 11,
+  OS: 12,
+  OILER: 13,
+  WIPER: 14,
+  COOK: 15,
   OTHER: 999,
 };
 
@@ -46,7 +47,7 @@ export const RANK_ALIASES = {
 
   THIRD_ENGINEER: ["third engineer", "3rd engineer", "3/e", "3e", "3 eng", "3eng", "ADD 3/E"],
 
-  FOURTH_ENGINEER: ["fourth engineer", "4th engineer", "4/e", "4e", "4 eng", "4eng", "ADD 4/E", "E/E",],
+  FOURTH_ENGINEER: ["fourth engineer", "4th engineer", "4/e", "4e", "4 eng", "4eng", "ADD 4/E", "4/E",],
 
   ELECTRICIAN: ["electrician", "elec", "ee", "j/ee", "jele", "elect"],
 
