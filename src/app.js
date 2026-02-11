@@ -16,6 +16,7 @@ import { router as activityRoutes } from "./routes/activityRoutes.js";
 import mailTestRoutes from "./routes/mailTestRoutes.js";
 import userMailRoutes from "./routes/userMailRoutes.js";
 import userExportRoutes from "./routes/userExportRoutes.js";
+import { router as deviceRoutes } from "./routes/deviceRoutes.js";
 
 const app = express();
 
@@ -44,7 +45,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Activity-Key"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Activity-Key" , "X-Device-Key"],
   optionsSuccessStatus: 204,
 };
 
@@ -77,6 +78,7 @@ app.use("/activity", activityRoutes);
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
 app.use("/api/users", userExportRoutes);
+app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
 
