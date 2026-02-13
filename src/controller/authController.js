@@ -26,7 +26,7 @@ const isAdminRole = (roleId) =>
 const hashPassword = (plain) =>
   crypto.createHash('sha256').update(String(plain)).digest('hex');
 
-// AES-256-GCM reversible encryption (Option B)===================== mail change 
+// AES-256-GCM reversible encryption (Option B) ===================== mail change 
 // const getEncKey = () => {
 //   const b64 = process.env.PASSWORD_ENC_KEY;
 //   if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
@@ -465,20 +465,50 @@ export const adminViewPassword = async (req, res) => {
   }
 };
 
-// -------------------- ADMIN: SET/CHANGE USER PASSWORD --------------------
+
+// -------------------- ADMIN: SET/CHANGE USER PASSWORD (AUTO-GENERATE) --------------------
+const generateAutoPassword = (length = 12) => {
+  // avoids confusing chars: 0 O o 1 I l
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const specials = "!@#$%^&*";
+  const pick = (chars) => chars[crypto.randomInt(0, chars.length)];
+
+  // ensure minimum complexity: 1 upper, 1 lower, 1 digit, 1 special
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnpqrstuvwxyz";
+  const digits = "23456789";
+
+  let pwd = [
+    pick(upper),
+    pick(lower),
+    pick(digits),
+    pick(specials),
+  ];
+
+  const all = alphabet + specials;
+  while (pwd.length < length) pwd.push(pick(all));
+
+  // shuffle
+  for (let i = pwd.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(0, i + 1);
+    [pwd[i], pwd[j]] = [pwd[j], pwd[i]];
+  }
+  return pwd.join("");
+};
+
 export const adminSetPassword = async (req, res) => {
-  if (!canAdmin(req.user?.role_id)) return res.status(403).json({ error: 'Forbidden' });
+  if (!canAdmin(req.user?.role_id)) return res.status(403).json({ error: "Forbidden" });
 
   const { user_id } = req.params;
   const targetUserId = Number(user_id);
-  if (!targetUserId) return res.status(400).json({ error: 'user_id must be a number' });
-
-  const { new_password } = req.body;
-  if (!new_password) return res.status(400).json({ error: 'new_password is required' });
+  if (!targetUserId) return res.status(400).json({ error: "user_id must be a number" });
 
   try {
     const inScope = await ensureUserScopeForAdmin(req, targetUserId);
-    if (!inScope) return res.status(403).json({ error: 'Forbidden (scope)' });
+    if (!inScope) return res.status(403).json({ error: "Forbidden (scope)" });
+
+    // ✅ auto-generate password (no request body needed)
+    const new_password = generateAutoPassword(12);
 
     const password_hash = hashPassword(new_password);
     const password_enc = encryptPassword(new_password);
@@ -487,23 +517,36 @@ export const adminSetPassword = async (req, res) => {
       `
       UPDATE users
       SET password_hash = $1,
-          password_enc = $2,
-          updated_at = NOW()
+          password_enc  = $2,
+          updated_at    = NOW()
       WHERE user_id = $3
       `,
       [password_hash, password_enc, targetUserId]
     );
 
-    if (!rowCount) return res.status(404).json({ error: 'User not found' });
+    if (!rowCount) return res.status(404).json({ error: "User not found" });
 
-    // OPTIONAL: revoke ALL refresh sessions for this user (recommended)
-    await db.query(`UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, [
-      targetUserId,
-    ]);
+    // ✅ revoke ALL refresh sessions for this user
+    await db.query(
+      `UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+      [targetUserId]
+    );
 
-    return res.json({ message: 'Password updated' });
+    // OPTIONAL: log activity (if you have activity_logs)
+    // await db.query(
+    //   `INSERT INTO activity_logs (actor_user_id, action, target_user_id, meta, created_at)
+    //    VALUES ($1, 'PASSWORD_REGENERATED', $2, $3, NOW())`,
+    //   [req.user.user_id, targetUserId, JSON.stringify({ by_role: req.user.role_id })]
+    // );
+
+    return res.json({
+      message: "Password regenerated",
+      user_id: targetUserId,
+      password: new_password, // show/copy ONCE in UI
+    });
   } catch (err) {
-    console.error('Error adminSetPassword:', err);
-    return res.status(500).json({ error: 'Failed to update password' });
+    console.error("Error adminSetPassword:", err);
+    return res.status(500).json({ error: "Failed to regenerate password" });
   }
 };
+
