@@ -231,3 +231,76 @@ export const sendCredentialsBulk = async (req, res) => {
 };
 
 
+const roleName = (roleId) => {
+  const r = Number(roleId);
+  if (r === 1) return "Superadmin";
+  if (r === 2) return "Admin";
+  if (r === 3) return "Subadmin";
+  return "Crew";
+};
+
+// GET /mail/support-template
+export const getSupportMailTemplate = async (req, res) => {
+  try {
+    const me = req.user; // from requireAuth
+
+    // fetch ship + company names (optional, but nice)
+    const shipRes =
+      me.ship_id != null
+        ? await db.query(`SELECT ship_name FROM ships WHERE ship_id = $1 LIMIT 1`, [me.ship_id])
+        : { rows: [] };
+
+    const compRes =
+      me.company_id
+        ? await db.query(`SELECT company_name FROM company WHERE company_id = $1 LIMIT 1`, [me.company_id])
+        : { rows: [] };
+
+    const shipName = shipRes.rows[0]?.ship_name || "";
+    const companyName = compRes.rows[0]?.company_name || "";
+
+    const to = "contact@fathommarineconsultants.com";
+    const subject = "Support Request - FMC LMS";
+
+    const body = `Hello FMC Support Team,
+
+My Name: ${me.full_name || ""}
+Username: ${me.username || ""}
+Role: ${roleName(me.role_id)}
+Company: ${companyName}
+Ship: ${shipName}
+
+Issue Type:
+[ ] Login Issue
+[ ] Crew Management
+[ ] Assessment
+[ ] Certificates
+[ ] Other
+
+Description of the Issue:
+--------------------------------------------------
+(Write your issue here)
+
+Steps to Reproduce:
+1.
+2.
+3.
+
+Expected Result:
+
+Actual Result:
+
+Date & Time of Issue:
+
+Attachments (if any):
+--------------------------------------------------
+
+Thank you,
+${me.full_name || ""}
+`;
+
+    return res.json({ to, subject, body });
+  } catch (err) {
+    console.error("getSupportMailTemplate error:", err);
+    return res.status(500).json({ error: "Failed to generate support mail template" });
+  }
+};
