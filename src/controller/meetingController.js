@@ -1,5 +1,6 @@
 // src/controller/meetingController.js
 import { db } from "../db.js";
+import { createGoogleMeetEvent } from "../providers/googleMeet.js";
 
 /**
  * Helper: get scope from req.user safely.
@@ -11,8 +12,8 @@ function getUserScope(req) {
   return {
     role_id: u.role_id,
     company_id: u.company_id, // company.company_id is UUID in your DB
-    ship_id: u.ship_id,       // ships.ship_id is int4 in your DB
-    user_id: u.user_id,       // users.user_id is int4 in your DB
+    ship_id: u.ship_id, // ships.ship_id is int4 in your DB
+    user_id: u.user_id, // users.user_id is int4 in your DB
   };
 }
 
@@ -39,10 +40,13 @@ function buildScopeWhere({ role_id, company_id, ship_id }) {
  * Body:
  * {
  *   title, description, department, course_title,
- *   scheduled_at, priority, meeting_type, meeting_link,
+ *   scheduled_at, duration_minutes,
+ *   priority, meeting_type,
+ *   meeting_link,
  *   send_invitations,
  *   ship_id (optional),
- *   attendees: ["a@x.com","b@x.com"] (optional)
+ *   attendees: ["a@x.com","b@x.com"] (optional),
+ *   platform: "manual" | "google"
  * }
  */
 export async function createMeeting(req, res) {
@@ -55,15 +59,17 @@ export async function createMeeting(req, res) {
       department,
       course_title = null,
       scheduled_at,
+      duration_minutes = 60,
       priority = "medium",
       meeting_type,
       meeting_link = null,
       send_invitations = false,
       ship_id = null,
       attendees = [],
+      platform = "manual", // 'manual' | 'google'
     } = req.body || {};
 
-    // Basic validation (keep simple; FE already ensures most)
+    // Basic validation
     if (!title || !department || !scheduled_at || !meeting_type) {
       return res.status(400).json({
         error: "Missing required fields: title, department, scheduled_at, meeting_type",
@@ -71,25 +77,54 @@ export async function createMeeting(req, res) {
     }
 
     // RBAC ship rule:
-    // If Subadmin (3), force ship_id to their ship (prevents cross-ship creation).
+    // If Subadmin (3) or Crew (4), force ship_id to their ship (prevents cross-ship creation).
     let finalShipId = ship_id;
     if (role_id === 3 || role_id === 4) {
       finalShipId = userShipId ?? null;
     }
 
-    // Insert meeting
+    // ---------------------------
+    // Provider (Google Meet) block
+    // ---------------------------
+    let provider_platform = "manual";
+    let provider_meeting_id = null;
+    let provider_join_url = meeting_link;
+    let provider_calendar_event_id = null;
+    let provider_payload = null;
+
+    if (platform === "google") {
+      // This will throw if Google is not connected (oauth_connections missing)
+      const created = await createGoogleMeetEvent(company_id, {
+        title,
+        description,
+        scheduled_at,
+        duration_minutes,
+        attendees: send_invitations ? attendees : [], // only invite if checkbox true
+      });
+
+      provider_platform = "google";
+      provider_calendar_event_id = created.calendar_event_id;
+      provider_join_url = created.join_url; // https://meet.google.com/...
+      provider_payload = created.raw; // store raw event response
+    }
+
+    // Insert meeting (includes provider fields)
     const insertMeetingSql = `
       INSERT INTO training_meetings (
         company_id, ship_id, created_by,
         title, description, department, course_title,
-        scheduled_at, priority, meeting_type,
-        meeting_link, send_invitations
+        scheduled_at, duration_minutes, priority, meeting_type,
+        meeting_link, send_invitations,
+        provider_platform, provider_meeting_id, provider_join_url,
+        provider_calendar_event_id, provider_payload
       )
       VALUES (
         $1, $2, $3,
         $4, $5, $6, $7,
-        $8, $9, $10,
-        $11, $12
+        $8, $9, $10, $11,
+        $12, $13,
+        $14, $15, $16,
+        $17, $18
       )
       RETURNING *;
     `;
@@ -103,10 +138,16 @@ export async function createMeeting(req, res) {
       department,
       course_title,
       scheduled_at,
+      duration_minutes,
       priority,
       meeting_type,
-      meeting_link,
+      provider_join_url || meeting_link, // meeting_link becomes the join url for google
       !!send_invitations,
+      provider_platform,
+      provider_meeting_id,
+      provider_join_url,
+      provider_calendar_event_id,
+      provider_payload,
     ]);
 
     const meeting = meetingResult.rows[0];
@@ -128,8 +169,7 @@ export async function createMeeting(req, res) {
         const insertAttSql = `
           INSERT INTO training_meeting_attendees (meeting_id, email)
           VALUES ${values.join(",")}
-          ON CONFLICT (meeting_id, LOWER(email))
-          DO NOTHING;
+          ON CONFLICT DO NOTHING;
         `;
         await db.query(insertAttSql, params);
       }
@@ -138,7 +178,10 @@ export async function createMeeting(req, res) {
     return res.status(201).json({ meeting_id: meeting.meeting_id, meeting });
   } catch (err) {
     console.error("createMeeting error:", err);
-    return res.status(500).json({ error: "Failed to create meeting" });
+    return res.status(500).json({
+      error: "Failed to create meeting",
+      detail: err?.message || String(err),
+    });
   }
 }
 
@@ -178,9 +221,7 @@ export async function queryMeetings(req, res) {
     const params = [...scopeParams];
     let idx = params.length + 1;
 
-    if (!include_deleted) {
-      whereParts.push(`m.deleted_at IS NULL`);
-    }
+    if (!include_deleted) whereParts.push(`m.deleted_at IS NULL`);
 
     if (search) {
       params.push(`%${String(search).trim()}%`);
@@ -285,6 +326,8 @@ export async function getMeetingById(req, res) {
 /**
  * PATCH /meetings/:meeting_id
  * Update allowed fields only (meeting_id cannot change).
+ * NOTE: This currently updates ONLY DB, not Google Calendar event.
+ * We can add provider-sync later.
  */
 export async function updateMeeting(req, res) {
   try {
@@ -302,6 +345,7 @@ export async function updateMeeting(req, res) {
       department,
       course_title,
       scheduled_at,
+      duration_minutes,
       priority,
       meeting_type,
       meeting_link,
@@ -332,6 +376,7 @@ export async function updateMeeting(req, res) {
     addSet("department", department);
     addSet("course_title", course_title);
     addSet("scheduled_at", scheduled_at);
+    addSet("duration_minutes", duration_minutes);
     addSet("priority", priority, "::meeting_priority_enum");
     addSet("meeting_type", meeting_type, "::meeting_type_enum");
     addSet("meeting_link", meeting_link);
@@ -366,6 +411,8 @@ export async function updateMeeting(req, res) {
 /**
  * DELETE /meetings/:meeting_id
  * Soft delete (sets deleted_at)
+ * NOTE: This currently deletes ONLY DB, not Google Calendar event.
+ * We can add provider-sync later.
  */
 export async function deleteMeeting(req, res) {
   try {
@@ -436,9 +483,7 @@ export async function sendMeetingEmails(req, res) {
     if (!meeting) return res.status(404).json({ error: "Meeting not found" });
 
     // Build email content (basic)
-    const finalSubject =
-      subject ||
-      `Meeting Invitation: ${meeting.title} (${meeting.meeting_type})`;
+    const finalSubject = subject || `Meeting Invitation: ${meeting.title} (${meeting.meeting_type})`;
 
     const bodyText = `
 Meeting: ${meeting.title}
@@ -451,15 +496,7 @@ Link: ${meeting.meeting_link || "N/A"}
 ${message ? "\nMessage:\n" + message : ""}
 `.trim();
 
-    /**
-     * ✅ IMPORTANT:
-     * Replace this with your real mail sender.
-     * Example if you have a util:
-     *   import { sendEmail } from "../utils/mailer.js";
-     *   await sendEmail({ to, subject: finalSubject, text: bodyText });
-     */
-    // TODO: integrate your actual mail service here
-    // For now we just respond with what would be sent.
+    // TODO: integrate your actual mail sender here
     const sentTo = emails.map((e) => String(e).trim()).filter(Boolean);
 
     return res.json({

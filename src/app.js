@@ -18,6 +18,7 @@ import userMailRoutes from "./routes/userMailRoutes.js";
 import userExportRoutes from "./routes/userExportRoutes.js";
 import { router as deviceRoutes } from "./routes/deviceRoutes.js";
 import { router as meetingRoutes } from "./routes/meetingRoutes.js";
+import { router as integrationRoutes } from "./routes/integrationRoutes.js";
 
 const app = express();
 
@@ -77,6 +78,9 @@ app.use("/certificates", certificateRoutes);
 app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
 app.use("/meetings", meetingRoutes);
+
+//meeting integrations
+app.use("/integrations", integrationRoutes);
 
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
