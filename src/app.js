@@ -17,6 +17,7 @@ import mailTestRoutes from "./routes/mailTestRoutes.js";
 import userMailRoutes from "./routes/userMailRoutes.js";
 import userExportRoutes from "./routes/userExportRoutes.js";
 import { router as deviceRoutes } from "./routes/deviceRoutes.js";
+import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 
 const app = express();
 
@@ -34,7 +35,7 @@ const allowedExactOrigins = new Set([
 const vercelPreviewRegex = /^https:\/\/fmc-admin-dashboard-frontend(-[a-z0-9-]+)?\.vercel\.app$/i;
 
 const corsOptions = {
-  origin(origin, cb) {
+  origin(origin, cb) {  
     // no origin = Postman / server-to-server / same-machine tools
     if (!origin) return cb(null, true);
 
@@ -75,6 +76,8 @@ app.use("/incidents", incidentRoutes);
 app.use("/certificates", certificateRoutes);
 app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
+app.use("/meetings", meetingRoutes);
+
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
 app.use("/api/users", userExportRoutes);
