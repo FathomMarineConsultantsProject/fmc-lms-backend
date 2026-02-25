@@ -37,18 +37,28 @@ function googleOAuthClient() {
  */
 export async function googleConnect(req, res) {
   const oauth2Client = googleOAuthClient();
-
   const scopes = ["https://www.googleapis.com/auth/calendar.events"];
 
-  // simplest state: company_id (later can sign JWT)
-  const state = String(req.user.company_id);
+  const companyId = req.user?.company_id;
+  if (!companyId) {
+    return res.status(400).json({ error: "company_id missing in JWT user scope" });
+  }
+
+  // keep both company_id and user_id in state so callback can store user_id too
+  const stateObj = { company_id: companyId, user_id: req.user.user_id };
+  const state = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
 
   const url = oauth2Client.generateAuthUrl({
     access_type: "offline",
-    prompt: "consent", // ensures refresh_token
+    prompt: "consent",
     scope: scopes,
     state,
   });
+
+  // ✅ If Postman/testing asks for JSON, return the URL instead of redirecting
+  if (req.query.mode === "json") {
+    return res.json({ url });
+  }
 
   return res.redirect(url);
 }
@@ -62,9 +72,11 @@ export async function googleCallback(req, res) {
     const { code, state } = req.query;
     if (!code || !state) return res.status(400).send("Missing code/state");
 
-    const company_id = String(state);
-    const oauth2Client = googleOAuthClient();
+    const parsed = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
+    const company_id = String(parsed.company_id);
+    const user_id = parsed.user_id ? Number(parsed.user_id) : null;
 
+    const oauth2Client = googleOAuthClient();
     const { tokens } = await oauth2Client.getToken(String(code));
 
     const access_enc = tokens.access_token ? encrypt(tokens.access_token) : null;
@@ -74,16 +86,17 @@ export async function googleCallback(req, res) {
     await db.query(
       `
       INSERT INTO public.oauth_connections
-      (company_id, provider, access_token_enc, refresh_token_enc, token_expires_at)
-      VALUES ($1,'google',$2,$3,$4)
+      (company_id, user_id, provider, access_token_enc, refresh_token_enc, token_expires_at)
+      VALUES ($1, $2, 'google', $3, $4, $5)
       ON CONFLICT (company_id, provider)
       DO UPDATE SET
+        user_id = COALESCE(EXCLUDED.user_id, public.oauth_connections.user_id),
         access_token_enc = EXCLUDED.access_token_enc,
         refresh_token_enc = COALESCE(EXCLUDED.refresh_token_enc, public.oauth_connections.refresh_token_enc),
         token_expires_at = EXCLUDED.token_expires_at,
         updated_at = NOW()
       `,
-      [company_id, access_enc, refresh_enc, expires_at]
+      [company_id, user_id, access_enc, refresh_enc, expires_at]
     );
 
     return res.send("✅ Google connected successfully. You can close this tab.");
