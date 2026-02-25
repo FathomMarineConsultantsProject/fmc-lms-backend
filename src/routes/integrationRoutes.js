@@ -1,3 +1,4 @@
+// src/routes/integrationRoutes.js
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
@@ -10,17 +11,17 @@ import {
 export const router = Router();
 
 /**
- * Only Admin roles should connect integrations
- * 1 = Superadmin, 2 = Admin, 3 = Subadmin
+ * NOTE:
+ * /integrations/google/connect requires JWT because we need req.user.company_id
+ * /integrations/google/callback must NOT require JWT (Google calls it)
+ * /integrations/google/status requires JWT
  */
+
+// Start OAuth (Admin / Subadmin / Superadmin only)
 router.get("/google/connect", requireAuth, allowRoles(1, 2, 3), googleConnect);
 
-/**
- * Callback is opened by Google directly (no JWT available)
- */
+// OAuth callback (Google redirects here)
 router.get("/google/callback", googleCallback);
 
-/**
- * FE checks if integration is connected
- */
+// Check connected
 router.get("/google/status", requireAuth, allowRoles(1, 2, 3), googleStatus);
