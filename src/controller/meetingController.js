@@ -1,6 +1,7 @@
 // src/controller/meetingController.js
 import { db } from "../db.js";
 import { createGoogleMeetEvent } from "../providers/googleMeet.js";
+import { createZoomMeeting } from "../providers/zoomMeet.js";
 
 /**
  * Helper: get scope from req.user safely.
@@ -66,7 +67,7 @@ export async function createMeeting(req, res) {
       send_invitations = false,
       ship_id = null,
       attendees = [],
-      platform = "manual", // 'manual' | 'google'
+      platform = "manual", // 'manual' | 'google' | 'zoom'
     } = req.body || {};
 
     // Basic validation
@@ -92,6 +93,16 @@ export async function createMeeting(req, res) {
     let provider_calendar_event_id = null;
     let provider_payload = null;
 
+    let effectiveCompanyId = company_id;
+
+    if (role_id === 1 && req.body?.company_id) {
+      effectiveCompanyId = String(req.body.company_id);
+    }
+
+    if (!effectiveCompanyId) {
+      return res.status(400).json({ error: "company_id is required for superadmin" });
+    }
+
     if (platform === "google") {
       // This will throw if Google is not connected (oauth_connections missing)
       const created = await createGoogleMeetEvent(company_id, {
@@ -108,6 +119,20 @@ export async function createMeeting(req, res) {
       provider_payload = created.raw; // store raw event response
     }
 
+    if (platform === "zoom") {
+      // This will throw if Zoom is not connected
+      const created = await createZoomMeeting(company_id, {
+        title,
+        description,
+        scheduled_at,
+        duration_minutes,
+      });
+
+      provider_platform = "zoom";
+      provider_meeting_id = created.meeting_id; // zoom meeting id
+      provider_join_url = created.join_url;     // join link for attendees
+      provider_payload = created.raw;           // full payload (includes start_url)
+    }
     // Insert meeting (includes provider fields)
     const insertMeetingSql = `
       INSERT INTO training_meetings (
