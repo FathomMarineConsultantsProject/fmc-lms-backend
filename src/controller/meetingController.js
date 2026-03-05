@@ -2,6 +2,7 @@
 import { db } from "../db.js";
 import { createGoogleMeetEvent } from "../providers/googleMeet.js";
 import { createZoomMeeting } from "../providers/zoomMeet.js";
+import { createTeamsMeeting } from "../providers/teamsMeet.js";
 
 /**
  * Helper: get scope from req.user safely.
@@ -47,7 +48,7 @@ function buildScopeWhere({ role_id, company_id, ship_id }) {
  *   send_invitations,
  *   ship_id (optional),
  *   attendees: ["a@x.com","b@x.com"] (optional),
- *   platform: "manual" | "google"
+ *   platform: "manual" | "google" | "zoom" | "teams"
  * }
  */
 export async function createMeeting(req, res) {
@@ -132,6 +133,20 @@ export async function createMeeting(req, res) {
       provider_meeting_id = created.meeting_id; // zoom meeting id
       provider_join_url = created.join_url;     // join link for attendees
       provider_payload = created.raw;           // full payload (includes start_url)
+    }
+
+    if (platform === "teams") {
+      const created = await createTeamsMeeting(company_id, {
+        title,
+        description,
+        scheduled_at,
+        duration_minutes,
+      });
+
+      provider_platform = "teams";
+      provider_meeting_id = created.meeting_id;
+      provider_join_url = created.join_url;
+      provider_payload = created.raw;
     }
     // Insert meeting (includes provider fields)
     const insertMeetingSql = `
