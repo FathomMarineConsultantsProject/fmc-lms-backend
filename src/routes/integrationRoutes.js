@@ -6,7 +6,12 @@ import {
   googleConnect,
   googleCallback,
   googleStatus,
-  zoomConnect, zoomCallback, zoomStatus, 
+  zoomConnect, 
+  zoomCallback, 
+  zoomStatus, 
+  teamsConnect,
+  teamsCallback,
+  teamsStatus,
 } from "../controller/integrationController.js";
 
 export const router = Router();
