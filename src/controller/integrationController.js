@@ -313,3 +313,162 @@ export async function getZoomAccessToken(company_id) {
 
   return access;
 }
+
+// ---------------------------------------------- TEAMS ----------------------------------------------------------------------
+
+const msAuthUrl = (tenant) => `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize`;
+const msTokenUrl = (tenant) => `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
+
+export async function teamsConnect(req, res) {
+  const companyId = req.user?.company_id;
+  if (!companyId) return res.status(400).json({ error: "company_id missing in JWT user scope" });
+
+  const tenant = process.env.MS_TENANT_ID;
+  const scope = process.env.MS_OAUTH_SCOPES || "offline_access User.Read OnlineMeetings.ReadWrite";
+
+  const stateObj = { company_id: companyId, user_id: req.user.user_id };
+  const state = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
+
+  const params = new URLSearchParams({
+    client_id: process.env.MS_CLIENT_ID,
+    response_type: "code",
+    redirect_uri: process.env.MS_REDIRECT_URI,
+    response_mode: "query",
+    scope,
+    state,
+  });
+
+  const url = `${msAuthUrl(tenant)}?${params.toString()}`;
+  if (req.query.mode === "json") return res.json({ url });
+  return res.redirect(url);
+}
+
+export async function teamsCallback(req, res) {
+  try {
+    const { code, state } = req.query;
+    if (!code || !state) return res.status(400).send("Missing code/state");
+
+    const parsed = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
+    const company_id = String(parsed.company_id);
+    const user_id = parsed.user_id ? Number(parsed.user_id) : null;
+
+    const tenant = process.env.MS_TENANT_ID;
+
+    const body = new URLSearchParams({
+      client_id: process.env.MS_CLIENT_ID,
+      client_secret: process.env.MS_CLIENT_SECRET,
+      grant_type: "authorization_code",
+      code: String(code),
+      redirect_uri: process.env.MS_REDIRECT_URI,
+    });
+
+    const tokenRes = await fetch(msTokenUrl(tenant), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    const tokenJson = await tokenRes.json();
+    if (!tokenRes.ok) {
+      console.error("MS token error:", tokenJson);
+      return res.status(500).send("Teams token exchange failed");
+    }
+
+    const access_enc = tokenJson.access_token ? encrypt(tokenJson.access_token) : null;
+    const refresh_enc = tokenJson.refresh_token ? encrypt(tokenJson.refresh_token) : null;
+
+    const expires_at = tokenJson.expires_in
+      ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000)
+      : null;
+
+    await db.query(
+      `
+      INSERT INTO public.oauth_connections
+      (company_id, user_id, provider, access_token_enc, refresh_token_enc, token_expires_at)
+      VALUES ($1, $2, 'teams', $3, $4, $5)
+      ON CONFLICT (company_id, provider)
+      DO UPDATE SET
+        user_id = COALESCE(EXCLUDED.user_id, public.oauth_connections.user_id),
+        access_token_enc = EXCLUDED.access_token_enc,
+        refresh_token_enc = COALESCE(EXCLUDED.refresh_token_enc, public.oauth_connections.refresh_token_enc),
+        token_expires_at = EXCLUDED.token_expires_at,
+        updated_at = NOW()
+      `,
+      [company_id, user_id, access_enc, refresh_enc, expires_at]
+    );
+
+    return res.send("✅ Teams connected successfully. You can close this tab.");
+  } catch (err) {
+    console.error("teamsCallback:", err);
+    return res.status(500).send("Teams callback failed");
+  }
+}
+
+export async function teamsStatus(req, res) {
+  const company_id = req.user.company_id;
+  const r = await db.query(
+    `SELECT token_expires_at FROM public.oauth_connections WHERE company_id=$1 AND provider='teams'`,
+    [company_id]
+  );
+  return res.json({ connected: r.rowCount > 0, data: r.rows[0] || null });
+}
+
+export async function getTeamsAccessToken(company_id) {
+  const r = await db.query(
+    `SELECT access_token_enc, refresh_token_enc, token_expires_at
+     FROM public.oauth_connections
+     WHERE company_id=$1 AND provider='teams'`,
+    [company_id]
+  );
+  if (r.rowCount === 0) throw new Error("Teams not connected");
+
+  const row = r.rows[0];
+  let access = row.access_token_enc ? decrypt(row.access_token_enc) : null;
+  const refresh = row.refresh_token_enc ? decrypt(row.refresh_token_enc) : null;
+
+  const expired =
+    row.token_expires_at && new Date(row.token_expires_at).getTime() <= Date.now() + 30_000;
+
+  if (!access || expired) {
+    const tenant = process.env.MS_TENANT_ID;
+
+    const body = new URLSearchParams({
+      client_id: process.env.MS_CLIENT_ID,
+      client_secret: process.env.MS_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      redirect_uri: process.env.MS_REDIRECT_URI,
+    });
+
+    const refreshRes = await fetch(msTokenUrl(tenant), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    const refreshJson = await refreshRes.json();
+    if (!refreshRes.ok) throw new Error(refreshJson?.error_description || "Teams refresh failed");
+
+    access = refreshJson.access_token;
+    const expires_at = refreshJson.expires_in
+      ? new Date(Date.now() + Number(refreshJson.expires_in) * 1000)
+      : null;
+
+    await db.query(
+      `UPDATE public.oauth_connections
+       SET access_token_enc=$2,
+           refresh_token_enc=COALESCE($3, refresh_token_enc),
+           token_expires_at=$4,
+           updated_at=NOW()
+       WHERE company_id=$1 AND provider='teams'`,
+      [
+        company_id,
+        encrypt(access),
+        refreshJson.refresh_token ? encrypt(refreshJson.refresh_token) : null,
+        expires_at,
+      ]
+    );
+  }
+
+  return access;
+}

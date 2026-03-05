@@ -27,7 +27,13 @@ router.get("/google/callback", googleCallback);
 // Check connected
 router.get("/google/status", requireAuth, allowRoles(1, 2, 3), googleStatus);
 
-// ----------------- Zoom -----------------
+// --------------------------- Zoom ---------------------------
 router.get("/zoom/connect", requireAuth, allowRoles(1, 2, 3), zoomConnect);
 router.get("/zoom/callback", zoomCallback);
 router.get("/zoom/status", requireAuth, allowRoles(1, 2, 3), zoomStatus);
+
+//------------------------- Teams ----------------------
+
+router.get("/teams/connect", requireAuth, allowRoles(1, 2, 3), teamsConnect);
+router.get("/teams/callback", teamsCallback);
+router.get("/teams/status", requireAuth, allowRoles(1, 2, 3), teamsStatus);
