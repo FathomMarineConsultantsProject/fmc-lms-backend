@@ -1896,11 +1896,11 @@ export const importUsersFromExcel = [
         detected_header_row: headerRowIdx + 1,
         total_rows: rows.length,
         inserted: 0,
+        updated: 0,
         skipped: 0,
         errors: [],
         created_credentials: [],
       };
-
       await db.query("BEGIN");
       const CHUNK_SIZE = 50; // or 25 if big Excel
       for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
@@ -2012,18 +2012,36 @@ export const importUsersFromExcel = [
             // IMPORTANT: do NOT regenerate password on transfer
             await db.query(
               `UPDATE users
-             SET
-               full_name = COALESCE($1, full_name),
-               rank = COALESCE($2, rank),
-               ship_id = $3,
-               status = $4,
-               embarkation_date = COALESCE($5, embarkation_date),
-               disembarkation_date = COALESCE($6, disembarkation_date),
-               embarkation_port = COALESCE($7, embarkation_port),
-               disembarkation_port = COALESCE($8, disembarkation_port),
-               role_id = COALESCE($9, role_id),
-               updated_at = NOW()
-             WHERE user_id = $10`,
+     SET
+       full_name = COALESCE($1, full_name),
+       rank = COALESCE($2, rank),
+       ship_id = $3,
+       status = $4,
+       embarkation_date = COALESCE($5, embarkation_date),
+       disembarkation_date = COALESCE($6, disembarkation_date),
+       embarkation_port = COALESCE($7, embarkation_port),
+       disembarkation_port = COALESCE($8, disembarkation_port),
+       role_id = COALESCE($9, role_id),
+
+       sex = COALESCE($10, sex),
+       date_of_birth = COALESCE($11, date_of_birth),
+       place_of_birth = COALESCE($12, place_of_birth),
+       nationality = COALESCE($13, nationality),
+
+       end_of_contract = COALESCE($14, end_of_contract),
+       plus_months = COALESCE($15, plus_months),
+
+       passport_number = COALESCE($16, passport_number),
+       passport_issue_place = COALESCE($17, passport_issue_place),
+       passport_issue_date = COALESCE($18, passport_issue_date),
+       passport_expiry_date = COALESCE($19, passport_expiry_date),
+
+       seaman_book_number = COALESCE($20, seaman_book_number),
+       seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
+       seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
+
+       updated_at = NOW()
+     WHERE user_id = $23`,
               [
                 full_name,
                 rank ?? null,
@@ -2034,6 +2052,24 @@ export const importUsersFromExcel = [
                 embarkation_port ?? null,
                 disembarkation_port ?? null,
                 role_id_to_insert,
+
+                sex ?? null,
+                date_of_birth ?? null,
+                place_of_birth ?? null,
+                nationality ?? null,
+
+                end_of_contract ?? null,
+                plus_months ?? null,
+
+                passport_number ?? null,
+                passport_issue_place ?? null,
+                passport_issue_date ?? null,
+                passport_expiry_date ?? null,
+
+                seaman_book_number ?? null,
+                seaman_book_issue_date ?? null,
+                seaman_book_expiry_date ?? null,
+
                 existingUser.user_id,
               ]
             );
@@ -2041,22 +2077,27 @@ export const importUsersFromExcel = [
             const oldShip = existingUser.ship_id ?? null;
             const newShip = ship_id;
 
-            if (Number(oldShip) !== Number(newShip)) {
-              await handleShipHistoryChange({
-                user_id: existingUser.user_id,
-                company_id,
-                old_ship_id: oldShip,
-                new_ship_id: newShip,
-                embarkation_date: emb,
-                disembarkation_date: dis,
-                embarkation_port,
-                disembarkation_port,
-                changed_by_user_id: req.user.user_id,
-                notes: "Excel import (existing user ship update)",
-              });
-            }
+            await handleShipHistoryChange({
+              user_id: existingUser.user_id,
+              company_id,
+              old_ship_id: oldShip,
+              new_ship_id: newShip,
+              embarkation_date: emb,
+              disembarkation_date: dis,
+              embarkation_port,
+              disembarkation_port,
+              changed_by_user_id: req.user.user_id,
+              notes: "Excel import (existing user ship update)",
+            });
 
-            results.inserted++; // (counts as processed)
+            // keep in-memory map fresh
+            existingMap.set(seafarer_id, {
+              user_id: existingUser.user_id,
+              seafarer_id,
+              ship_id: newShip,
+            });
+
+            results.updated++;
             continue;
           }
 
