@@ -3,54 +3,32 @@ import { db } from "../db.js";
 import { createGoogleMeetEvent } from "../providers/googleMeet.js";
 import { createZoomMeeting } from "../providers/zoomMeet.js";
 import { createTeamsMeeting } from "../providers/teamsMeet.js";
+// optional if you want real email sending:
+// import { sendEmail, isValidEmail } from "../utils/mailer.js";
 
-/**
- * Helper: get scope from req.user safely.
- * Your requireAuth usually sets req.user fields.
- * We use company_id for scoping, and ship_id if role is subadmin.
- */
 function getUserScope(req) {
   const u = req.user || {};
   return {
-    role_id: u.role_id,
-    company_id: u.company_id, // company.company_id is UUID in your DB
-    ship_id: u.ship_id, // ships.ship_id is int4 in your DB
-    user_id: u.user_id, // users.user_id is int4 in your DB
+    role_id: Number(u.role_id),
+    company_id: u.company_id,
+    ship_id: u.ship_id,
+    user_id: u.user_id,
   };
 }
 
-/**
- * Helper: Apply RBAC scope rules in SQL WHERE.
- * - role 1 (superadmin): no extra filter
- * - role 2 (admin): company scope
- * - role 3 (subadmin): company + ship scope
- * - role 4 (crew): company + ship scope (and maybe created_by / attendee-only, later)
- */
 function buildScopeWhere({ role_id, company_id, ship_id }) {
-  if (role_id === 1) return { sql: "1=1", params: [] }; // all
-  if (role_id === 2) return { sql: "m.company_id = $1", params: [company_id] };
-  // role 3 & 4 → company + ship (if ship_id exists)
+  if (role_id === 1) return { sql: "1=1", params: [] };
+
+  if (role_id === 2) {
+    return { sql: "m.company_id = $1", params: [company_id] };
+  }
+
   return {
     sql: "m.company_id = $1 AND (m.ship_id = $2 OR $2 IS NULL OR m.ship_id IS NULL)",
     params: [company_id, ship_id ?? null],
   };
 }
 
-/**
- * POST /meetings
- * Creates a meeting.
- * Body:
- * {
- *   title, description, department, course_title,
- *   scheduled_at, duration_minutes,
- *   priority, meeting_type,
- *   meeting_link,
- *   send_invitations,
- *   ship_id (optional),
- *   attendees: ["a@x.com","b@x.com"] (optional),
- *   platform: "manual" | "google" | "zoom" | "teams"
- * }
- */
 export async function createMeeting(req, res) {
   try {
     const { role_id, company_id, ship_id: userShipId, user_id } = getUserScope(req);
@@ -68,87 +46,83 @@ export async function createMeeting(req, res) {
       send_invitations = false,
       ship_id = null,
       attendees = [],
-      platform = "manual", // 'manual' | 'google' | 'zoom'
+      platform = "manual",
+      company_id: bodyCompanyId,
     } = req.body || {};
 
-    // Basic validation
     if (!title || !department || !scheduled_at || !meeting_type) {
       return res.status(400).json({
         error: "Missing required fields: title, department, scheduled_at, meeting_type",
       });
     }
 
-    // RBAC ship rule:
-    // If Subadmin (3) or Crew (4), force ship_id to their ship (prevents cross-ship creation).
-    let finalShipId = ship_id;
+    let effectiveCompanyId = company_id;
+
+    if (role_id === 1) {
+      effectiveCompanyId = bodyCompanyId ? String(bodyCompanyId) : null;
+      if (!effectiveCompanyId) {
+        return res.status(400).json({ error: "company_id is required for superadmin" });
+      }
+    }
+
+    let finalShipId = ship_id ?? null;
+
     if (role_id === 3 || role_id === 4) {
       finalShipId = userShipId ?? null;
     }
 
-    // ---------------------------
-    // Provider (Google Meet) block
-    // ---------------------------
     let provider_platform = "manual";
     let provider_meeting_id = null;
     let provider_join_url = meeting_link;
     let provider_calendar_event_id = null;
     let provider_payload = null;
 
-    let effectiveCompanyId = company_id;
-
-    if (role_id === 1 && req.body?.company_id) {
-      effectiveCompanyId = String(req.body.company_id);
-    }
-
-    if (!effectiveCompanyId) {
-      return res.status(400).json({ error: "company_id is required for superadmin" });
-    }
-
     if (platform === "google") {
-      // This will throw if Google is not connected (oauth_connections missing)
-      const created = await createGoogleMeetEvent(company_id, {
+      const created = await createGoogleMeetEvent(effectiveCompanyId, {
         title,
         description,
         scheduled_at,
         duration_minutes,
-        attendees: send_invitations ? attendees : [], // only invite if checkbox true
+        attendees: send_invitations ? attendees : [],
       });
 
       provider_platform = "google";
       provider_calendar_event_id = created.calendar_event_id;
-      provider_join_url = created.join_url; // https://meet.google.com/...
-      provider_payload = created.raw; // store raw event response
+      provider_join_url = created.join_url;
+      provider_payload = created.raw;
     }
 
     if (platform === "zoom") {
-      // This will throw if Zoom is not connected
-      const created = await createZoomMeeting(company_id, {
+      const created = await createZoomMeeting(effectiveCompanyId, {
         title,
         description,
         scheduled_at,
         duration_minutes,
+        attendees: send_invitations ? attendees : [],
       });
 
       provider_platform = "zoom";
-      provider_meeting_id = created.meeting_id; // zoom meeting id
-      provider_join_url = created.join_url;     // join link for attendees
-      provider_payload = created.raw;           // full payload (includes start_url)
+      provider_meeting_id = created.meeting_id;
+      provider_join_url = created.join_url;
+      provider_payload = created.raw;
     }
 
     if (platform === "teams") {
-      const created = await createTeamsMeeting(company_id, {
+      const created = await createTeamsMeeting(effectiveCompanyId, {
         title,
         description,
         scheduled_at,
         duration_minutes,
+        attendees: send_invitations ? attendees : [],
       });
 
       provider_platform = "teams";
       provider_meeting_id = created.meeting_id;
       provider_join_url = created.join_url;
+      provider_calendar_event_id = created.calendar_event_id || null;
       provider_payload = created.raw;
     }
-    // Insert meeting (includes provider fields)
+
     const insertMeetingSql = `
       INSERT INTO training_meetings (
         company_id, ship_id, created_by,
@@ -170,7 +144,7 @@ export async function createMeeting(req, res) {
     `;
 
     const meetingResult = await db.query(insertMeetingSql, [
-      company_id,
+      effectiveCompanyId,
       finalShipId,
       user_id,
       title,
@@ -181,7 +155,7 @@ export async function createMeeting(req, res) {
       duration_minutes,
       priority,
       meeting_type,
-      provider_join_url || meeting_link, // meeting_link becomes the join url for google
+      provider_join_url || meeting_link,
       !!send_invitations,
       provider_platform,
       provider_meeting_id,
@@ -192,20 +166,21 @@ export async function createMeeting(req, res) {
 
     const meeting = meetingResult.rows[0];
 
-    // Insert attendees (optional)
-    // We store emails and keep user_id nullable for now.
     if (Array.isArray(attendees) && attendees.length > 0) {
-      const values = [];
-      const params = [];
-      let p = 1;
+      const cleaned = attendees
+        .map((e) => String(e || "").trim().toLowerCase())
+        .filter(Boolean);
 
-      for (const email of attendees) {
-        if (!email) continue;
-        params.push(meeting.meeting_id, String(email).trim());
-        values.push(`($${p++}, $${p++})`);
-      }
+      if (cleaned.length > 0) {
+        const values = [];
+        const params = [];
+        let p = 1;
 
-      if (values.length > 0) {
+        for (const email of cleaned) {
+          params.push(meeting.meeting_id, email);
+          values.push(`($${p++}, $${p++})`);
+        }
+
         const insertAttSql = `
           INSERT INTO training_meeting_attendees (meeting_id, email)
           VALUES ${values.join(",")}
@@ -215,7 +190,10 @@ export async function createMeeting(req, res) {
       }
     }
 
-    return res.status(201).json({ meeting_id: meeting.meeting_id, meeting });
+    return res.status(201).json({
+      meeting_id: meeting.meeting_id,
+      meeting,
+    });
   } catch (err) {
     console.error("createMeeting error:", err);
     return res.status(500).json({

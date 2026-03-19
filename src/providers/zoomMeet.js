@@ -1,25 +1,27 @@
 // src/providers/zoomMeet.js
 import { getZoomAccessToken } from "../controller/integrationController.js";
 
-export async function createZoomMeeting(company_id, { title, description, scheduled_at, duration_minutes }) {
+export async function createZoomMeeting(
+  company_id,
+  { title, description, scheduled_at, duration_minutes }
+) {
   const token = await getZoomAccessToken(company_id);
 
-  // Zoom expects local time + timezone OR UTC in ISO.
-  // Use scheduled_at as ISO string; Zoom accepts start_time in ISO.
   const body = {
     topic: title,
-    type: 2, // scheduled meeting
+    type: 2,
     start_time: new Date(scheduled_at).toISOString(),
     duration: Number(duration_minutes || 60),
     agenda: description || "",
     settings: {
-      join_before_host: false,
-      waiting_room: true,
+      join_before_host: true,
+      waiting_room: false,
       meeting_authentication: false,
+      approval_type: 2,
+      registration_type: 1,
     },
   };
 
-  // "me" creates meeting under the authenticated Zoom user
   const res = await fetch("https://api.zoom.us/v2/users/me/meetings", {
     method: "POST",
     headers: {
@@ -37,7 +39,7 @@ export async function createZoomMeeting(company_id, { title, description, schedu
   return {
     meeting_id: String(data.id),
     join_url: data.join_url,
-    start_url: data.start_url, // host URL (store carefully)
+    start_url: data.start_url,
     raw: data,
   };
 }
