@@ -20,7 +20,7 @@ export const router = Router();
  * - Subadmin (3): company+ship scope
  * - Crew (4): usually read-only (optional)
  */
-const ADMIN_ROLES = [1, 2, 3];
+const ADMIN_ROLES = [1, 2, 3, 4];
 const READ_ROLES = [1, 2, 3, 4];
 
 /**
