@@ -9,7 +9,6 @@ import {
   deleteShip,
   getShipsByCompanyId,
 } from '../controller/shipsController.js';
-import { allowRoles } from "../middleware/rbac.js"; 
 
 export const router = Router();
 
@@ -126,7 +125,7 @@ router.get('/', getAllShips);
  *       401: { description: Unauthorized }
  *       403: { description: Forbidden }
  */
-router.get('/company/:company_id', allowRoles(1), getShipsByCompanyId);
+router.get('/company/:company_id', getShipsByCompanyId);
 
 /**
  * @openapi
@@ -164,7 +163,7 @@ router.get('/company/:company_id', allowRoles(1), getShipsByCompanyId);
  *       500:
  *         description: Server error
  */
-router.get("/:id", allowRoles(1,2,3), getShipById);
+router.get('/:id', getShipById);
 
 /**
  * @openapi
@@ -201,7 +200,7 @@ router.get("/:id", allowRoles(1,2,3), getShipById);
  *       500:
  *         description: Server error
  */
-router.post("/", allowRoles(1,2), createShip);
+router.post('/', createShip);
 
 /**
  * @openapi
@@ -249,7 +248,7 @@ router.post("/", allowRoles(1,2), createShip);
  *       500:
  *         description: Server error
  */
-router.put("/:id", allowRoles(1,2), updateShip);
+router.put('/:id', updateShip);
 
 /**
  * @openapi
@@ -288,5 +287,4 @@ router.put("/:id", allowRoles(1,2), updateShip);
  *       500:
  *         description: Server error
  */
-router.delete("/:id", allowRoles(1,2), deleteShip);
-
+router.delete('/:id', deleteShip);

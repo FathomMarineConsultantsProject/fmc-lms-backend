@@ -10,23 +10,16 @@ import {
   deleteUser,
   importUsersFromExcel,
   bulkUpdateUserStatus,
-  getUserShipHistory,
-  getUsersByShipId,
-  syncUserStatusByDates,
-  searchUsers,
 } from "../controller/usersController.js";
 
 export const router = Router();
 
-  /**
+/**
  * @openapi
  * tags:
  *   - name: Users
  *     description: User management
  */
-
-router.get("/sync-status", syncUserStatusByDates);
-router.post("/sync-status", syncUserStatusByDates); // optional for Postman manual trigger
 
 router.use(requireAuth);
 
@@ -151,9 +144,3 @@ router.delete("/:id", allowRoles(1, 2), deleteUser);
 router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
 
 router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);
-
-router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
-
-router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
-
-router.post("/users/search", requireAuth, allowRoles(1,2,3), searchUsers);

@@ -40,26 +40,19 @@ export const trackActivity = async (req, res) => {
   if (!requireActivityKey(req, res)) return;
 
   const { username, trainingType, timestamp, activityType, ...rest } = req.body || {};
-  if (!username) return res.status(400).json({ error: "username is required" });
+  if (!username) return res.status(400).json({ error: 'username is required' });
 
   const occurredAt = parseUnityTimestamp(timestamp) || new Date();
-  const finalActivityType = activityType || "training";
+  const finalActivityType = activityType || 'training';
 
   try {
-    // resolve user_id/company_id/ship_id from username
+    // try resolve user_id/company_id/ship_id from username
     const u = await db.query(
-      `SELECT user_id, company_id, ship_id, role_id FROM users WHERE username = $1 LIMIT 1`,
+      `SELECT user_id, company_id, ship_id FROM users WHERE username = $1 LIMIT 1`,
       [String(username)]
     );
-    const userRow = u.rows[0] || null;
 
-    // (optional safety) if caller is logged-in crew, don’t allow logging for other users
-    // If Unity won’t send Authorization header, this won’t run.
-    if (req.user?.role_id && Number(req.user.role_id) === 4) {
-      if (userRow?.user_id && Number(req.user.user_id) !== Number(userRow.user_id)) {
-        return res.status(403).json({ error: "Crew can only log their own activity" });
-      }
-    }
+    const userRow = u.rows[0] || null;
 
     const insert = await db.query(
       `
@@ -67,16 +60,7 @@ export const trackActivity = async (req, res) => {
         (user_id, username, company_id, ship_id, activity_type, training_type, payload_json, occurred_at)
       VALUES
         ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-      RETURNING
-        activity_id,
-        user_id,
-        username,
-        company_id,
-        ship_id,
-        activity_type,
-        training_type,
-        occurred_at,
-        created_at
+      RETURNING activity_id, username, activity_type, training_type, occurred_at
       `,
       [
         userRow?.user_id ?? null,
@@ -91,12 +75,12 @@ export const trackActivity = async (req, res) => {
     );
 
     return res.status(201).json({
-      message: "Activity logged",
+      message: 'Activity logged',
       log: insert.rows[0],
     });
   } catch (err) {
-    console.error("Error trackActivity:", err);
-    return res.status(500).json({ error: "Failed to log activity" });
+    console.error('Error trackActivity:', err);
+    return res.status(500).json({ error: 'Failed to log activity' });
   }
 };
 
@@ -109,19 +93,12 @@ export const trackActivity = async (req, res) => {
  */
 export const getActivityLogs = async (req, res) => {
   try {
-    const { role_id, company_id, ship_id, user_id } = req.user;
-
-    const {
-      company_id: qCompanyId,
-      ship_id: qShipId,
-      username: qUsername,
-      user_id: qUserId,
-      limit = 100,
-    } = req.query;
+    const { role_id, company_id, ship_id } = req.user;
+    const { company_id: qCompanyId, ship_id: qShipId, username: qUsername, limit = 100 } = req.query;
 
     const lim = Math.min(Number(limit) || 100, 500);
 
-    // ROLE 1: superadmin (can filter anything)
+    // role 1: all logs, optional filters
     if (Number(role_id) === 1) {
       const filters = [];
       const values = [];
@@ -130,9 +107,8 @@ export const getActivityLogs = async (req, res) => {
       if (qCompanyId) { filters.push(`company_id = $${i++}`); values.push(String(qCompanyId)); }
       if (qShipId) { filters.push(`ship_id = $${i++}`); values.push(Number(qShipId)); }
       if (qUsername) { filters.push(`username = $${i++}`); values.push(String(qUsername)); }
-      if (qUserId) { filters.push(`user_id = $${i++}`); values.push(Number(qUserId)); }
 
-      const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
       const sql = `
         SELECT *
         FROM activity_logs
@@ -145,136 +121,37 @@ export const getActivityLogs = async (req, res) => {
       return res.json(rows);
     }
 
-    // ROLE 2: admin (company scoped)
+    // role 2: company scoped
     if (Number(role_id) === 2) {
-      const filters = [`company_id = $1`];
-      const values = [company_id];
-      let i = 2;
-
-      if (qShipId) { filters.push(`ship_id = $${i++}`); values.push(Number(qShipId)); }
-      if (qUsername) { filters.push(`username = $${i++}`); values.push(String(qUsername)); }
-      if (qUserId) { filters.push(`user_id = $${i++}`); values.push(Number(qUserId)); }
-
-      const sql = `
+      const { rows } = await db.query(
+        `
         SELECT *
         FROM activity_logs
-        WHERE ${filters.join(" AND ")}
-        ORDER BY occurred_at DESC
-        LIMIT $${i}
-      `;
-      values.push(lim);
-
-      const { rows } = await db.query(sql, values);
-      return res.json(rows);
-    }
-
-    // ROLE 3: subadmin (ship scoped)
-    if (Number(role_id) === 3) {
-      if (!ship_id) return res.json([]);
-
-      const filters = [`ship_id = $1`];
-      const values = [ship_id];
-      let i = 2;
-
-      if (qUsername) { filters.push(`username = $${i++}`); values.push(String(qUsername)); }
-      if (qUserId) { filters.push(`user_id = $${i++}`); values.push(Number(qUserId)); }
-
-      const sql = `
-        SELECT *
-        FROM activity_logs
-        WHERE ${filters.join(" AND ")}
-        ORDER BY occurred_at DESC
-        LIMIT $${i}
-      `;
-      values.push(lim);
-
-      const { rows } = await db.query(sql, values);
-      return res.json(rows);
-    }
-
-    // ROLE 4: crew (ONLY own logs)
-    if (Number(role_id) === 4) {
-      const sql = `
-        SELECT *
-        FROM activity_logs
-        WHERE user_id = $1
+        WHERE company_id = $1
         ORDER BY occurred_at DESC
         LIMIT $2
-      `;
-      const { rows } = await db.query(sql, [user_id, lim]);
+        `,
+        [company_id, lim]
+      );
       return res.json(rows);
     }
 
-    return res.json([]);
-  } catch (err) {
-    console.error("Error getActivityLogs:", err);
-    return res.status(500).json({ error: "Failed to fetch activity logs" });
-  }
-};
-
-export const getRecentActivityStatus = async (req, res) => {
-  try {
-    const { role_id, company_id, ship_id, user_id } = req.user;
-
-    const DAYS = 31;
-    const minutes = DAYS * 24 * 60;
-    const sinceDate = new Date(Date.now() - minutes * 60 * 1000);
-
-    let sql = `
-      SELECT MAX(occurred_at) AS last_occurred_at
+    // role 3/4: ship scoped
+    if (!ship_id) return res.json([]);
+    const { rows } = await db.query(
+      `
+      SELECT *
       FROM activity_logs
-      WHERE occurred_at >= $1
-    `;
-    const values = [sinceDate];
-    let i = 2;
+      WHERE ship_id = $1
+      ORDER BY occurred_at DESC
+      LIMIT $2
+      `,
+      [ship_id, lim]
+    );
+    return res.json(rows);
 
-    if (Number(role_id) === 1) {
-      // optional superadmin filters
-      const { company_id: qCompanyId, ship_id: qShipId, username: qUsername, user_id: qUserId } = req.query;
-
-      if (qCompanyId) { sql += ` AND company_id = $${i++}`; values.push(String(qCompanyId)); }
-      if (qShipId) { sql += ` AND ship_id = $${i++}`; values.push(Number(qShipId)); }
-      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
-      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
-    } else if (Number(role_id) === 2) {
-      sql += ` AND company_id = $${i++}`;
-      values.push(company_id);
-
-      const { ship_id: qShipId, username: qUsername, user_id: qUserId } = req.query;
-      if (qShipId) { sql += ` AND ship_id = $${i++}`; values.push(Number(qShipId)); }
-      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
-      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
-    } else if (Number(role_id) === 3) {
-      if (!ship_id) {
-        return res.json({ hasRecent: false, minutes, since: sinceDate.toISOString(), lastOccurredAt: null });
-      }
-      sql += ` AND ship_id = $${i++}`;
-      values.push(ship_id);
-
-      const { username: qUsername, user_id: qUserId } = req.query;
-      if (qUsername) { sql += ` AND username = $${i++}`; values.push(String(qUsername)); }
-      if (qUserId) { sql += ` AND user_id = $${i++}`; values.push(Number(qUserId)); }
-    } else if (Number(role_id) === 4) {
-      sql += ` AND user_id = $${i++}`;
-      values.push(user_id);
-    } else {
-      return res.json({ hasRecent: false, minutes, since: sinceDate.toISOString(), lastOccurredAt: null });
-    }
-
-    const { rows } = await db.query(sql, values);
-    const lastOccurredAt = rows?.[0]?.last_occurred_at || null;
-
-    return res.json({
-      hasRecent: !!lastOccurredAt,
-      minutes,
-      since: sinceDate.toISOString(),
-      lastOccurredAt: lastOccurredAt ? new Date(lastOccurredAt).toISOString() : null,
-    });
   } catch (err) {
-    console.error("Error getRecentActivityStatus:", err);
-    return res.status(500).json({ error: "Failed to fetch recent activity status" });
+    console.error('Error getActivityLogs:', err);
+    return res.status(500).json({ error: 'Failed to fetch activity logs' });
   }
 };
-// ==============================================================================
-// this changes to be added in dev manually later after vercel deploy undo
-// =============================================================================

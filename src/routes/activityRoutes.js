@@ -1,7 +1,7 @@
 // src/routes/activityRoutes.js
 import { Router } from 'express';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { trackActivity, getActivityLogs, getRecentActivityStatus, } from '../controller/activityLogsController.js';
+import { trackActivity, getActivityLogs } from '../controller/activityLogsController.js';
 
 export const router = Router();
 
@@ -86,11 +86,3 @@ router.post('/track', trackActivity);
  *       500: { description: Server error }
  */
 router.get('/', requireAuth, getActivityLogs);
-
-// GET /activity/recent
-router.get("/recent", requireAuth, getRecentActivityStatus);
-
-
-// ==============================================================================
-// this changes to be added in dev manually later after vercel deploy undo
-// ==============================================================================

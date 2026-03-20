@@ -3,172 +3,10 @@ import { db } from "../db.js";
 import crypto from "crypto";
 import multer from "multer";
 import xlsx from "xlsx";
-import { handleShipHistoryChange } from "../utils/shipHistory.js";
-import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
 
 // ================= STATUS / PASSWORD HELPERS =================
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
 const isOnboard = (s) => normalizeStatus(s) === "onboard";
-
-// ✅ Ship-admin rank detection (role_id=3)
-const normalizeRank = (r) =>
-  String(r || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\.\-_,]/g, " ")
-    .replace(/[\/\\]/g, " ")
-    .replace(/\s+/g, " ");
-const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
-
-const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
-  const pageRaw = parseInt(String(req.query.page ?? defaults.page), 10);
-  const limitRaw = parseInt(String(req.query.limit ?? defaults.limit), 10);
-
-  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : defaults.page;
-
-  // ✅ enforce min 50, max 100 always
-  const limit = clamp(
-    Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
-    50,
-    100
-  );
-
-  const offset = (page - 1) * limit;
-  return { page, limit, offset };
-};
-
-// ================= RANK SORTING HELPERS =================
-// canonical rank order (lower = higher priority)
-const RANK_WEIGHT = {
-  MASTER: 1,
-  CHIEF_OFFICER: 2,
-  SECOND_OFFICER: 3,
-  THIRD_OFFICER: 4,
-  CHIEF_ENGINEER: 5,
-  SECOND_ENGINEER: 6,
-  THIRD_ENGINEER: 7,
-  ELECTRICIAN: 8,
-  BOSUN: 9,
-  AB: 10,
-  OS: 11,
-  OILER: 12,
-  WIPER: 13,
-  COOK: 14,
-  OTHER: 999,
-};
-
-// aliases per canonical rank (add more anytime)
-const RANK_ALIASES = {
-  MASTER: [
-    "master", "mstr", "mster", "mst", "mtr",
-    "captain", "cap", "capt"
-  ],
-
-  CHIEF_OFFICER: [
-    "chief officer", "chief mate", "c/o", "coff", "c off",
-    "1st officer", "first officer", "1/off", "1off", "1o"
-  ],
-
-  SECOND_OFFICER: [
-    "second officer", "2nd officer", "2/off", "2off", "2o", "2officer"
-  ],
-
-  THIRD_OFFICER: [
-    "third officer", "3rd officer", "3/off", "3off", "3o", "3officer"
-  ],
-
-  CHIEF_ENGINEER: [
-    "chief engineer", "c/e", "ce", "c eng", "cheng", "ch eng"
-  ],
-
-  SECOND_ENGINEER: [
-    "second engineer", "2nd engineer", "2/e", "2e", "2 eng", "2eng"
-  ],
-
-  THIRD_ENGINEER: [
-    "third engineer", "3rd engineer", "3/e", "3e", "3 eng", "3eng"
-  ],
-
-  ELECTRICIAN: [
-    "electrician", "elec", "ee", "j/ee", "jele", "elect"
-  ],
-
-  BOSUN: [
-    "bosun", "bosn", "boatswain"
-  ],
-
-  AB: [
-    "ab", "able", "able seaman", "able seafarer", "a/b"
-  ],
-
-  OS: [
-    "os", "ordinary seaman", "orse"
-  ],
-
-  OILER: [
-    "oiler"
-  ],
-
-  WIPER: [
-    "wiper"
-  ],
-
-  COOK: [
-    "cook", "ccok", "cok", "2cok", "2/cok", "2 cook"
-  ],
-};
-
-// find canonical rank key from raw rank string
-const canonicalRankKey = (rankRaw) => {
-  const r = normalizeRank(rankRaw);
-
-  if (!r) return "OTHER";
-
-  // exact / contains match
-  for (const [key, list] of Object.entries(RANK_ALIASES)) {
-    for (const a of list) {
-      const aa = normalizeRank(a);
-      if (r === aa) return key;
-      if (r.includes(aa)) return key;
-    }
-  }
-
-  // fallback: handle things like "2OFF", "3ENG", etc.
-  // normalizeRank already lowercases, so check patterns
-  if (/\b2\s*off\b|\b2off\b/.test(r)) return "SECOND_OFFICER";
-  if (/\b3\s*off\b|\b3off\b/.test(r)) return "THIRD_OFFICER";
-  if (/\b2\s*eng\b|\b2eng\b/.test(r)) return "SECOND_ENGINEER";
-  if (/\b3\s*eng\b|\b3eng\b/.test(r)) return "THIRD_ENGINEER";
-
-  return "OTHER";
-};
-
-const rankSortValue = (rankRaw) => {
-  const key = canonicalRankKey(rankRaw);
-  return RANK_WEIGHT[key] ?? RANK_WEIGHT.OTHER;
-};
-
-
-const isShipAdminRank = (rankValue) => {
-  const r = normalizeRank(rankValue);
-
-  // keywords that indicate senior officers / ship admins
-  const keywords = [
-    "master",
-    "captain",
-    "chief officer",
-    "chief mate",
-    "c/o",
-    "1st officer",
-    "first officer",
-    "chief engineer",
-    "c/e",
-    "1st engineer",
-    "first engineer",
-  ];
-
-  return keywords.some((k) => r.includes(k));
-};
 
 // If Excel doesn't contain status: compute from disembarkation_date
 const computeStatusFromDates = ({ disembarkation_date }) => {
@@ -201,37 +39,37 @@ const getEncKey = () => {
 /**
  * returns: base64(iv).base64(tag).base64(ciphertext)
  */
-// const encryptPassword = (plain) => {
-//   const key = getEncKey();
-//   const iv = crypto.randomBytes(12);
-//   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+const encryptPassword = (plain) => {
+  const key = getEncKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
 
-//   const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
-//   const tag = cipher.getAuthTag();
+  const ciphertext = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
 
-//   return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
-// };
+  return `${iv.toString("base64")}.${tag.toString("base64")}.${ciphertext.toString("base64")}`;
+};
 
-// const decryptPassword = (enc) => {
-//   try {
-//     if (!enc) return null;
-//     const [ivB64, tagB64, ctB64] = String(enc).split(".");
-//     if (!ivB64 || !tagB64 || !ctB64) return null;
+const decryptPassword = (enc) => {
+  try {
+    if (!enc) return null;
+    const [ivB64, tagB64, ctB64] = String(enc).split(".");
+    if (!ivB64 || !tagB64 || !ctB64) return null;
 
-//     const key = getEncKey();
-//     const iv = Buffer.from(ivB64, "base64");
-//     const tag = Buffer.from(tagB64, "base64");
-//     const ciphertext = Buffer.from(ctB64, "base64");
+    const key = getEncKey();
+    const iv = Buffer.from(ivB64, "base64");
+    const tag = Buffer.from(tagB64, "base64");
+    const ciphertext = Buffer.from(ctB64, "base64");
 
-//     const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-//     decipher.setAuthTag(tag);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
 
-//     const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-//     return plain.toString("utf8");
-//   } catch {
-//     return null;
-//   }
-// };
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return plain.toString("utf8");
+  } catch {
+    return null;
+  }
+};
 
 // generate username based on seafarer_id + random suffix to avoid collisions
 const generateUsername = (seafarerId) => {
@@ -272,58 +110,17 @@ const parseIntOrNull = (v) => {
 };
 
 const parseDateOrNull = (v) => {
-  if (v === null || v === undefined) return null;
+  if (v === null || v === undefined || String(v).trim() === "") return null;
 
-  // 1) Date object (xlsx cellDates: true)
+  // Excel may pass Date objects or strings
   if (v instanceof Date) {
-    if (Number.isNaN(v.getTime())) return null;
+    if (Number.isNaN(v.getTime())) return NaN;
     return v.toISOString().slice(0, 10);
   }
 
-  // 2) Excel serial number
-  if (typeof v === "number" && Number.isFinite(v)) {
-    const ms = Math.round((v - 25569) * 86400 * 1000); // Excel epoch
-    const d = new Date(ms);
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
-  }
-
-  // 3) Clean strings (your file has newlines/spaces)
-  let s = String(v).trim();
-  if (!s) return null;
-  s = s.replace(/\s+/g, ""); // remove spaces/newlines like "07.12.2025 \n"
-
-  // 4) ISO formats: YYYY-MM-DD or YYYY/MM/DD
-  let m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
-  if (m) {
-    const yyyy = Number(m[1]);
-    const mm = Number(m[2]);
-    const dd = Number(m[3]);
-    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
-    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-  }
-
-  // 5) DMY formats with ".", "/", "-" and 2-digit OR 4-digit year
-  // examples: 29.09.2025, 21.01.26, 07/12/2025, 6-9-2025
-  m = s.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})$/);
-  if (m) {
-    let dd = Number(m[1]);
-    let mm = Number(m[2]);
-    let yy = Number(m[3]);
-
-    // your sheets are DMY; also protects from JS MM/DD confusion
-    let yyyy = yy < 100 ? 2000 + yy : yy;
-
-    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
-    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-  }
-
-  // 6) LAST fallback: only for month-name formats like "12 Sep 2025"
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return NaN;
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
 };
 
 // If role is allowed, attach plaintext password via decrypt(password_enc)
@@ -338,204 +135,33 @@ const attachPlainPasswordIfAllowed = (roleId, userRow) => {
   };
 };
 
-const USER_SAFE_COLUMNS = `
-  user_id,
-  seafarer_id,
-  full_name,
-  rank,
-  trip,
-  embarkation_date,
-  disembarkation_date,
-  status,
-  username,
-  ship_id,
-  company_id,
-  created_at,
-  updated_at,
-  role_id,
-  sex,
-  password_enc
-`;
-
 // ================= CRUD =================
 
-// GET /users
 // GET /users
 export const getAllUsers = async (req, res) => {
   try {
     const role = Number(req.user.role_id);
-    const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
-    const myShipId = req.user?.ship_id != null ? Number(req.user.ship_id) : null;
-    const myUserId = req.user?.user_id;
+    const { company_id, ship_id, user_id } = req.user;
 
-    // role 4 unchanged: only self
-    if (role === 4) {
-      const { rows } = await db.query(
-        `SELECT ${USER_SAFE_COLUMNS}
-         FROM users
-         WHERE user_id = $1`,
-        [myUserId]
-      );
-      if (!rows.length) return res.status(404).json({ error: "User not found" });
-      return res.json(attachPlainPasswordIfAllowed(role, rows[0]));
-    }
+    let rows;
 
-    // pagination (min 10 max 100)
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
-
-    // filters
-    const q = String(req.query.q ?? "").trim();
-    const rank = String(req.query.rank ?? "").trim();
-    const status = String(req.query.status ?? "").trim();
-
-    // for superadmin/admin use:
-    const company_id_q = String(req.query.company_id ?? "").trim();
-    const ship_id_q_raw = req.query.ship_id;
-    const ship_id_q =
-      ship_id_q_raw != null && String(ship_id_q_raw).trim() !== ""
-        ? Number.parseInt(String(ship_id_q_raw), 10)
-        : null;
-
-    // sort whitelist
-    const sort = String(req.query.sort ?? "user_id").trim().toLowerCase(); // user_id | name | created_at | rank
-    const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
-
-    const sortColumn =
-      sort === "name" ? "u.full_name" :
-        sort === "created_at" ? "u.created_at" :
-          "u.user_id";
-
-    // dynamic where
-    const where = [];
-    const params = [];
-    let idx = 1;
-
-    // ---- role scope enforcement ----
     if (role === 1) {
-      // superadmin optional company filter
-      if (company_id_q) {
-        if (!isUuid(company_id_q)) {
-          return res.status(400).json({ error: "company_id must be a valid UUID" });
-        }
-        where.push(`u.company_id = $${idx++}`);
-        params.push(company_id_q);
-      }
-      // superadmin optional ship filter
-      if (Number.isFinite(ship_id_q)) {
-        where.push(`u.ship_id = $${idx++}`);
-        params.push(ship_id_q);
-      }
+      ({ rows } = await db.query("SELECT * FROM users ORDER BY user_id"));
+    } else if (role === 2) {
+      ({ rows } = await db.query("SELECT * FROM users WHERE company_id = $1 ORDER BY user_id", [
+        company_id,
+      ]));
+    } else if (role === 3) {
+      ({ rows } = await db.query(
+        "SELECT * FROM users WHERE company_id = $1 AND ship_id = $2 ORDER BY user_id",
+        [company_id, ship_id]
+      ));
+    } else {
+      ({ rows } = await db.query("SELECT * FROM users WHERE user_id = $1", [user_id]));
     }
 
-    if (role === 2) {
-      // admin forced to own company
-      if (!myCompanyId) return res.json({ page, limit, total: 0, count: 0, users: [] });
-
-      where.push(`u.company_id = $${idx++}`);
-      params.push(myCompanyId);
-
-      // optional ship filter (must be within company implicitly)
-      if (Number.isFinite(ship_id_q)) {
-        where.push(`u.ship_id = $${idx++}`);
-        params.push(ship_id_q);
-      }
-    }
-
-    if (role === 3) {
-      // subadmin forced to own company + ship
-      if (!myCompanyId || myShipId == null) return res.json({ page, limit, total: 0, count: 0, users: [] });
-
-      where.push(`u.company_id = $${idx++}`);
-      params.push(myCompanyId);
-
-      where.push(`u.ship_id = $${idx++}`);
-      params.push(myShipId);
-    }
-
-    // Hide Superadmin (1) & Admin (2) from user listings
-    where.push(`u.role_id IN (3, 4)`);
-
-    // ---- search filters ----
-    if (q) {
-      where.push(`(
-        u.full_name ILIKE $${idx}
-        OR u.seafarer_id ILIKE $${idx}
-        OR u.username ILIKE $${idx}
-      )`);
-      params.push(`%${q}%`);
-      idx++;
-    }
-
-    if (rank) {
-      where.push(`u.rank ILIKE $${idx++}`);
-      params.push(`%${rank}%`);
-    }
-
-    if (status) {
-      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${idx++})`);
-      params.push(status);
-    }
-
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    // total
-    const totalRes = await db.query(
-      `SELECT COUNT(*)::int AS total
-       FROM users u
-       ${whereSql}`,
-      params
-    );
-    const total = totalRes.rows[0]?.total ?? 0;
-
-    // data
-    const dataParams = [...params, limit, offset];
-    const { rows } = await db.query(
-      `SELECT ${USER_SAFE_COLUMNS}
-       FROM users u
-       ${whereSql}
-       ORDER BY ${sortColumn} ${order}
-       LIMIT $${idx} OFFSET $${idx + 1}`,
-      dataParams
-    );
-
-    // attach plain_password ONLY for allowed roles
     const out = rows.map((u) => attachPlainPasswordIfAllowed(role, u));
-
-    // if frontend asks sort=rank, keep your JS rank ordering (within page)
-    if (sort === "rank") {
-      out.sort((a, b) => {
-        const ra = rankSortValue(a.rank);
-        const rb = rankSortValue(b.rank);
-        if (ra !== rb) return ra - rb;
-
-        return String(a.full_name || "").localeCompare(
-          String(b.full_name || ""),
-          undefined,
-          { sensitivity: "base" }
-        );
-      });
-    }
-
-    return res.json({
-      page,
-      limit,
-      total,
-      count: out.length,
-      users: out,
-      applied_filters: {
-        q: q || null,
-        rank: rank || null,
-        status: status || null,
-        company_id: role === 1 ? (company_id_q || null) : (role === 2 || role === 3 ? myCompanyId : null),
-        ship_id:
-          role === 1 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
-            : role === 2 ? (Number.isFinite(ship_id_q) ? ship_id_q : null)
-              : role === 3 ? myShipId
-                : null,
-        sort,
-        order: order.toLowerCase(),
-      },
-    });
+    return res.json(out);
   } catch (err) {
     console.error("Error getting users:", err);
     return res.status(500).json({ error: "Failed to fetch users" });
@@ -545,21 +171,11 @@ export const getAllUsers = async (req, res) => {
 // GET /users/:id
 export const getUserById = async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (Number.isNaN(id)) {
-    return res.status(400).json({ error: "user_id must be a number" });
-  }
+  if (Number.isNaN(id)) return res.status(400).json({ error: "user_id must be a number" });
 
   try {
-    const { rows } = await db.query(
-      `SELECT ${USER_SAFE_COLUMNS}
-       FROM users
-       WHERE user_id = $1`,
-      [id]
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    const { rows } = await db.query("SELECT * FROM users WHERE user_id = $1", [id]);
+    if (!rows.length) return res.status(404).json({ error: "User not found" });
 
     const role = Number(req.user.role_id);
     return res.json(attachPlainPasswordIfAllowed(role, rows[0]));
@@ -568,261 +184,6 @@ export const getUserById = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch user" });
   }
 };
-
-// =============ships history===================
-// GET /users/:id/ship-history
-export const getUserShipHistory = async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  if (Number.isNaN(id)) return res.status(400).json({ error: "user_id must be a number" });
-
-  try {
-    const role = Number(req.user.role_id);
-    const myCompany = req.user.company_id ? String(req.user.company_id) : null;
-    const myShip = req.user.ship_id != null ? Number(req.user.ship_id) : null;
-
-    const uRes = await db.query(
-      `SELECT user_id, company_id, ship_id
-       FROM users
-       WHERE user_id = $1`,
-      [id]
-    );
-    if (!uRes.rows.length) return res.status(404).json({ error: "User not found" });
-
-    const target = uRes.rows[0];
-
-    if (role === 2 && myCompany && String(target.company_id) !== myCompany) {
-      return res.status(403).json({ error: "Forbidden (company scope)" });
-    }
-    if (role === 3) {
-      if (myCompany && String(target.company_id) !== myCompany) {
-        return res.status(403).json({ error: "Forbidden (company scope)" });
-      }
-      if (myShip != null && Number(target.ship_id) !== myShip) {
-        return res.status(403).json({ error: "Forbidden (ship scope)" });
-      }
-    }
-    if (role === 4 && Number(req.user.user_id) !== Number(id)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
-    // pagination (min 50 max 100)
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
-
-    // total count
-    const totalRes = await db.query(
-      `SELECT COUNT(*)::int AS total
-       FROM user_ship_history
-       WHERE user_id = $1`,
-      [id]
-    );
-    const total = totalRes.rows[0]?.total ?? 0;
-
-    // paginated data
-    const { rows } = await db.query(
-      `SELECT
-         h.*,
-         s.ship_name
-       FROM user_ship_history h
-       LEFT JOIN ships s ON s.ship_id = h.ship_id
-       WHERE h.user_id = $1
-       ORDER BY h.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [id, limit, offset]
-    );
-
-    return res.json({
-      user_id: id,
-      page,
-      limit,
-      total,
-      count: rows.length,
-      history: rows,
-    });
-  } catch (err) {
-    console.error("getUserShipHistory error:", err);
-    return res.status(500).json({ error: "Failed to fetch ship history" });
-  }
-};
-
-
-// GET /users/by-ship/:ship_id
-// roles:
-// 1 (superadmin) -> can query any ship
-// 2 (admin) -> only ships within their company
-// 3 (subadmin/ship admin) -> only their ship (and company)
-// 4 (crew) -> forbidden (or you can allow own ship if needed)
-export const getUsersByShipId = async (req, res) => {
-  try {
-    const role = Number(req.user.role_id);
-    const ship_id = parseInt(req.params.ship_id, 10);
-
-    if (Number.isNaN(ship_id)) {
-      return res.status(400).json({ error: "ship_id must be a number" });
-    }
-
-    // block crew (role 4)
-    if (role === 4) return res.status(403).json({ error: "Forbidden" });
-
-    // ship lookup (for scope + metadata)
-    const shipRes = await db.query(
-      `SELECT ship_id, company_id, ship_name
-       FROM ships
-       WHERE ship_id = $1`,
-      [ship_id]
-    );
-    if (!shipRes.rows.length) return res.status(404).json({ error: "Ship not found" });
-
-    const ship = shipRes.rows[0];
-
-    // scope enforcement
-    if (role === 2) {
-      if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
-        return res.status(403).json({ error: "Forbidden (company scope)" });
-      }
-    }
-    if (role === 3) {
-      if (!req.user.company_id || String(req.user.company_id) !== String(ship.company_id)) {
-        return res.status(403).json({ error: "Forbidden (company scope)" });
-      }
-      if (req.user.ship_id == null || Number(req.user.ship_id) !== Number(ship_id)) {
-        return res.status(403).json({ error: "Forbidden (ship scope)" });
-      }
-    }
-
-    // ------------------ ✅ Query Params ------------------
-    const q = String(req.query.q ?? "").trim();
-    const rank = String(req.query.rank ?? "").trim();
-    const status = String(req.query.status ?? "").trim();
-    const role_id_q = req.query.role_id != null ? Number(req.query.role_id) : null;
-
-    const sort = String(req.query.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
-    const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
-
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 100 });
-
-    const where = [
-      `u.ship_id = $1`,
-      `u.role_id IN (3, 4)` // hide role 1 & 2
-    ];
-    const params = [ship_id];
-    let idx = 2;
-
-    // q search: full_name / seafarer_id / username
-    if (q) {
-      where.push(`(
-        u.full_name ILIKE $${idx}
-        OR u.seafarer_id ILIKE $${idx}
-        OR u.username ILIKE $${idx}
-      )`);
-      params.push(`%${q}%`);
-      idx++;
-    }
-
-    // rank filter (partial match to be friendly)
-    if (rank) {
-      where.push(`u.rank ILIKE $${idx}`);
-      params.push(`%${rank}%`);
-      idx++;
-    }
-
-    // status filter (Onboard/Offboard)
-    if (status) {
-      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${idx})`);
-      params.push(status);
-      idx++;
-    }
-
-    // role_id filter
-    if (Number.isFinite(role_id_q)) {
-      where.push(`u.role_id = $${idx}`);
-      params.push(role_id_q);
-      idx++;
-    }
-
-    // Sort mapping (avoid SQL injection by whitelisting)
-    const sortColumn =
-      sort === "name" ? "u.full_name" :
-        sort === "created_at" ? "u.created_at" :
-          "u.user_id"; // default stable (we'll rank-sort in JS below if you want)
-
-    // total count (for pagination UI)
-    const countRes = await db.query(
-      `SELECT COUNT(*)::int AS total
-       FROM users u
-       WHERE ${where.join(" AND ")}`,
-      params
-    );
-    const total = countRes.rows[0]?.total ?? 0;
-
-    // data query
-    const dataParams = [...params, limit, offset];
-    const { rows } = await db.query(
-      `SELECT
-         u.user_id,
-         u.seafarer_id,
-         u.full_name,
-         u.rank,
-         u.trip,
-         u.embarkation_date,
-         u.disembarkation_date,
-         u.status,
-         u.username,
-         u.ship_id,
-         u.company_id,
-         u.created_at,
-         u.updated_at,
-         u.role_id,
-         u.sex,
-         u.date_of_birth,
-         u.place_of_birth,
-         u.nationality,
-         u.embarkation_port,
-         u.disembarkation_port
-       FROM users u
-       WHERE ${where.join(" AND ")}
-       ORDER BY ${sortColumn} ${order}
-       LIMIT $${idx} OFFSET $${idx + 1}`,
-      dataParams
-    );
-
-    // ✅ If you want your special rank ordering, keep it here:
-    // (only makes sense when sort=rank)
-    if (sort === "rank") {
-      rows.sort((a, b) => {
-        const ra = rankSortValue(a.rank);
-        const rb = rankSortValue(b.rank);
-        if (ra !== rb) return ra - rb;
-
-        const na = String(a.full_name || "").toLowerCase();
-        const nb = String(b.full_name || "").toLowerCase();
-        return na.localeCompare(nb);
-      });
-    }
-
-    return res.json({
-      ship_id,
-      ship_name: ship.ship_name || null,
-      company_id: ship.company_id,
-      page,
-      limit,
-      total,
-      count: rows.length,
-      users: rows,
-      applied_filters: {
-        q: q || null,
-        rank: rank || null,
-        status: status || null,
-        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
-        sort,
-        order: order.toLowerCase(),
-      },
-    });
-  } catch (err) {
-    console.error("getUsersByShipId error:", err);
-    return res.status(500).json({ error: "Failed to fetch users for ship" });
-  }
-};
-
 
 // POST /users
 export const createUser = async (req, res) => {
@@ -969,7 +330,7 @@ export const updateUser = async (req, res) => {
 
   try {
     const currentRes = await db.query(
-      `SELECT user_id, seafarer_id, status, username, password_hash, ship_id, company_id
+      `SELECT user_id, seafarer_id, status, username, password_hash
        FROM users
        WHERE user_id = $1`,
       [id]
@@ -994,11 +355,6 @@ export const updateUser = async (req, res) => {
       newPasswordHash = hashPassword(newPassword);
       newPasswordEnc = encryptPassword(newPassword);
     }
-
-    // store old ship before update for history
-    const old_ship_id = current.ship_id ?? null;
-    const company_id = current.company_id ?? null;
-    const new_ship_id = body.ship_id ?? old_ship_id;
 
     const { rowCount } = await db.query(
       `UPDATE users
@@ -1080,20 +436,6 @@ export const updateUser = async (req, res) => {
 
     if (!rowCount) return res.status(404).json({ error: "User not found" });
 
-    // ✅ ship history auto update ONLY if ship changed
-    await handleShipHistoryChange({
-      user_id: id,
-      company_id,
-      old_ship_id,
-      new_ship_id,
-      embarkation_date: body.embarkation_date,
-      disembarkation_date: body.disembarkation_date,
-      embarkation_port: body.embarkation_port,
-      disembarkation_port: body.disembarkation_port,
-      changed_by_user_id: req.user.user_id,
-      notes: "Manual user update",
-    });
-
     return res.json({
       message: "User updated",
       credentials: newUsername && newPassword ? { username: newUsername, password: newPassword } : null,
@@ -1107,74 +449,6 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// POST /users/sync-status
-// Runs daily via Vercel Cron (or manually via Postman).
-// Security: either
-// 1) x-cron-secret header matches CRON_SECRET env, OR
-// 2) Authorization Bearer token of role_id=1 (superadmin)
-export const syncUserStatusByDates = async (req, res) => {
-  try {
-    // Allow either:
-    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
-    // 2) Manual: Authorization Bearer token (superadmin)
-
-    const expected = process.env.CRON_SECRET;
-
-    const secretFromQuery = req.query?.secret;
-    const isCronAllowed =
-      expected && secretFromQuery && String(secretFromQuery) === String(expected);
-
-    const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
-
-    if (!isCronAllowed && !isSuperAdmin) {
-      return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
-    }
-
-    // ----- Date-based sync rules -----
-    const offboardRes = await db.query(
-      `UPDATE users
-SET
-  status = 'Offboard',
-  ship_id = NULL,
-  updated_at = NOW()
-WHERE
-  disembarkation_date IS NOT NULL
-  AND (embarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND disembarkation_date::date <= CURRENT_DATE
-  AND (status IS NULL OR lower(status) <> 'offboard')
-RETURNING user_id;
-`
-    );
-
-    const onboardRes = await db.query(
-      `UPDATE users
-SET
-  status = 'Onboard',
-  updated_at = NOW()
-WHERE
-  ship_id IS NOT NULL
-  AND embarkation_date IS NOT NULL
-  AND (disembarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND embarkation_date::date <= CURRENT_DATE
-  AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
-  AND (status IS NULL OR lower(status) <> 'onboard')
-RETURNING user_id;
-`
-    );
-
-    return res.json({
-      message: "Sync completed",
-      today: new Date().toISOString().slice(0, 10),
-      offboarded_count: offboardRes.rowCount,
-      onboarded_count: onboardRes.rowCount,
-      offboarded_user_ids: offboardRes.rows.map((r) => r.user_id),
-      onboarded_user_ids: onboardRes.rows.map((r) => r.user_id),
-    });
-  } catch (err) {
-    console.error("syncUserStatusByDates error:", err);
-    return res.status(500).json({ error: "Failed to sync user status" });
-  }
-};
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -1335,266 +609,6 @@ export const bulkUpdateUserStatus = async (req, res) => {
   }
 };
 
-// POST /users/search
-export const searchUsers = async (req, res) => {
-  try {
-    const role = Number(req.user.role_id);
-
-    // incoming filters from body
-    const body = req.body || {};
-    const q = String(body.q ?? "").trim();
-    const rank = String(body.rank ?? "").trim();
-    const status = String(body.status ?? "").trim();
-    const role_id_q = body.role_id != null ? Number(body.role_id) : null;
-
-    // sorting
-    const sort = String(body.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
-    const order =
-      String(body.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
-
-    // pagination (min10 max100)
-    const pageRaw = parseInt(String(body.page ?? "1"), 10);
-    const limitRaw = parseInt(String(body.limit ?? "50"), 10);
-    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
-    const limit = Math.min(
-      100,
-      Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
-    );
-    const offset = (page - 1) * limit;
-
-    // company/ship from body (may be ignored depending on role scope)
-    const requestedCompanyId =
-      body.company_id != null && String(body.company_id).trim() !== ""
-        ? String(body.company_id).trim()
-        : null;
-
-    const requestedShipId =
-      body.ship_id != null && String(body.ship_id).trim() !== ""
-        ? Number.parseInt(String(body.ship_id), 10)
-        : null;
-
-    // VALIDATION (only validate when provided)
-    // company_id must be UUID (only meaningful for role 1, but validate anyway if sent)
-    if (requestedCompanyId && !isUuid(requestedCompanyId)) {
-      return res.status(400).json({ error: "company_id must be a valid UUID" });
-    }
-
-    // ship_id must be a valid integer when provided
-    if (body.ship_id != null && String(body.ship_id).trim() !== "") {
-      if (!Number.isInteger(requestedShipId) || requestedShipId <= 0) {
-        return res.status(400).json({ error: "ship_id must be a positive integer" });
-      }
-    }
-
-    // role_id filter must be valid integer if provided
-    if (body.role_id != null && !Number.isFinite(role_id_q)) {
-      return res.status(400).json({ error: "role_id must be a number" });
-    }
-
-    // status validation (optional but nice)
-    if (status) {
-      const s = String(status).trim().toLowerCase();
-      if (s !== "onboard" && s !== "offboard") {
-        return res
-          .status(400)
-          .json({ error: 'status must be either "Onboard" or "Offboard"' });
-      }
-    }
-
-    // ---------------- WHERE builder ----------------
-    const where = [];
-    const params = [];
-    let p = 1;
-
-    // role scope enforcement
-    if (role === 1) {
-      // superadmin: optional company filter
-      if (requestedCompanyId) {
-        where.push(`u.company_id = $${p++}`);
-        params.push(requestedCompanyId);
-      }
-      // optional ship filter
-      if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
-        params.push(requestedShipId);
-      }
-    } else if (role === 2) {
-      // admin: forced company_id from token
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
-
-      // optional ship filter (must still be inside company)
-      if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
-        params.push(requestedShipId);
-      }
-    } else if (role === 3) {
-      // subadmin: forced company + ship
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
-
-      where.push(`u.ship_id = $${p++}`);
-      params.push(req.user.ship_id);
-    } else {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    // Only return Subadmins & Crew
-    where.push(`u.role_id IN (3, 4)`);
-
-    // q search
-    if (q) {
-      where.push(`(
-        u.full_name ILIKE $${p}
-        OR u.seafarer_id ILIKE $${p}
-        OR u.username ILIKE $${p}
-      )`);
-      params.push(`%${q}%`);
-      p++;
-    }
-
-    // rank filter
-    if (rank) {
-      where.push(`u.rank ILIKE $${p++}`);
-      params.push(`%${rank}%`);
-    }
-
-    // status filter
-    if (status) {
-      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${p++})`);
-      params.push(status);
-    }
-
-    // role_id filter
-    if (Number.isFinite(role_id_q)) {
-      where.push(`u.role_id = $${p++}`);
-      params.push(role_id_q);
-    }
-
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    // whitelist sort column (avoid SQL injection)
-    const sortColumn =
-      sort === "name" ? "u.full_name" :
-        sort === "created_at" ? "u.created_at" :
-          "u.user_id";
-
-    // total count
-    const totalRes = await db.query(
-      `SELECT COUNT(*)::int AS total FROM users u ${whereSql}`,
-      params
-    );
-    const total = totalRes.rows[0]?.total ?? 0;
-
-    // data query
-    const dataParams = [...params, limit, offset];
-    const { rows } = await db.query(
-      `SELECT
-         u.user_id,
-         u.seafarer_id,
-         u.full_name,
-         u.rank,
-         u.trip,
-         u.embarkation_date,
-         u.disembarkation_date,
-         u.status,
-         u.username,
-         u.ship_id,
-         u.company_id,
-         u.created_at,
-         u.updated_at,
-         u.role_id,
-         u.sex,
-         u.date_of_birth,
-         u.place_of_birth,
-         u.nationality,
-         u.embarkation_port,
-         u.disembarkation_port
-       FROM users u
-       ${whereSql}
-       ORDER BY ${sortColumn} ${order}
-       LIMIT $${p} OFFSET $${p + 1}`,
-      dataParams
-    );
-
-    // ===================== RECENT ACTIVITY (single query for this page) =====================
-    // Business rule: green stays for 31 days (not configurable from frontend)
-    const DAYS = 31;
-    const recent_activity_minutes = DAYS * 24 * 60; // 44,640 minutes
-
-    let activityMap = new Map(); // user_id -> last_activity_at ISO
-
-    if (recent_activity_minutes && rows.length) {
-      const sinceDate = new Date(Date.now() - recent_activity_minutes * 60 * 1000);
-
-      // Only for user_ids returned in this page
-      const ids = rows.map((u) => Number(u.user_id)).filter((n) => Number.isInteger(n));
-
-      if (ids.length) {
-        // IMPORTANT: scope activity logs SAME AS user scope.
-        // Since your rows already follow scope, we just filter by these ids.
-        const actRes = await db.query(
-          `
-      SELECT user_id, MAX(occurred_at) AS last_activity_at
-      FROM activity_logs
-      WHERE occurred_at >= $1
-        AND user_id = ANY($2::int[])
-      GROUP BY user_id
-      `,
-          [sinceDate, ids]
-        );
-
-        for (const r of actRes.rows) {
-          activityMap.set(Number(r.user_id), r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null);
-        }
-      }
-    }
-
-
-    // custom rank ordering when sort=rank
-    if (sort === "rank") {
-      rows.sort((a, b) => {
-        const ra = rankSortValue(a.rank);
-        const rb = rankSortValue(b.rank);
-        if (ra !== rb) return ra - rb;
-        return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
-          sensitivity: "base",
-        });
-      });
-    }
-
-    return res.json({
-      page,
-      limit,
-      total,
-      count: rows.length,
-      recent_activity_minutes: recent_activity_minutes,
-      users: rows.map((u) => {
-        const last = activityMap.get(Number(u.user_id)) || null;
-        return {
-          ...u,
-          has_recent_activity: !!last,
-          last_activity_at: last,
-        };
-      }),
-      applied_filters: {
-        company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
-        ship_id:
-          role === 3 ? Number(req.user.ship_id) :
-            Number.isFinite(requestedShipId) ? requestedShipId :
-              null,
-        q: q || null,
-        rank: rank || null,
-        status: status || null,
-        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
-        sort,
-        order: order.toLowerCase(),
-      },
-    });
-  } catch (err) {
-    console.error("searchUsers error:", err);
-    return res.status(500).json({ error: "Failed to search users" });
-  }
-};
 
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
@@ -1615,14 +629,14 @@ const FIELD_ALIASES = {
     "seafarer no",
     "seafarer number",
     "seafarer id", "seafarer_id", "id", "cid",
-    "crew id", "crew_id", "crew pin", "crew_pin",
-    "srn", "seafarer no", "seafarer number",
-    "crew ipn", "crew_ipn", "ipn", "crewipn",
-    "employee code",
-    "emp code",
-    "employee id",
-    "emp id",
-    "staff id",
+  "crew id", "crew_id", "crew pin", "crew_pin",
+  "srn", "seafarer no", "seafarer number",
+  "crew ipn", "crew_ipn", "ipn", "crewipn",
+   "employee code",
+  "emp code",
+  "employee id",
+  "emp id",
+  "staff id",
 
     // ✅ format2.xlsx
     "crew ipn",
@@ -1658,9 +672,9 @@ const FIELD_ALIASES = {
     "last_name",
     "last name",
     // ✅ TRAINING TEMPLATE
-    "employee name",
-    "emp name",
-    "staff name",
+  "employee name",
+  "emp name",
+  "staff name",
   ],
 
   // ✅ IMO template split name
@@ -1668,14 +682,14 @@ const FIELD_ALIASES = {
   given_names: ["given names", "given  names", "first name", "forename"],
 
   rank: ["rank", "position", "designation", "rank_code", "rank code", "rank or rating", "rank", "position", "designation",
-    "job title", "designation name"],
+  "job title", "designation name"],
   trip: ["trip", "voyage", "trip no", "trip number"],
 
   embarkation_port: ["embarkation port", "joining port", "join port", "emb port"],
-  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on", "start date", "startdate", "start-date", "start - date"],
+  embarkation_date: ["embarkation date", "joining date", "join date", "emb date", "sign on", "sign-on"],
 
   disembarkation_port: ["disembarkation port", "sign off port", "leaving port", "disemb port"],
-  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date", "disemb date", "end date", "enddate", "end-date", "end - date"],
+  disembarkation_date: ["disembarkation date", "sign off", "sign-off", "sign off date", "leaving date", "date of joining", "joining date","disemb date"],
 
   end_of_contract: ["end of contract", "eoc", "enc", "end contract", "contract end"],
   plus_months: ["plus months", "extension months", "months", "plus month"],
@@ -1859,288 +873,114 @@ export const importUsersFromExcel = [
       const { rows } = matrixToObjects(matrix, headerRowIdx);
       if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
 
-      // ✅ PRELOAD existing users once for the whole sheet (company scope)
-      const allSids = Array.from(
-        new Set(
-          rows
-            .map((r) => {
-              const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
-              return sidCandidate != null && String(sidCandidate).trim() !== ""
-                ? String(sidCandidate).replace(/\s+/g, " ").trim()
-                : null;
-            })
-            .filter(Boolean)
-        )
-      );
-
-      const existingAllRes =
-        allSids.length > 0
-          ? await db.query(
-            `SELECT user_id, seafarer_id, ship_id
-         FROM users
-         WHERE company_id = $1 AND seafarer_id = ANY($2::text[])`,
-            [company_id, allSids]
-          )
-          : { rows: [] };
-
-      // Map seafarer_id -> existing user row
-      const existingMap = new Map();
-      for (const u of existingAllRes.rows) {
-        existingMap.set(String(u.seafarer_id), u);
-      }
-
-
       const results = {
         import_scope: { company_id, ship_id },
         detected_sheet: sheetName,
         detected_header_row: headerRowIdx + 1,
         total_rows: rows.length,
         inserted: 0,
-        updated: 0,
         skipped: 0,
         errors: [],
         created_credentials: [],
       };
-      await db.query("BEGIN");
-      const CHUNK_SIZE = 50; // or 25 if big Excel
-      for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
-        const chunk = rows.slice(start, start + CHUNK_SIZE);
 
-        for (let i = 0; i < chunk.length; i++) {
-          const r = chunk[i];
-          const rowNum = headerRowIdx + 2 + (start + i);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowNum = headerRowIdx + 2 + i;
 
-          // Required (smart)
-          const full_name = getFullNameSmart(r);
-          const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
+        // Required (smart)
+        const full_name = getFullNameSmart(r);
+        const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
 
-          const seafarer_id =
-            sidCandidate != null && String(sidCandidate).trim() !== ""
-              ? String(sidCandidate).replace(/\s+/g, " ").trim()
-              : null;
+        const seafarer_id =
+          sidCandidate != null && String(sidCandidate).trim() !== ""
+            ? String(sidCandidate).replace(/\s+/g, " ").trim()
+            : null;
 
-          if (!seafarer_id || !full_name) {
-            results.skipped++;
-            results.errors.push({
-              row: rowNum,
-              error:
-                "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
-            });
-            continue;
-          }
+        if (!seafarer_id || !full_name) {
+          results.skipped++;
+          results.errors.push({
+            row: rowNum,
+            error:
+              "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
+          });
+          continue;
+        }
 
-          // Optional fields
-          const rank = getByAliases(r, FIELD_ALIASES.rank);
-          const sex = getByAliases(r, FIELD_ALIASES.sex);
-          const nationality = getByAliases(r, FIELD_ALIASES.nationality);
-          const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
+        // Optional fields
+        const rank = getByAliases(r, FIELD_ALIASES.rank);
+        const sex = getByAliases(r, FIELD_ALIASES.sex);
+        const nationality = getByAliases(r, FIELD_ALIASES.nationality);
+        const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
 
-          const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
+        const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
 
-          const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
-          const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
+        const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
+        const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
 
-          const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
-          const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
+        const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
+        const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
 
-          // ✅ Fix invalid ranges coming from Excel (disembark < embark)
-          let emb = embarkation_date;
-          let dis = disembarkation_date;
-          // ✅ Safety: never allow NaN to flow into DB params
-          if (emb !== null && Number.isNaN(emb)) emb = null;
-          if (dis !== null && Number.isNaN(dis)) dis = null;
+        const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
+        const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
 
-          if (emb && dis) {
-            const embD = new Date(emb);
-            const disD = new Date(dis);
-            if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
-              dis = null;
-            }
-          }
+        // identity-doc style templates often put seaman book / passport in "number of identity document"
+        const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
+        const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
+        const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
+        const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
 
+        const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
+        const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
+        const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
 
-          const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
-          const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
+        // Status from excel or computed
+        const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
+        const status =
+          statusFromExcel != null && String(statusFromExcel).trim() !== ""
+            ? String(statusFromExcel)
+            : computeStatusFromDates({ disembarkation_date });
 
-          const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
-          const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
-          const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
-          const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
+        // Validate numbers/dates if present
+        if (plus_months !== null && Number.isNaN(plus_months)) {
+          results.skipped++;
+          results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
+          continue;
+        }
 
-          const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
-          const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
-          const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
+        const dateFields = [
+          ["date_of_birth", date_of_birth],
+          ["embarkation_date", embarkation_date],
+          ["disembarkation_date", disembarkation_date],
+          ["end_of_contract", end_of_contract],
+          ["passport_issue_date", passport_issue_date],
+          ["passport_expiry_date", passport_expiry_date],
+          ["seaman_book_issue_date", seaman_book_issue_date],
+          ["seaman_book_expiry_date", seaman_book_expiry_date],
+        ];
+        const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
+        if (badDate) {
+          results.skipped++;
+          results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
+          continue;
+        }
 
-          // Status from excel or computed
-          const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
-          let status =
-            statusFromExcel != null && String(statusFromExcel).trim() !== ""
-              ? String(statusFromExcel)
-              : computeStatusFromDates({ disembarkation_date: dis });
+        // Generate credentials if onboard
+        let username = null;
+        let password = null;
+        let password_hash = null;
+        let password_enc = null;
 
-          // ✅ Auto role assignment:
-          // If rank is senior → role_id=3 + force Onboard
-          const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
+        if (isOnboard(status)) {
+          username = await createUniqueUsername(seafarer_id);
+          password = generatePassword(12);
+          password_hash = hashPassword(password);
+          password_enc = encryptPassword(password);
+        }
 
-          if (role_id_to_insert === 3 && ship_id) {
-            status = "Onboard";
-          }
-
-          // ✅ If this user already exists in same company, UPDATE instead of INSERT
-          const existingUser = existingMap.get(seafarer_id) || null;
-
-          const dateFieldsForUpdate = [
-            ["date_of_birth", date_of_birth],
-            ["embarkation_date", emb],
-            ["disembarkation_date", dis],
-            ["end_of_contract", end_of_contract],
-            ["passport_issue_date", passport_issue_date],
-            ["passport_expiry_date", passport_expiry_date],
-            ["seaman_book_issue_date", seaman_book_issue_date],
-            ["seaman_book_expiry_date", seaman_book_expiry_date],
-          ];
-
-          // if any is NaN (shouldn't happen after fix, but guard anyway)
-          const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
-          if (badDateUpdate) {
-            results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
-            continue;
-          }
-
-          if (existingUser) {
-            // IMPORTANT: do NOT regenerate password on transfer
-            await db.query(
-              `UPDATE users
-     SET
-       full_name = COALESCE($1, full_name),
-       rank = COALESCE($2, rank),
-       ship_id = $3,
-       status = $4,
-       embarkation_date = COALESCE($5, embarkation_date),
-       disembarkation_date = COALESCE($6, disembarkation_date),
-       embarkation_port = COALESCE($7, embarkation_port),
-       disembarkation_port = COALESCE($8, disembarkation_port),
-       role_id = COALESCE($9, role_id),
-
-       sex = COALESCE($10, sex),
-       date_of_birth = COALESCE($11, date_of_birth),
-       place_of_birth = COALESCE($12, place_of_birth),
-       nationality = COALESCE($13, nationality),
-
-       end_of_contract = COALESCE($14, end_of_contract),
-       plus_months = COALESCE($15, plus_months),
-
-       passport_number = COALESCE($16, passport_number),
-       passport_issue_place = COALESCE($17, passport_issue_place),
-       passport_issue_date = COALESCE($18, passport_issue_date),
-       passport_expiry_date = COALESCE($19, passport_expiry_date),
-
-       seaman_book_number = COALESCE($20, seaman_book_number),
-       seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
-       seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
-
-       updated_at = NOW()
-     WHERE user_id = $23`,
-              [
-                full_name,
-                rank ?? null,
-                ship_id,
-                status,
-                emb ?? null,
-                dis ?? null,
-                embarkation_port ?? null,
-                disembarkation_port ?? null,
-                role_id_to_insert,
-
-                sex ?? null,
-                date_of_birth ?? null,
-                place_of_birth ?? null,
-                nationality ?? null,
-
-                end_of_contract ?? null,
-                plus_months ?? null,
-
-                passport_number ?? null,
-                passport_issue_place ?? null,
-                passport_issue_date ?? null,
-                passport_expiry_date ?? null,
-
-                seaman_book_number ?? null,
-                seaman_book_issue_date ?? null,
-                seaman_book_expiry_date ?? null,
-
-                existingUser.user_id,
-              ]
-            );
-
-            const oldShip = existingUser.ship_id ?? null;
-            const newShip = ship_id;
-
-            await handleShipHistoryChange({
-              user_id: existingUser.user_id,
-              company_id,
-              old_ship_id: oldShip,
-              new_ship_id: newShip,
-              embarkation_date: emb,
-              disembarkation_date: dis,
-              embarkation_port,
-              disembarkation_port,
-              changed_by_user_id: req.user.user_id,
-              notes: "Excel import (existing user ship update)",
-            });
-
-            // keep in-memory map fresh
-            existingMap.set(seafarer_id, {
-              user_id: existingUser.user_id,
-              seafarer_id,
-              ship_id: newShip,
-            });
-
-            results.updated++;
-            continue;
-          }
-
-          // Validate numbers/dates if present
-          if (plus_months !== null && Number.isNaN(plus_months)) {
-            results.skipped++;
-            results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
-            continue;
-          }
-
-          const dateFields = [
-            ["date_of_birth", date_of_birth],
-            ["embarkation_date", emb],
-            ["disembarkation_date", dis],
-            ["end_of_contract", end_of_contract],
-            ["passport_issue_date", passport_issue_date],
-            ["passport_expiry_date", passport_expiry_date],
-            ["seaman_book_issue_date", seaman_book_issue_date],
-            ["seaman_book_expiry_date", seaman_book_expiry_date],
-          ];
-          const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
-          if (badDate) {
-            results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
-            continue;
-          }
-
-          // ✅ Generate credentials if onboard
-          let username = null;
-          let password = null;
-          let password_hash = null;
-          let password_enc = null;
-
-          if (isOnboard(status)) {
-            username = await createUniqueUsername(seafarer_id);
-            password = generatePassword(12);
-            password_hash = hashPassword(password);
-            password_enc = encryptPassword(password);
-          }
-
-          try {
-            const { rows: inserted } = await db.query(
-              `INSERT INTO users
+        try {
+          const { rows: inserted } = await db.query(
+            `INSERT INTO users
               (seafarer_id, full_name, rank, trip,
                embarkation_date, disembarkation_date, status,
                username, password_hash, password_enc,
@@ -2162,97 +1002,72 @@ export const importUsersFromExcel = [
                $25,$26,$27,
                $28,
                NOW(), NOW())
-             RETURNING user_id, seafarer_id, full_name, username, status, role_id`,
-              [
-                seafarer_id,
-                full_name,
-                rank ?? null,
-                null,
+             RETURNING user_id, seafarer_id, full_name, username, status`,
+            [
+              seafarer_id,
+              full_name,
+              rank ?? null,
+              null,
 
-                emb ?? null,
-                dis ?? null,
-                status,
+              embarkation_date ?? null,
+              disembarkation_date ?? null,
+              status,
 
-                username,
-                password_hash,
-                password_enc,
+              username,
+              password_hash,
+              password_enc,
 
-                ship_id,
-                company_id,
-
-                sex ?? null,
-                date_of_birth ?? null,
-                place_of_birth ?? null,
-                nationality ?? null,
-
-                embarkation_port ?? null,
-                disembarkation_port ?? null,
-                end_of_contract ?? null,
-                plus_months ?? null,
-
-                passport_number ?? null,
-                passport_issue_place ?? null,
-                passport_issue_date ?? null,
-                passport_expiry_date ?? null,
-
-                seaman_book_number ?? null,
-                seaman_book_issue_date ?? null,
-                seaman_book_expiry_date ?? null,
-
-                role_id_to_insert,
-              ]
-            );
-
-            const insertedUserId = inserted[0]?.user_id;
-
-            // ✅ update in-memory map so if same seafarer_id appears again in this sheet, it will be treated as existing
-            existingMap.set(seafarer_id, { user_id: insertedUserId, seafarer_id, ship_id });
-
-
-            await handleShipHistoryChange({
-              user_id: insertedUserId,
+              ship_id,
               company_id,
-              old_ship_id: null,
-              new_ship_id: ship_id,
-              embarkation_date: emb,
-              disembarkation_date: dis,
-              embarkation_port,
-              disembarkation_port,
-              changed_by_user_id: req.user.user_id,
-              notes: "Excel import (new user)",
-            });
 
+              sex ?? null,
+              date_of_birth ?? null,
+              place_of_birth ?? null,
+              nationality ?? null,
 
-            results.inserted++;
+              embarkation_port ?? null,
+              disembarkation_port ?? null,
+              end_of_contract ?? null,
+              plus_months ?? null,
 
-            if (password) {
-              results.created_credentials.push({
-                row: rowNum,
-                user_id: inserted[0].user_id,
-                seafarer_id: inserted[0].seafarer_id,
-                username: inserted[0].username,
-                password,
-                role_id: inserted[0].role_id,
-              });
-            }
-          } catch (e) {
-            results.skipped++;
-            results.errors.push({
+              passport_number ?? null,
+              passport_issue_place ?? null,
+              passport_issue_date ?? null,
+              passport_expiry_date ?? null,
+
+              seaman_book_number ?? null,
+              seaman_book_issue_date ?? null,
+              seaman_book_expiry_date ?? null,
+
+              4,
+            ]
+          );
+
+          results.inserted++;
+
+          if (password) {
+            results.created_credentials.push({
               row: rowNum,
-              error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
+              user_id: inserted[0].user_id,
+              seafarer_id: inserted[0].seafarer_id,
+              username: inserted[0].username,
+              password,
             });
           }
+        } catch (e) {
+          results.skipped++;
+          results.errors.push({
+            row: rowNum,
+            error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
+          });
         }
       }
-
-      await db.query("COMMIT");
 
       return res.status(201).json({
         message: "Excel import completed",
         ...results,
       });
     } catch (err) {
-      try { await db.query("ROLLBACK"); } catch { }
       console.error("importUsersFromExcel error:", err);
       return res.status(500).json({ error: "Failed to import users" });
     }
