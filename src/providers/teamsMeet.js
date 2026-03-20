@@ -1,10 +1,10 @@
 import { getTeamsAccessToken } from "../controller/integrationController.js";
 
 export async function createTeamsMeeting(
-  company_id,
+  user_id,
   { title, description, scheduled_at, duration_minutes, attendees = [] }
 ) {
-  const token = await getTeamsAccessToken(company_id);
+  const token = await getTeamsAccessToken(user_id);
 
   const start = new Date(scheduled_at);
   const end = new Date(start.getTime() + Number(duration_minutes || 60) * 60_000);

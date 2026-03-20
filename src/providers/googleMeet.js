@@ -1,12 +1,8 @@
 import { google } from "googleapis";
 import { getGoogleAccessToken } from "../controller/integrationController.js";
 
-/**
- * Creates a Google Calendar event + Google Meet link.
- * Returns event id + join link.
- */
-export async function createGoogleMeetEvent(company_id, payload) {
-  const accessToken = await getGoogleAccessToken(company_id);
+export async function createGoogleMeetEvent(user_id, payload) {
+  const accessToken = await getGoogleAccessToken(user_id);
 
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken });
@@ -19,6 +15,7 @@ export async function createGoogleMeetEvent(company_id, payload) {
   const eventRes = await calendar.events.insert({
     calendarId: "primary",
     conferenceDataVersion: 1,
+    sendUpdates: payload.attendees?.length ? "all" : "none",
     requestBody: {
       summary: payload.title,
       description: payload.description || "",
@@ -27,7 +24,7 @@ export async function createGoogleMeetEvent(company_id, payload) {
       attendees: (payload.attendees || []).map((email) => ({ email })),
       conferenceData: {
         createRequest: {
-          requestId: "fmc-" + Date.now(), // unique
+          requestId: "fmc-" + Date.now(),
           conferenceSolutionKey: { type: "hangoutsMeet" },
         },
       },
