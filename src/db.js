@@ -1,15 +1,21 @@
-// src/db.js
-import dotenv from 'dotenv';
-import pkg from 'pg';
-
+import pg from "pg";
+import dotenv from "dotenv";
 dotenv.config();
 
-const { Pool } = pkg;
+const { Pool } = pg;
+
+const isVercel = !!process.env.VERCEL; // Vercel sets this
+const isProd = process.env.NODE_ENV === "production" || isVercel;
 
 export const db = new Pool({
   host: process.env.PG_HOST,
-  port: process.env.PG_PORT,
+  port: Number(process.env.PG_PORT || 5432),
   user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD, // must be a string from .env
+  password: process.env.PG_PASSWORD,
   database: process.env.PG_DATABASE,
+
+  // ssl: process.env.PG_SSL === "true" ? { rejectUnauthorized: false } : false,
+  
+  // Force SSL in prod/Vercel
+  ssl: isProd ? { rejectUnauthorized: false } : false,
 });

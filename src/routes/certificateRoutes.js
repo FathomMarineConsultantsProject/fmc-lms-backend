@@ -8,6 +8,7 @@ import {
   createCertificate,
   updateCertificate,
   deleteCertificate,
+  getUserInfoForCertificate,
 } from "../controller/certificatesController.js";
 
 export const router = Router();
@@ -21,7 +22,7 @@ export const router = Router();
 
 router.use(requireAuth);
 
-/**
+/**  
  * @openapi
  * /certificates:
  *   get:
@@ -33,6 +34,9 @@ router.use(requireAuth);
  *       200: { description: OK }
  */
 router.get("/", allowRoles(1, 2, 3, 4), getAllCertificates);
+
+// Unity lookup route
+router.post("/user-info", allowRoles(1, 2, 3, 4), getUserInfoForCertificate);
 
 /**
  * @openapi

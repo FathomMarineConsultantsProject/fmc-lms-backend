@@ -2,6 +2,8 @@
 import { db } from '../db.js';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
+
 
 // -------------------- constants --------------------
 const ROLE_SUPERADMIN = 1;
@@ -16,49 +18,53 @@ const REFRESH_EXPIRES_DAYS = Number(process.env.REFRESH_EXPIRES_DAYS || 7);
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
 const isOnboard = (s) => normalizeStatus(s) === 'onboard';
 
+// ✅ Admin roles are "Onboard" by default (status doesn't matter for login)
+const isAdminRole = (roleId) =>
+  [ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN].includes(Number(roleId));
+
 // sha256 hash (your current approach)
 const hashPassword = (plain) =>
   crypto.createHash('sha256').update(String(plain)).digest('hex');
 
-// AES-256-GCM reversible encryption (Option B)
-const getEncKey = () => {
-  const b64 = process.env.PASSWORD_ENC_KEY;
-  if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
-  const key = Buffer.from(b64, 'base64');
-  if (key.length !== 32) throw new Error('PASSWORD_ENC_KEY must be 32 bytes base64');
-  return key;
-};
+// AES-256-GCM reversible encryption (Option B) ===================== mail change 
+// const getEncKey = () => {
+//   const b64 = process.env.PASSWORD_ENC_KEY;
+//   if (!b64) throw new Error('PASSWORD_ENC_KEY missing in .env');
+//   const key = Buffer.from(b64, 'base64');
+//   if (key.length !== 32) throw new Error('PASSWORD_ENC_KEY must be 32 bytes base64');
+//   return key;
+// };
 
 /**
  * Returns: base64(iv).base64(tag).base64(ciphertext)
  */
-const encryptPassword = (plain) => {
-  const key = getEncKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+// const encryptPassword = (plain) => {
+//   const key = getEncKey();
+//   const iv = crypto.randomBytes(12);
+//   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
 
-  const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
+//   const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+//   const tag = cipher.getAuthTag();
 
-  return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
-};
+//   return `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`;
+// };
 
-const decryptPassword = (enc) => {
-  if (!enc) return null;
-  const key = getEncKey();
-  const parts = String(enc).split('.');
-  if (parts.length !== 3) throw new Error('Invalid password_enc format');
+// const decryptPassword = (enc) => {
+//   if (!enc) return null;
+//   const key = getEncKey();
+//   const parts = String(enc).split('.');
+//   if (parts.length !== 3) throw new Error('Invalid password_enc format');
 
-  const iv = Buffer.from(parts[0], 'base64');
-  const tag = Buffer.from(parts[1], 'base64');
-  const ciphertext = Buffer.from(parts[2], 'base64');
+//   const iv = Buffer.from(parts[0], 'base64');
+//   const tag = Buffer.from(parts[1], 'base64');
+//   const ciphertext = Buffer.from(parts[2], 'base64');
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
+//   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+//   decipher.setAuthTag(tag);
 
-  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plain.toString('utf8');
-};
+//   const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+//   return plain.toString('utf8');
+// };
 
 // reset token flow (forgot/reset password)
 const generateResetToken = () => crypto.randomBytes(24).toString('hex');
@@ -135,7 +141,8 @@ export const login = async (req, res) => {
 
     const user = rows[0];
 
-    if (!isOnboard(user.status)) {
+    // ✅ Only ROLE_CREW must be onboard to login
+    if (!isAdminRole(user.role_id) && !isOnboard(user.status)) {
       return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
     }
 
@@ -202,6 +209,11 @@ export const signup = async (req, res) => {
     const password_hash = hashPassword(password);
     const password_enc = encryptPassword(password);
 
+    const finalRoleId = Number(role_id);
+    // ✅ Admin roles default onboard
+    const finalStatus =
+      isAdminRole(finalRoleId) ? 'Onboard' : (status ?? null);
+
     const { rows } = await db.query(
       `
       INSERT INTO users
@@ -223,13 +235,13 @@ export const signup = async (req, res) => {
         trip ?? null,
         embarkation_date ?? null,
         disembarkation_date ?? null,
-        status ?? null,
+        finalStatus,
         String(username),
         password_hash,
         password_enc,
         ship_id != null ? Number(ship_id) : null,
         company_id ?? null,
-        Number(role_id),
+        finalRoleId,
       ]
     );
 
@@ -376,7 +388,11 @@ export const refreshAccessToken = async (req, res) => {
     if (!u.rows.length) return res.status(401).json({ error: 'User not found' });
 
     const user = u.rows[0];
-    if (!isOnboard(user.status)) return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
+
+    // ✅ Only ROLE_CREW must be onboard
+    if (!isAdminRole(user.role_id) && !isOnboard(user.status)) {
+      return res.status(403).json({ error: 'User is not onboard. Login disabled.' });
+    }
 
     const access_token = signAccessToken(user);
     return res.json({ access_token });
@@ -449,20 +465,50 @@ export const adminViewPassword = async (req, res) => {
   }
 };
 
-// -------------------- ADMIN: SET/CHANGE USER PASSWORD --------------------
+
+// -------------------- ADMIN: SET/CHANGE USER PASSWORD (AUTO-GENERATE) --------------------
+const generateAutoPassword = (length = 12) => {
+  // avoids confusing chars: 0 O o 1 I l
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const specials = "!@#$%^&*";
+  const pick = (chars) => chars[crypto.randomInt(0, chars.length)];
+
+  // ensure minimum complexity: 1 upper, 1 lower, 1 digit, 1 special
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnpqrstuvwxyz";
+  const digits = "23456789";
+
+  let pwd = [
+    pick(upper),
+    pick(lower),
+    pick(digits),
+    pick(specials),
+  ];
+
+  const all = alphabet + specials;
+  while (pwd.length < length) pwd.push(pick(all));
+
+  // shuffle
+  for (let i = pwd.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(0, i + 1);
+    [pwd[i], pwd[j]] = [pwd[j], pwd[i]];
+  }
+  return pwd.join("");
+};
+
 export const adminSetPassword = async (req, res) => {
-  if (!canAdmin(req.user?.role_id)) return res.status(403).json({ error: 'Forbidden' });
+  if (!canAdmin(req.user?.role_id)) return res.status(403).json({ error: "Forbidden" });
 
   const { user_id } = req.params;
   const targetUserId = Number(user_id);
-  if (!targetUserId) return res.status(400).json({ error: 'user_id must be a number' });
-
-  const { new_password } = req.body;
-  if (!new_password) return res.status(400).json({ error: 'new_password is required' });
+  if (!targetUserId) return res.status(400).json({ error: "user_id must be a number" });
 
   try {
     const inScope = await ensureUserScopeForAdmin(req, targetUserId);
-    if (!inScope) return res.status(403).json({ error: 'Forbidden (scope)' });
+    if (!inScope) return res.status(403).json({ error: "Forbidden (scope)" });
+
+    // ✅ auto-generate password (no request body needed)
+    const new_password = generateAutoPassword(12);
 
     const password_hash = hashPassword(new_password);
     const password_enc = encryptPassword(new_password);
@@ -471,23 +517,36 @@ export const adminSetPassword = async (req, res) => {
       `
       UPDATE users
       SET password_hash = $1,
-          password_enc = $2,
-          updated_at = NOW()
+          password_enc  = $2,
+          updated_at    = NOW()
       WHERE user_id = $3
       `,
       [password_hash, password_enc, targetUserId]
     );
 
-    if (!rowCount) return res.status(404).json({ error: 'User not found' });
+    if (!rowCount) return res.status(404).json({ error: "User not found" });
 
-    // OPTIONAL: revoke ALL refresh sessions for this user (recommended)
-    await db.query(`UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, [
-      targetUserId,
-    ]);
+    // ✅ revoke ALL refresh sessions for this user
+    await db.query(
+      `UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+      [targetUserId]
+    );
 
-    return res.json({ message: 'Password updated' });
+    // OPTIONAL: log activity (if you have activity_logs)
+    // await db.query(
+    //   `INSERT INTO activity_logs (actor_user_id, action, target_user_id, meta, created_at)
+    //    VALUES ($1, 'PASSWORD_REGENERATED', $2, $3, NOW())`,
+    //   [req.user.user_id, targetUserId, JSON.stringify({ by_role: req.user.role_id })]
+    // );
+
+    return res.json({
+      message: "Password regenerated",
+      user_id: targetUserId,
+      password: new_password, // show/copy ONCE in UI
+    });
   } catch (err) {
-    console.error('Error adminSetPassword:', err);
-    return res.status(500).json({ error: 'Failed to update password' });
+    console.error("Error adminSetPassword:", err);
+    return res.status(500).json({ error: "Failed to regenerate password" });
   }
 };
+
