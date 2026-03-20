@@ -1,11 +1,10 @@
-// src/providers/zoomMeet.js
 import { getZoomAccessToken } from "../controller/integrationController.js";
 
 export async function createZoomMeeting(
-  company_id,
+  user_id,
   { title, description, scheduled_at, duration_minutes }
 ) {
-  const token = await getZoomAccessToken(company_id);
+  const token = await getZoomAccessToken(user_id);
 
   const body = {
     topic: title,

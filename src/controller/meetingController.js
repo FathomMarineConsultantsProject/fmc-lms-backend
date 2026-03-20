@@ -1,10 +1,7 @@
-// src/controller/meetingController.js
 import { db } from "../db.js";
 import { createGoogleMeetEvent } from "../providers/googleMeet.js";
 import { createZoomMeeting } from "../providers/zoomMeet.js";
 import { createTeamsMeeting } from "../providers/teamsMeet.js";
-// optional if you want real email sending:
-// import { sendEmail, isValidEmail } from "../utils/mailer.js";
 
 function getUserScope(req) {
   const u = req.user || {};
@@ -77,13 +74,19 @@ export async function createMeeting(req, res) {
     let provider_calendar_event_id = null;
     let provider_payload = null;
 
+    const cleanedAttendees = Array.isArray(attendees)
+      ? attendees
+          .map((e) => String(e || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+
     if (platform === "google") {
-      const created = await createGoogleMeetEvent(effectiveCompanyId, {
+      const created = await createGoogleMeetEvent(user_id, {
         title,
         description,
         scheduled_at,
         duration_minutes,
-        attendees: send_invitations ? attendees : [],
+        attendees: send_invitations ? cleanedAttendees : [],
       });
 
       provider_platform = "google";
@@ -93,12 +96,12 @@ export async function createMeeting(req, res) {
     }
 
     if (platform === "zoom") {
-      const created = await createZoomMeeting(effectiveCompanyId, {
+      const created = await createZoomMeeting(user_id, {
         title,
         description,
         scheduled_at,
         duration_minutes,
-        attendees: send_invitations ? attendees : [],
+        attendees: send_invitations ? cleanedAttendees : [],
       });
 
       provider_platform = "zoom";
@@ -108,12 +111,12 @@ export async function createMeeting(req, res) {
     }
 
     if (platform === "teams") {
-      const created = await createTeamsMeeting(effectiveCompanyId, {
+      const created = await createTeamsMeeting(user_id, {
         title,
         description,
         scheduled_at,
         duration_minutes,
-        attendees: send_invitations ? attendees : [],
+        attendees: send_invitations ? cleanedAttendees : [],
       });
 
       provider_platform = "teams";
@@ -166,28 +169,22 @@ export async function createMeeting(req, res) {
 
     const meeting = meetingResult.rows[0];
 
-    if (Array.isArray(attendees) && attendees.length > 0) {
-      const cleaned = attendees
-        .map((e) => String(e || "").trim().toLowerCase())
-        .filter(Boolean);
+    if (cleanedAttendees.length > 0) {
+      const values = [];
+      const params = [];
+      let p = 1;
 
-      if (cleaned.length > 0) {
-        const values = [];
-        const params = [];
-        let p = 1;
-
-        for (const email of cleaned) {
-          params.push(meeting.meeting_id, email);
-          values.push(`($${p++}, $${p++})`);
-        }
-
-        const insertAttSql = `
-          INSERT INTO training_meeting_attendees (meeting_id, email)
-          VALUES ${values.join(",")}
-          ON CONFLICT DO NOTHING;
-        `;
-        await db.query(insertAttSql, params);
+      for (const email of cleanedAttendees) {
+        params.push(meeting.meeting_id, email);
+        values.push(`($${p++}, $${p++})`);
       }
+
+      const insertAttSql = `
+        INSERT INTO training_meeting_attendees (meeting_id, email)
+        VALUES ${values.join(",")}
+        ON CONFLICT DO NOTHING;
+      `;
+      await db.query(insertAttSql, params);
     }
 
     return res.status(201).json({
@@ -203,18 +200,6 @@ export async function createMeeting(req, res) {
   }
 }
 
-/**
- * POST /meetings/query
- * Listing via POST with filters (as you requested).
- * Body:
- * {
- *   page, limit,
- *   search,        // searches title (ILIKE)
- *   department,
- *   priority,
- *   meeting_type
- * }
- */
 export async function queryMeetings(req, res) {
   try {
     const { role_id, company_id, ship_id } = getUserScope(req);
@@ -234,7 +219,6 @@ export async function queryMeetings(req, res) {
     const safeLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
     const offset = (safePage - 1) * safeLimit;
 
-    // Dynamic WHERE building with parameter indexing
     const whereParts = [`(${scopeSql})`];
     const params = [...scopeParams];
     let idx = params.length + 1;
@@ -261,7 +245,6 @@ export async function queryMeetings(req, res) {
       whereParts.push(`m.meeting_type = $${idx++}::meeting_type_enum`);
     }
 
-    // Pagination params
     params.push(safeLimit);
     const limitIdx = idx++;
     params.push(offset);
@@ -283,7 +266,7 @@ export async function queryMeetings(req, res) {
 
     const [listResult, countResult] = await Promise.all([
       db.query(listSql, params),
-      db.query(countSql, params.slice(0, params.length - 2)), // count doesn't need limit/offset
+      db.query(countSql, params.slice(0, params.length - 2)),
     ]);
 
     return res.json({
@@ -298,10 +281,6 @@ export async function queryMeetings(req, res) {
   }
 }
 
-/**
- * GET /meetings/:meeting_id
- * Returns meeting + attendees
- */
 export async function getMeetingById(req, res) {
   try {
     const meetingId = parseInt(req.params.meeting_id, 10);
@@ -341,12 +320,6 @@ export async function getMeetingById(req, res) {
   }
 }
 
-/**
- * PATCH /meetings/:meeting_id
- * Update allowed fields only (meeting_id cannot change).
- * NOTE: This currently updates ONLY DB, not Google Calendar event.
- * We can add provider-sync later.
- */
 export async function updateMeeting(req, res) {
   try {
     const meetingId = parseInt(req.params.meeting_id, 10);
@@ -372,13 +345,11 @@ export async function updateMeeting(req, res) {
       status,
     } = req.body || {};
 
-    // Subadmin/Crew cannot change ship_id across ships
     let finalShipId = bodyShipId;
     if (role_id === 3 || role_id === 4) {
       finalShipId = userShipId ?? null;
     }
 
-    // Build dynamic UPDATE
     const sets = [];
     const params = [meetingId, ...scopeParams];
     let idx = params.length + 1;
@@ -426,12 +397,6 @@ export async function updateMeeting(req, res) {
   }
 }
 
-/**
- * DELETE /meetings/:meeting_id
- * Soft delete (sets deleted_at)
- * NOTE: This currently deletes ONLY DB, not Google Calendar event.
- * We can add provider-sync later.
- */
 export async function deleteMeeting(req, res) {
   try {
     const meetingId = parseInt(req.params.meeting_id, 10);
@@ -462,16 +427,6 @@ export async function deleteMeeting(req, res) {
   }
 }
 
-/**
- * POST /meetings/:meeting_id/send-emails
- * FE sends list of emails (and optionally custom message).
- * Body: { emails: [...], subject?, message? }
- *
- * NOTE:
- * - You already have mail routes (mailTestRoutes, userMailRoutes).
- * - Here we only build the endpoint & payload.
- * - You must plug in your mail function (nodemailer, sendgrid, etc.)
- */
 export async function sendMeetingEmails(req, res) {
   try {
     const meetingId = parseInt(req.params.meeting_id, 10);
@@ -487,7 +442,6 @@ export async function sendMeetingEmails(req, res) {
       return res.status(400).json({ error: "emails[] is required" });
     }
 
-    // Fetch meeting to include details
     const meetingSql = `
       SELECT m.*
       FROM training_meetings m
@@ -500,7 +454,6 @@ export async function sendMeetingEmails(req, res) {
     const meeting = meetingResult.rows[0];
     if (!meeting) return res.status(404).json({ error: "Meeting not found" });
 
-    // Build email content (basic)
     const finalSubject = subject || `Meeting Invitation: ${meeting.title} (${meeting.meeting_type})`;
 
     const bodyText = `
@@ -514,7 +467,6 @@ Link: ${meeting.meeting_link || "N/A"}
 ${message ? "\nMessage:\n" + message : ""}
 `.trim();
 
-    // TODO: integrate your actual mail sender here
     const sentTo = emails.map((e) => String(e).trim()).filter(Boolean);
 
     return res.json({

@@ -1,4 +1,3 @@
-// src/routes/integrationRoutes.js
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
@@ -6,9 +5,9 @@ import {
   googleConnect,
   googleCallback,
   googleStatus,
-  zoomConnect, 
-  zoomCallback, 
-  zoomStatus, 
+  zoomConnect,
+  zoomCallback,
+  zoomStatus,
   teamsConnect,
   teamsCallback,
   teamsStatus,
@@ -16,29 +15,14 @@ import {
 
 export const router = Router();
 
-/**
- * NOTE:
- * /integrations/google/connect requires JWT because we need req.user.company_id
- * /integrations/google/callback must NOT require JWT (Google calls it)
- * /integrations/google/status requires JWT
- */
-// ------------------ Goggle----------
-// Start OAuth (Admin / Subadmin / Superadmin only)
-router.get("/google/connect", requireAuth, allowRoles(1, 2, 3), googleConnect);
-
-// OAuth callback (Google redirects here)
+router.get("/google/connect", requireAuth, allowRoles(1, 2, 3, 4), googleConnect);
 router.get("/google/callback", googleCallback);
+router.get("/google/status", requireAuth, allowRoles(1, 2, 3, 4), googleStatus);
 
-// Check connected
-router.get("/google/status", requireAuth, allowRoles(1, 2, 3), googleStatus);
-
-// --------------------------- Zoom ---------------------------
-router.get("/zoom/connect", requireAuth, allowRoles(1, 2, 3), zoomConnect);
+router.get("/zoom/connect", requireAuth, allowRoles(1, 2, 3, 4), zoomConnect);
 router.get("/zoom/callback", zoomCallback);
-router.get("/zoom/status", requireAuth, allowRoles(1, 2, 3), zoomStatus);
+router.get("/zoom/status", requireAuth, allowRoles(1, 2, 3, 4), zoomStatus);
 
-//------------------------- Teams ----------------------
-
-router.get("/teams/connect", requireAuth, allowRoles(1, 2, 3), teamsConnect);
+router.get("/teams/connect", requireAuth, allowRoles(1, 2, 3, 4), teamsConnect);
 router.get("/teams/callback", teamsCallback);
-router.get("/teams/status", requireAuth, allowRoles(1, 2, 3), teamsStatus);
+router.get("/teams/status", requireAuth, allowRoles(1, 2, 3, 4), teamsStatus);
