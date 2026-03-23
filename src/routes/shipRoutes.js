@@ -79,6 +79,8 @@ router.use(requireAuth);
  *           example: "002f6dad-7f5a-4962-a6b6-eaca609a8fa0"
  */
 
+router.get("/options", requireAuth, getShipOptions);
+
 /**
  * @openapi
  * /ships:
@@ -291,4 +293,3 @@ router.put("/:id", allowRoles(1,2), updateShip);
  */
 router.delete("/:id", allowRoles(1,2), deleteShip);
 
-router.get("/options", requireAuth, getShipOptions);
