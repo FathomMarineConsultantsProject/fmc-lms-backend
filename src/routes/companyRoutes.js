@@ -21,6 +21,8 @@ export const router = Router();
 
 router.use(requireAuth);
 
+router.get("/options", requireAuth, getCompanyOptions);
+
 /**
  * @openapi
  * /companies:
@@ -195,4 +197,4 @@ router.put("/:id", updateCompany);
  */
 router.delete("/:id", deleteCompany);
 
-router.get("/options", requireAuth, getCompanyOptions);
+

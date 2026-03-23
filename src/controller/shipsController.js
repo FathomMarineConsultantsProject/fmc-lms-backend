@@ -415,7 +415,6 @@ export const getShipOptions = async (req, res) => {
     let p = 1;
 
     if (roleId === ROLE_SUPERADMIN) {
-      // superadmin can optionally filter by selected company
       if (queryCompanyIdRaw) {
         if (!isUuid(queryCompanyIdRaw)) {
           return res.status(400).json({ error: "company_id must be a valid UUID" });
@@ -425,12 +424,10 @@ export const getShipOptions = async (req, res) => {
       }
     } else if (roleId === ROLE_ADMIN) {
       if (!myCompanyId) return res.json({ rows: [] });
-
       where.push(`company_id = $${p++}`);
       params.push(myCompanyId);
     } else if (roleId === ROLE_SUBADMIN || roleId === ROLE_CREW) {
       if (!myShipId) return res.json({ rows: [] });
-
       where.push(`ship_id = $${p++}`);
       params.push(myShipId);
     } else {
@@ -449,9 +446,7 @@ export const getShipOptions = async (req, res) => {
       params
     );
 
-    return res.json({
-      rows,
-    });
+    return res.json({ rows });
   } catch (err) {
     console.error("Error getting ship options:", err);
     return res.status(500).json({ error: "Failed to fetch ship options" });
