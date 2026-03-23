@@ -482,3 +482,126 @@ ${message ? "\nMessage:\n" + message : ""}
     return res.status(500).json({ error: "Failed to send meeting emails" });
   }
 }
+
+export async function getMeetingsByUserId(req, res) {
+  try {
+    const targetUserId = parseInt(req.params.user_id, 10);
+    if (!Number.isFinite(targetUserId)) {
+      return res.status(400).json({ error: "Invalid user_id" });
+    }
+
+    const { role_id, company_id, ship_id } = getUserScope(req);
+    const { sql: scopeSql, params: scopeParams } = buildScopeWhere({
+      role_id,
+      company_id,
+      ship_id,
+    });
+
+    const {
+      type = "all", // all | upcoming | past
+      page = 1,
+      limit = 50,
+    } = req.query || {};
+
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (safePage - 1) * safeLimit;
+
+    // First get target user basic info
+    const userRes = await db.query(
+      `
+      SELECT user_id, email, company_id, ship_id
+      FROM users
+      WHERE user_id = $1
+      LIMIT 1
+      `,
+      [targetUserId]
+    );
+
+    if (!userRes.rows.length) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const targetUser = userRes.rows[0];
+
+    // extra authorization check by scope
+    if (role_id !== 1) {
+      if (String(targetUser.company_id) !== String(company_id)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      if ((role_id === 3 || role_id === 4) && ship_id != null) {
+        if (
+          targetUser.ship_id != null &&
+          Number(targetUser.ship_id) !== Number(ship_id)
+        ) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+    }
+
+    const whereParts = [
+      `(${scopeSql})`,
+      `m.deleted_at IS NULL`,
+      `(
+        m.created_by = $${scopeParams.length + 1}
+        OR EXISTS (
+          SELECT 1
+          FROM training_meeting_attendees a
+          WHERE a.meeting_id = m.meeting_id
+            AND LOWER(a.email) = LOWER($${scopeParams.length + 2})
+        )
+      )`,
+    ];
+
+    const params = [
+      ...scopeParams,
+      targetUserId,
+      targetUser.email || "__no_email__",
+    ];
+
+    let idx = params.length + 1;
+
+    if (type === "upcoming") {
+      whereParts.push(`m.scheduled_at >= NOW()`);
+    } else if (type === "past") {
+      whereParts.push(`m.scheduled_at < NOW()`);
+    }
+
+    params.push(safeLimit);
+    const limitIdx = idx++;
+    params.push(offset);
+    const offsetIdx = idx++;
+
+    const listSql = `
+      SELECT m.*
+      FROM training_meetings m
+      WHERE ${whereParts.join(" AND ")}
+      ORDER BY m.scheduled_at DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `;
+
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM training_meetings m
+      WHERE ${whereParts.join(" AND ")}
+    `;
+
+    const [listResult, countResult] = await Promise.all([
+      db.query(listSql, params),
+      db.query(countSql, params.slice(0, params.length - 2)),
+    ]);
+
+    return res.json({
+      user_id: targetUserId,
+      type,
+      page: safePage,
+      limit: safeLimit,
+      total: countResult.rows[0]?.total ?? 0,
+      items: listResult.rows,
+    });
+  } catch (err) {
+    console.error("getMeetingsByUserId error:", err);
+    return res.status(500).json({ error: "Failed to fetch meetings by user" });
+  }
+}
