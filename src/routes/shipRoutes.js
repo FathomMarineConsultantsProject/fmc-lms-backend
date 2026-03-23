@@ -8,6 +8,7 @@ import {
   updateShip,
   deleteShip,
   getShipsByCompanyId,
+  getShipOptions,
 } from '../controller/shipsController.js';
 import { allowRoles } from "../middleware/rbac.js"; 
 
@@ -290,3 +291,4 @@ router.put("/:id", allowRoles(1,2), updateShip);
  */
 router.delete("/:id", allowRoles(1,2), deleteShip);
 
+router.get("/options", requireAuth, getShipOptions);

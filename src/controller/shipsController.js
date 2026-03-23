@@ -399,3 +399,61 @@ export const getShipsByCompanyId = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch ships" });
   }
 };
+
+
+// GET /ships/options?company_id=<uuid>
+export const getShipOptions = async (req, res) => {
+  try {
+    const roleId = Number(req.user?.role_id);
+    const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
+    const myShipId = req.user?.ship_id != null ? Number(req.user.ship_id) : null;
+
+    const queryCompanyIdRaw = String(req.query?.company_id || "").trim();
+
+    const where = [];
+    const params = [];
+    let p = 1;
+
+    if (roleId === ROLE_SUPERADMIN) {
+      // superadmin can optionally filter by selected company
+      if (queryCompanyIdRaw) {
+        if (!isUuid(queryCompanyIdRaw)) {
+          return res.status(400).json({ error: "company_id must be a valid UUID" });
+        }
+        where.push(`company_id = $${p++}`);
+        params.push(queryCompanyIdRaw);
+      }
+    } else if (roleId === ROLE_ADMIN) {
+      if (!myCompanyId) return res.json({ rows: [] });
+
+      where.push(`company_id = $${p++}`);
+      params.push(myCompanyId);
+    } else if (roleId === ROLE_SUBADMIN || roleId === ROLE_CREW) {
+      if (!myShipId) return res.json({ rows: [] });
+
+      where.push(`ship_id = $${p++}`);
+      params.push(myShipId);
+    } else {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const { rows } = await db.query(
+      `
+      SELECT ship_id, ship_name, company_id
+      FROM ships
+      ${whereSql}
+      ORDER BY ship_name ASC
+      `,
+      params
+    );
+
+    return res.json({
+      rows,
+    });
+  } catch (err) {
+    console.error("Error getting ship options:", err);
+    return res.status(500).json({ error: "Failed to fetch ship options" });
+  }
+};
