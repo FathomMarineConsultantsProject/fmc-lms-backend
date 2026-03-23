@@ -505,3 +505,50 @@ export const deleteCompany = async (req, res) => {
     return res.status(500).json({ error: "Failed to delete company" });
   }
 };
+
+
+// GET /companies/options
+export const getCompanyOptions = async (req, res) => {
+  try {
+    const roleId = Number(req.user?.role_id);
+
+    // superadmin -> all companies
+    if (roleId === ROLE_SUPERADMIN) {
+      const { rows } = await db.query(
+        `
+        SELECT company_id, company_name
+        FROM company
+        ORDER BY company_name ASC
+        `
+      );
+
+      return res.json({
+        rows,
+      });
+    }
+
+    // admin/subadmin/crew -> only their own company
+    const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
+
+    if (!myCompanyId || !isUuid(myCompanyId)) {
+      return res.json({ rows: [] });
+    }
+
+    const { rows } = await db.query(
+      `
+      SELECT company_id, company_name
+      FROM company
+      WHERE company_id = $1
+      ORDER BY company_name ASC
+      `,
+      [myCompanyId]
+    );
+
+    return res.json({
+      rows,
+    });
+  } catch (err) {
+    console.error("Error getting company options:", err);
+    return res.status(500).json({ error: "Failed to fetch company options" });
+  }
+};

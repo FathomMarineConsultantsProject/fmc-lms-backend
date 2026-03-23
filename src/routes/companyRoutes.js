@@ -7,6 +7,7 @@ import {
   createCompany,
   updateCompany,
   deleteCompany,
+  getCompanyOptions
 } from "../controller/companyController.js";
 
 export const router = Router();
@@ -193,3 +194,5 @@ router.put("/:id", updateCompany);
  *         description: Company not found
  */
 router.delete("/:id", deleteCompany);
+
+router.get("/options", requireAuth, getCompanyOptions);
