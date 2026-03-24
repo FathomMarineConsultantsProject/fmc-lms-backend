@@ -53,13 +53,10 @@ export async function createMeeting(req, res) {
       });
     }
 
-    let effectiveCompanyId = company_id;
+    let effectiveCompanyId = company_id ?? null;
 
     if (role_id === 1) {
       effectiveCompanyId = bodyCompanyId ? String(bodyCompanyId) : null;
-      if (!effectiveCompanyId) {
-        return res.status(400).json({ error: "company_id is required for superadmin" });
-      }
     }
 
     let finalShipId = ship_id ?? null;
@@ -76,8 +73,8 @@ export async function createMeeting(req, res) {
 
     const cleanedAttendees = Array.isArray(attendees)
       ? attendees
-          .map((e) => String(e || "").trim().toLowerCase())
-          .filter(Boolean)
+        .map((e) => String(e || "").trim().toLowerCase())
+        .filter(Boolean)
       : [];
 
     if (platform === "google") {
