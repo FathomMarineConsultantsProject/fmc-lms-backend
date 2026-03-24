@@ -40,8 +40,8 @@ const msTokenUrl = (tenant) => `https://login.microsoftonline.com/${tenant}/oaut
 function buildState(req) {
   return Buffer.from(
     JSON.stringify({
-      company_id: req.user.company_id,
-      user_id: req.user.user_id,
+      company_id: req.user?.company_id ?? null,
+      user_id: req.user?.user_id ?? null,
     })
   ).toString("base64url");
 }
@@ -120,8 +120,17 @@ export async function googleCallback(req, res) {
     if (!code || !state) return res.status(400).send("Missing code/state");
 
     const parsed = parseState(state);
-    const company_id = String(parsed.company_id);
+
+    const company_id =
+      parsed.company_id && parsed.company_id !== "null"
+        ? String(parsed.company_id)
+        : null;
+
     const user_id = Number(parsed.user_id);
+
+    if (!Number.isInteger(user_id) || user_id <= 0) {
+      return res.status(400).send("Invalid user_id in state");
+    }
 
     const oauth2Client = googleOAuthClient();
     const { tokens } = await oauth2Client.getToken(String(code));
@@ -213,8 +222,17 @@ export async function zoomCallback(req, res) {
     if (!code || !state) return res.status(400).send("Missing code/state");
 
     const parsed = parseState(state);
-    const company_id = String(parsed.company_id);
+
+    const company_id =
+      parsed.company_id && parsed.company_id !== "null"
+        ? String(parsed.company_id)
+        : null;
+
     const user_id = Number(parsed.user_id);
+
+    if (!Number.isInteger(user_id) || user_id <= 0) {
+      return res.status(400).send("Invalid user_id in state");
+    }
 
     const basic = Buffer.from(
       `${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`
@@ -359,8 +377,17 @@ export async function teamsCallback(req, res) {
     if (!code || !state) return res.status(400).send("Missing code/state");
 
     const parsed = parseState(state);
-    const company_id = String(parsed.company_id);
+
+    const company_id =
+      parsed.company_id && parsed.company_id !== "null"
+        ? String(parsed.company_id)
+        : null;
+
     const user_id = Number(parsed.user_id);
+
+    if (!Number.isInteger(user_id) || user_id <= 0) {
+      return res.status(400).send("Invalid user_id in state");
+    }
     const tenant = process.env.MS_TENANT_ID;
 
     const body = new URLSearchParams({
