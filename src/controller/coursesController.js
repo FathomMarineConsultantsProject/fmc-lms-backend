@@ -1,4 +1,8 @@
 import { db } from "../db.js";
+import crypto from "crypto";
+import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
 
 const VALID_CONTENT_MODES = new Set(["single_training", "course"]);
 const VALID_CONTENT_TYPES = new Set([
@@ -8,10 +12,6 @@ const VALID_CONTENT_TYPES = new Set([
     "image",
     "ppt",
 ]);
-import crypto from "crypto";
-import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
 
 const getAuthUserId = (req) => req.user?.user_id ?? req.user?.id ?? null;
 
@@ -104,8 +104,8 @@ function validateCoursePayload(body, isUpdate = false) {
 }
 
 async function fetchCourseWithContents(courseId) {
-  const courseResult = await db.query(
-    `
+    const courseResult = await db.query(
+        `
       SELECT
         c.id,
         c.title,
@@ -123,13 +123,13 @@ async function fetchCourseWithContents(courseId) {
       WHERE c.id = $1
         AND c.deleted_at IS NULL
     `,
-    [courseId]
-  );
+        [courseId]
+    );
 
-  if (!courseResult.rowCount) return null;
+    if (!courseResult.rowCount) return null;
 
-  const contentsResult = await db.query(
-    `
+    const contentsResult = await db.query(
+        `
       SELECT
         cc.id,
         cc.course_id,
@@ -144,22 +144,22 @@ async function fetchCourseWithContents(courseId) {
       WHERE cc.course_id = $1
       ORDER BY cc.sort_order ASC, cc.id ASC
     `,
-    [courseId]
-  );
+        [courseId]
+    );
 
-  const contents = contentsResult.rows;
+    const contents = contentsResult.rows;
 
-  if (!contents.length) {
-    return {
-      ...courseResult.rows[0],
-      contents: [],
-    };
-  }
+    if (!contents.length) {
+        return {
+            ...courseResult.rows[0],
+            contents: [],
+        };
+    }
 
-  const contentIds = contents.map((c) => c.id);
+    const contentIds = contents.map((c) => c.id);
 
-  const mediaResult = await db.query(
-    `
+    const mediaResult = await db.query(
+        `
       SELECT
         ccm.course_content_id,
         mf.id AS media_file_id,
@@ -183,55 +183,55 @@ async function fetchCourseWithContents(courseId) {
       WHERE ccm.course_content_id = ANY($1::bigint[])
       ORDER BY mf.id ASC
     `,
-    [contentIds]
-  );
+        [contentIds]
+    );
 
-  const mediaByContentId = new Map();
+    const mediaByContentId = new Map();
 
-  for (const row of mediaResult.rows) {
-    if (!mediaByContentId.has(row.course_content_id)) {
-      mediaByContentId.set(row.course_content_id, []);
+    for (const row of mediaResult.rows) {
+        if (!mediaByContentId.has(row.course_content_id)) {
+            mediaByContentId.set(row.course_content_id, []);
+        }
+        mediaByContentId.get(row.course_content_id).push(row);
     }
-    mediaByContentId.get(row.course_content_id).push(row);
-  }
 
-  return {
-    ...courseResult.rows[0],
-    contents: contents.map((content) => ({
-      ...content,
-      media: mediaByContentId.get(content.id) || [],
-    })),
-  };
+    return {
+        ...courseResult.rows[0],
+        contents: contents.map((content) => ({
+            ...content,
+            media: mediaByContentId.get(content.id) || [],
+        })),
+    };
 }
 
 function sanitizeFileName(name = "") {
-  return String(name).replace(/[^a-zA-Z0-9._-]/g, "_");
+    return String(name).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function buildStoredFileName(originalName) {
-  return `${crypto.randomUUID()}-${sanitizeFileName(originalName)}`;
+    return `${crypto.randomUUID()}-${sanitizeFileName(originalName)}`;
 }
 
 function getFileTypeFromMime(mimeType) {
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/")) return "video_file";
+    if (mimeType.startsWith("image/")) return "image";
+    if (mimeType.startsWith("video/")) return "video_file";
 
-  if (
-    mimeType === "application/vnd.ms-powerpoint" ||
-    mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-  ) {
-    return "ppt";
-  }
+    if (
+        mimeType === "application/vnd.ms-powerpoint" ||
+        mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) {
+        return "ppt";
+    }
 
-  if (
-    mimeType === "application/pdf" ||
-    mimeType === "application/msword" ||
-    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  ) {
-    return "document";
-  }
+    if (
+        mimeType === "application/pdf" ||
+        mimeType === "application/msword" ||
+        mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
+        return "document";
+    }
 
-  return null;
+    return null;
 }
 
 export async function createCourse(req, res) {
@@ -510,17 +510,18 @@ export async function updateCourse(req, res) {
       description = COALESCE($2, description),
       department = COALESCE($3, department),
       predefined_course_title = CASE
-        WHEN $4_present THEN $4
+        WHEN $4::boolean THEN $5
         ELSE predefined_course_title
       END,
-      content_mode = COALESCE($5, content_mode),
-      updated_by = $6
-    WHERE id = $7
-  `.replace("$4_present", bodyHasPredefinedCourseTitle ? "TRUE" : "FALSE"),
+      content_mode = COALESCE($6, content_mode),
+      updated_by = $7
+    WHERE id = $8
+  `,
             [
                 payload.title,
                 payload.description,
                 payload.department,
+                bodyHasPredefinedCourseTitle,
                 payload.predefined_course_title,
                 payload.content_mode,
                 authUserId,
@@ -616,33 +617,33 @@ export async function deleteCourse(req, res) {
 }
 
 export async function uploadCourseContentMedia(req, res) {
-  const client = await db.connect();
+    const client = await db.connect();
 
-  try {
-    const courseId = Number(req.params.courseId);
-    const contentId = Number(req.params.contentId);
-    const authUserId = getAuthUserId(req);
-    const file = req.file;
+    try {
+        const courseId = Number(req.params.courseId);
+        const contentId = Number(req.params.contentId);
+        const authUserId = getAuthUserId(req);
+        const file = req.file;
 
-    if (!courseId || Number.isNaN(courseId)) {
-      return res.status(400).json({ message: "Invalid course id" });
-    }
+        if (!courseId || Number.isNaN(courseId)) {
+            return res.status(400).json({ message: "Invalid course id" });
+        }
 
-    if (!contentId || Number.isNaN(contentId)) {
-      return res.status(400).json({ message: "Invalid content id" });
-    }
+        if (!contentId || Number.isNaN(contentId)) {
+            return res.status(400).json({ message: "Invalid content id" });
+        }
 
-    if (!file) {
-      return res.status(400).json({ message: "File is required" });
-    }
+        if (!file) {
+            return res.status(400).json({ message: "File is required" });
+        }
 
-    const fileType = getFileTypeFromMime(file.mimetype);
-    if (!fileType) {
-      return res.status(400).json({ message: "Unsupported file type" });
-    }
+        const fileType = getFileTypeFromMime(file.mimetype);
+        if (!fileType) {
+            return res.status(400).json({ message: "Unsupported file type" });
+        }
 
-    const contentResult = await client.query(
-      `
+        const contentResult = await client.query(
+            `
         SELECT
           cc.id,
           cc.course_id,
@@ -656,61 +657,61 @@ export async function uploadCourseContentMedia(req, res) {
           AND c.deleted_at IS NULL
         LIMIT 1
       `,
-      [contentId, courseId]
-    );
+            [contentId, courseId]
+        );
 
-    if (!contentResult.rowCount) {
-      return res.status(404).json({ message: "Course content not found" });
-    }
+        if (!contentResult.rowCount) {
+            return res.status(404).json({ message: "Course content not found" });
+        }
 
-    const content = contentResult.rows[0];
+        const content = contentResult.rows[0];
 
-    if (content.content_type === "youtube") {
-      return res.status(400).json({
-        message: "YouTube content does not accept file upload",
-      });
-    }
+        if (content.content_type === "youtube") {
+            return res.status(400).json({
+                message: "YouTube content does not accept file upload",
+            });
+        }
 
-    if (content.content_type !== fileType) {
-      return res.status(400).json({
-        message: `Uploaded file type (${fileType}) does not match content type (${content.content_type})`,
-      });
-    }
+        if (content.content_type !== fileType) {
+            return res.status(400).json({
+                message: `Uploaded file type (${fileType}) does not match content type (${content.content_type})`,
+            });
+        }
 
-    const existingMedia = await client.query(
-      `
+        const existingMedia = await client.query(
+            `
         SELECT ccm.id
         FROM course_content_media ccm
         WHERE ccm.course_content_id = $1
         LIMIT 1
       `,
-      [contentId]
-    );
+            [contentId]
+        );
 
-    if (existingMedia.rowCount) {
-      return res.status(400).json({
-        message: "This content already has a media file. Delete old file first or replace flow later.",
-      });
-    }
+        if (existingMedia.rowCount) {
+            return res.status(400).json({
+                message: "This content already has a media file. Delete old file first or replace flow later.",
+            });
+        }
 
-    const storedFileName = buildStoredFileName(file.originalname);
-    const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
+        const storedFileName = buildStoredFileName(file.originalname);
+        const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
 
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: s3Key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
-      })
-    );
+        await s3.send(
+            new PutObjectCommand({
+                Bucket: S3_BUCKET,
+                Key: s3Key,
+                Body: file.buffer,
+                ContentType: file.mimetype,
+            })
+        );
 
-    const publicUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
+        const publicUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
 
-    await client.query("BEGIN");
+        await client.query("BEGIN");
 
-    const mediaInsert = await client.query(
-      `
+        const mediaInsert = await client.query(
+            `
         INSERT INTO media_files (
           original_file_name,
           stored_file_name,
@@ -725,20 +726,20 @@ export async function uploadCourseContentMedia(req, res) {
         VALUES ($1, $2, $3, $4, $5, 's3', NULL, $6, 'uploaded')
         RETURNING *
       `,
-      [
-        file.originalname,
-        storedFileName,
-        fileType,
-        file.mimetype,
-        file.size,
-        authUserId,
-      ]
-    );
+            [
+                file.originalname,
+                storedFileName,
+                fileType,
+                file.mimetype,
+                file.size,
+                authUserId,
+            ]
+        );
 
-    const mediaFile = mediaInsert.rows[0];
+        const mediaFile = mediaInsert.rows[0];
 
-    await client.query(
-      `
+        await client.query(
+            `
         INSERT INTO media_storage_s3 (
           media_file_id,
           bucket_name,
@@ -748,61 +749,61 @@ export async function uploadCourseContentMedia(req, res) {
         )
         VALUES ($1, $2, $3, $4, $5)
       `,
-      [mediaFile.id, S3_BUCKET, s3Key, publicUrl, AWS_REGION]
-    );
+            [mediaFile.id, S3_BUCKET, s3Key, publicUrl, AWS_REGION]
+        );
 
-    await client.query(
-      `
+        await client.query(
+            `
         INSERT INTO course_content_media (
           course_content_id,
           media_file_id
         )
         VALUES ($1, $2)
       `,
-      [contentId, mediaFile.id]
-    );
+            [contentId, mediaFile.id]
+        );
 
-    await client.query("COMMIT");
+        await client.query("COMMIT");
 
-    return res.status(201).json({
-      message: "Content media uploaded successfully",
-      media: {
-        media_file_id: mediaFile.id,
-        original_file_name: mediaFile.original_file_name,
-        stored_file_name: mediaFile.stored_file_name,
-        file_type: mediaFile.file_type,
-        mime_type: mediaFile.mime_type,
-        file_size_bytes: mediaFile.file_size_bytes,
-        storage_provider: mediaFile.storage_provider,
-        upload_status: mediaFile.upload_status,
-        bucket_name: S3_BUCKET,
-        object_key: s3Key,
-        file_url: publicUrl,
-        region: AWS_REGION,
-      },
-    });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("uploadCourseContentMedia error:", error);
-    return res.status(500).json({
-      message: "Failed to upload content media",
-      error: error.message,
-    });
-  } finally {
-    client.release();
-  }
+        return res.status(201).json({
+            message: "Content media uploaded successfully",
+            media: {
+                media_file_id: mediaFile.id,
+                original_file_name: mediaFile.original_file_name,
+                stored_file_name: mediaFile.stored_file_name,
+                file_type: mediaFile.file_type,
+                mime_type: mediaFile.mime_type,
+                file_size_bytes: mediaFile.file_size_bytes,
+                storage_provider: mediaFile.storage_provider,
+                upload_status: mediaFile.upload_status,
+                bucket_name: S3_BUCKET,
+                object_key: s3Key,
+                file_url: publicUrl,
+                region: AWS_REGION,
+            },
+        });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("uploadCourseContentMedia error:", error);
+        return res.status(500).json({
+            message: "Failed to upload content media",
+            error: error.message,
+        });
+    } finally {
+        client.release();
+    }
 }
 
 export async function getCourseContentMediaSignedUrl(req, res) {
-  try {
-    const mediaFileId = Number(req.params.mediaFileId);
+    try {
+        const mediaFileId = Number(req.params.mediaFileId);
 
-    if (!mediaFileId || Number.isNaN(mediaFileId)) {
-      return res.status(400).json({ message: "Invalid media file id" });
-    }
+        if (!mediaFileId || Number.isNaN(mediaFileId)) {
+            return res.status(400).json({ message: "Invalid media file id" });
+        }
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         SELECT
           mf.id AS media_file_id,
           mf.original_file_name,
@@ -815,63 +816,63 @@ export async function getCourseContentMediaSignedUrl(req, res) {
         WHERE mf.id = $1
         LIMIT 1
       `,
-      [mediaFileId]
-    );
+            [mediaFileId]
+        );
 
-    if (!result.rowCount) {
-      return res.status(404).json({ message: "Media file not found" });
+        if (!result.rowCount) {
+            return res.status(404).json({ message: "Media file not found" });
+        }
+
+        const media = result.rows[0];
+
+        const signedUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({
+                Bucket: media.bucket_name,
+                Key: media.object_key,
+                ResponseContentType: media.mime_type,
+            }),
+            { expiresIn: SIGNED_URL_EXPIRES }
+        );
+
+        return res.json({
+            message: "Signed URL generated successfully",
+            media_file_id: media.media_file_id,
+            original_file_name: media.original_file_name,
+            signed_url: signedUrl,
+            expires_in_seconds: SIGNED_URL_EXPIRES,
+        });
+    } catch (error) {
+        console.error("getCourseContentMediaSignedUrl error:", error);
+        return res.status(500).json({
+            message: "Failed to generate signed URL",
+            error: error.message,
+        });
     }
-
-    const media = result.rows[0];
-
-    const signedUrl = await getSignedUrl(
-      s3,
-      new GetObjectCommand({
-        Bucket: media.bucket_name,
-        Key: media.object_key,
-        ResponseContentType: media.mime_type,
-      }),
-      { expiresIn: SIGNED_URL_EXPIRES }
-    );
-
-    return res.json({
-      message: "Signed URL generated successfully",
-      media_file_id: media.media_file_id,
-      original_file_name: media.original_file_name,
-      signed_url: signedUrl,
-      expires_in_seconds: SIGNED_URL_EXPIRES,
-    });
-  } catch (error) {
-    console.error("getCourseContentMediaSignedUrl error:", error);
-    return res.status(500).json({
-      message: "Failed to generate signed URL",
-      error: error.message,
-    });
-  }
 }
 
 export async function deleteCourseContentMedia(req, res) {
-  const client = await db.connect();
+    const client = await db.connect();
 
-  try {
-    const courseId = Number(req.params.courseId);
-    const contentId = Number(req.params.contentId);
-    const mediaFileId = Number(req.params.mediaFileId);
+    try {
+        const courseId = Number(req.params.courseId);
+        const contentId = Number(req.params.contentId);
+        const mediaFileId = Number(req.params.mediaFileId);
 
-    if (!courseId || Number.isNaN(courseId)) {
-      return res.status(400).json({ message: "Invalid course id" });
-    }
+        if (!courseId || Number.isNaN(courseId)) {
+            return res.status(400).json({ message: "Invalid course id" });
+        }
 
-    if (!contentId || Number.isNaN(contentId)) {
-      return res.status(400).json({ message: "Invalid content id" });
-    }
+        if (!contentId || Number.isNaN(contentId)) {
+            return res.status(400).json({ message: "Invalid content id" });
+        }
 
-    if (!mediaFileId || Number.isNaN(mediaFileId)) {
-      return res.status(400).json({ message: "Invalid media file id" });
-    }
+        if (!mediaFileId || Number.isNaN(mediaFileId)) {
+            return res.status(400).json({ message: "Invalid media file id" });
+        }
 
-    const result = await client.query(
-      `
+        const result = await client.query(
+            `
         SELECT
           ccm.course_content_id,
           mf.id AS media_file_id,
@@ -889,43 +890,43 @@ export async function deleteCourseContentMedia(req, res) {
           AND mf.id = $3
         LIMIT 1
       `,
-      [courseId, contentId, mediaFileId]
-    );
+            [courseId, contentId, mediaFileId]
+        );
 
-    if (!result.rowCount) {
-      return res.status(404).json({ message: "Media mapping not found" });
+        if (!result.rowCount) {
+            return res.status(404).json({ message: "Media mapping not found" });
+        }
+
+        const media = result.rows[0];
+
+        await client.query("BEGIN");
+
+        if (media.bucket_name && media.object_key) {
+            await s3.send(
+                new DeleteObjectCommand({
+                    Bucket: media.bucket_name,
+                    Key: media.object_key,
+                })
+            );
+        }
+
+        await client.query(`DELETE FROM course_content_media WHERE media_file_id = $1`, [mediaFileId]);
+        await client.query(`DELETE FROM media_storage_s3 WHERE media_file_id = $1`, [mediaFileId]);
+        await client.query(`DELETE FROM media_files WHERE id = $1`, [mediaFileId]);
+
+        await client.query("COMMIT");
+
+        return res.json({
+            message: "Content media deleted successfully",
+        });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("deleteCourseContentMedia error:", error);
+        return res.status(500).json({
+            message: "Failed to delete content media",
+            error: error.message,
+        });
+    } finally {
+        client.release();
     }
-
-    const media = result.rows[0];
-
-    await client.query("BEGIN");
-
-    if (media.bucket_name && media.object_key) {
-      await s3.send(
-        new DeleteObjectCommand({
-          Bucket: media.bucket_name,
-          Key: media.object_key,
-        })
-      );
-    }
-
-    await client.query(`DELETE FROM course_content_media WHERE media_file_id = $1`, [mediaFileId]);
-    await client.query(`DELETE FROM media_storage_s3 WHERE media_file_id = $1`, [mediaFileId]);
-    await client.query(`DELETE FROM media_files WHERE id = $1`, [mediaFileId]);
-
-    await client.query("COMMIT");
-
-    return res.json({
-      message: "Content media deleted successfully",
-    });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("deleteCourseContentMedia error:", error);
-    return res.status(500).json({
-      message: "Failed to delete content media",
-      error: error.message,
-    });
-  } finally {
-    client.release();
-  }
 }
