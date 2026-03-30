@@ -2,7 +2,6 @@ import { db } from "../db.js";
 import crypto from "crypto";
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { db } from "../db.js";
 import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
 
 const VALID_CONTENT_MODES = new Set(["single_training", "course"]);
