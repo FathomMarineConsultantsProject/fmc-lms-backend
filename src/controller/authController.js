@@ -101,13 +101,13 @@ const ensureUserScopeForAdmin = async (req, targetUserId) => {
   if (role === ROLE_SUPERADMIN) return true;
 
   if (role === ROLE_ADMIN) {
-    const r = await db.query(`SELECT company_id FROM users WHERE user_id = $1`, [Number(targetUserId)]);
+    const r = await db.query(`SELECT company_id FROM public.users WHERE user_id = $1`, [Number(targetUserId)]);
     if (!r.rows.length) return false;
     return String(r.rows[0].company_id) === String(req.user.company_id);
   }
 
   if (role === ROLE_SUBADMIN) {
-    const r = await db.query(`SELECT company_id, ship_id FROM users WHERE user_id = $1`, [Number(targetUserId)]);
+    const r = await db.query(`SELECT company_id, ship_id FROM public.users WHERE user_id = $1`, [Number(targetUserId)]);
     if (!r.rows.length) return false;
     return (
       String(r.rows[0].company_id) === String(req.user.company_id) &&
@@ -130,7 +130,7 @@ export const login = async (req, res) => {
     const { rows } = await db.query(
       `
       SELECT user_id, full_name, status, username, password_hash, role_id, ship_id, company_id
-      FROM users
+      FROM public.users
       WHERE username = $1
       LIMIT 1
       `,
@@ -160,7 +160,7 @@ export const login = async (req, res) => {
 
     await db.query(
       `
-      INSERT INTO refresh_sessions (user_id, refresh_token_hash, expires_at)
+      INSERT INTO public.refresh_sessions (user_id, refresh_token_hash, expires_at)
       VALUES ($1, $2, NOW() + ($3 || ' days')::interval)
       `,
       [user.user_id, refresh_hash, String(REFRESH_EXPIRES_DAYS)]
@@ -216,7 +216,7 @@ export const signup = async (req, res) => {
 
     const { rows } = await db.query(
       `
-      INSERT INTO users
+      INSERT INTO public.users
         (seafarer_id, full_name, rank, trip,
          embarkation_date, disembarkation_date,
          status, username, password_hash, password_enc,
@@ -264,7 +264,7 @@ export const forgotPassword = async (req, res) => {
   if (!username) return res.status(400).json({ error: 'username is required' });
 
   try {
-    const u = await db.query(`SELECT user_id FROM users WHERE username = $1 LIMIT 1`, [String(username)]);
+    const u = await db.query(`SELECT user_id FROM public.users WHERE username = $1 LIMIT 1`, [String(username)]);
 
     // Don't reveal existence
     if (!u.rows.length) return res.json({ message: 'If account exists, reset token generated' });
@@ -274,7 +274,7 @@ export const forgotPassword = async (req, res) => {
 
     const { rowCount } = await db.query(
       `
-      UPDATE users
+      UPDATE public.users
       SET reset_token_hash = $1,
           reset_token_expires_at = NOW() + INTERVAL '15 minutes',
           updated_at = NOW()
@@ -310,7 +310,7 @@ export const resetPassword = async (req, res) => {
     const u = await db.query(
       `
       SELECT user_id, reset_token_hash, reset_token_expires_at
-      FROM users
+      FROM public.users
       WHERE username = $1
       LIMIT 1
       `,
@@ -334,7 +334,7 @@ export const resetPassword = async (req, res) => {
 
     await db.query(
       `
-      UPDATE users
+      UPDATE public.users
       SET password_hash = $1,
           password_enc = $2,
           reset_token_hash = NULL,
@@ -346,7 +346,7 @@ export const resetPassword = async (req, res) => {
     );
 
     // OPTIONAL: revoke ALL refresh sessions for this user (recommended)
-    await db.query(`UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, [
+    await db.query(`UPDATE public.refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, [
       user.user_id,
     ]);
 
@@ -368,7 +368,7 @@ export const refreshAccessToken = async (req, res) => {
     const s = await db.query(
       `
       SELECT session_id, user_id, expires_at, revoked_at
-      FROM refresh_sessions
+      FROM public.refresh_sessions
       WHERE refresh_token_hash = $1
       LIMIT 1
       `,
@@ -382,7 +382,7 @@ export const refreshAccessToken = async (req, res) => {
     if (new Date(session.expires_at) < new Date()) return res.status(401).json({ error: 'Refresh token expired' });
 
     const u = await db.query(
-      `SELECT user_id, full_name, status, role_id, ship_id, company_id FROM users WHERE user_id = $1 LIMIT 1`,
+      `SELECT user_id, full_name, status, role_id, ship_id, company_id FROM public.users WHERE user_id = $1 LIMIT 1`,
       [session.user_id]
     );
     if (!u.rows.length) return res.status(401).json({ error: 'User not found' });
@@ -412,7 +412,7 @@ export const logout = async (req, res) => {
 
     await db.query(
       `
-      UPDATE refresh_sessions
+      UPDATE public.refresh_sessions
       SET revoked_at = NOW()
       WHERE refresh_token_hash = $1
       `,
@@ -441,7 +441,7 @@ export const adminViewPassword = async (req, res) => {
     const r = await db.query(
       `
       SELECT user_id, full_name, username, password_enc
-      FROM users
+      FROM public.users
       WHERE user_id = $1
       LIMIT 1
       `,
@@ -464,7 +464,6 @@ export const adminViewPassword = async (req, res) => {
     return res.status(500).json({ error: 'Failed to view password' });
   }
 };
-
 
 // -------------------- ADMIN: SET/CHANGE USER PASSWORD (AUTO-GENERATE) --------------------
 const generateAutoPassword = (length = 12) => {
@@ -515,7 +514,7 @@ export const adminSetPassword = async (req, res) => {
 
     const { rowCount } = await db.query(
       `
-      UPDATE users
+      UPDATE public.users
       SET password_hash = $1,
           password_enc  = $2,
           updated_at    = NOW()
@@ -528,7 +527,7 @@ export const adminSetPassword = async (req, res) => {
 
     // ✅ revoke ALL refresh sessions for this user
     await db.query(
-      `UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+      `UPDATE public.refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
       [targetUserId]
     );
 
