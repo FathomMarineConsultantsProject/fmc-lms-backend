@@ -684,21 +684,21 @@ export async function uploadCourseContentMedia(req, res) {
       });
     }
 
-    const existingMedia = await client.query(
-      `
-        SELECT ccm.id
-        FROM course_content_media ccm
-        WHERE ccm.course_content_id = $1
-        LIMIT 1
-      `,
-      [contentId]
-    );
+    // const existingMedia = await client.query(
+    //   `
+    //     SELECT ccm.id
+    //     FROM course_content_media ccm
+    //     WHERE ccm.course_content_id = $1
+    //     LIMIT 1
+    //   `,
+    //   [contentId]
+    // );
 
-    if (existingMedia.rowCount) {
-      return res.status(400).json({
-        message: "This content already has a media file. Delete old file first or replace flow later.",
-      });
-    }
+    // if (existingMedia.rowCount) {
+    //   return res.status(400).json({
+    //     message: "This content already has a media file. Delete old file first or replace flow later.",
+    //   });
+    // }
 
     const storedFileName = buildStoredFileName(file.originalname);
     const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;

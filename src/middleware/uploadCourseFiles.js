@@ -35,7 +35,7 @@ export const uploadCourseFiles = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: MAX_FILE_SIZE,
-    files: 1,
+    fileSize: MAX_FILE_SIZE_PER_FILE,
+    files: 10,
   },
 });
