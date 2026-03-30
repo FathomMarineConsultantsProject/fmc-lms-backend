@@ -19,6 +19,7 @@ import userExportRoutes from "./routes/userExportRoutes.js";
 import { router as deviceRoutes } from "./routes/deviceRoutes.js";
 import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 import { router as integrationRoutes } from "./routes/integrationRoutes.js";
+import courseRoutes from "./routes/courseRoutes.js";
 
 const app = express();
 
@@ -78,6 +79,7 @@ app.use("/certificates", certificateRoutes);
 app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
 app.use("/meetings", meetingRoutes);
+app.use("/api/courses", courseRoutes);
 
 //meeting integrations
 app.use("/integrations", integrationRoutes);
