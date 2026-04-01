@@ -24,7 +24,7 @@ router.get("/media/:mediaFileId/url", requireAuth, getCourseContentMediaSignedUr
 router.post(
   "/:courseId/contents/:contentId/media",
   requireAuth,
-  uploadCourseFiles.single("file"),
+  uploadCourseFiles.array("files", 10),
   uploadCourseContentMedia
 );
 

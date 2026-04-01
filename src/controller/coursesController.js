@@ -618,12 +618,14 @@ export async function deleteCourse(req, res) {
 
 export async function uploadCourseContentMedia(req, res) {
   const client = await db.connect();
-
+let transactionStarted = false;
   try {
     const courseId = Number(req.params.courseId);
     const contentId = Number(req.params.contentId);
     const authUserId = getAuthUserId(req);
-    const file = req.file;
+    const files = req.files || [];
+
+    const MAX_TOTAL_CONTENT_MEDIA_SIZE = 5 * 1024 * 1024; // 5 MB total per content
 
     if (!S3_BUCKET) {
       return res.status(500).json({
@@ -639,13 +641,8 @@ export async function uploadCourseContentMedia(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
-    if (!file) {
-      return res.status(400).json({ message: "File is required" });
-    }
-
-    const fileType = getFileTypeFromMime(file.mimetype);
-    if (!fileType) {
-      return res.status(400).json({ message: "Unsupported file type" });
+    if (!files.length) {
+      return res.status(400).json({ message: "At least one file is required" });
     }
 
     const contentResult = await client.query(
@@ -678,105 +675,124 @@ export async function uploadCourseContentMedia(req, res) {
       });
     }
 
-    if (content.content_type !== fileType) {
-      return res.status(400).json({
-        message: `Uploaded file type (${fileType}) does not match content type (${content.content_type})`,
-      });
+    for (const file of files) {
+      const fileType = getFileTypeFromMime(file.mimetype);
+
+      if (!fileType) {
+        return res.status(400).json({
+          message: `Unsupported file type: ${file.mimetype}`,
+        });
+      }
+
+      if (content.content_type !== fileType) {
+        return res.status(400).json({
+          message: `Uploaded file type (${fileType}) does not match content type (${content.content_type})`,
+        });
+      }
     }
 
-    const existingMedia = await client.query(
+    const existingSizeResult = await client.query(
       `
-        SELECT ccm.id
+        SELECT COALESCE(SUM(mf.file_size_bytes), 0)::bigint AS total_size
         FROM course_content_media ccm
+        JOIN media_files mf
+          ON mf.id = ccm.media_file_id
         WHERE ccm.course_content_id = $1
-        LIMIT 1
       `,
       [contentId]
     );
 
-    if (existingMedia.rowCount) {
+    const existingTotalSize = Number(existingSizeResult.rows[0]?.total_size || 0);
+    const newFilesTotalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+
+    if (existingTotalSize + newFilesTotalSize > MAX_TOTAL_CONTENT_MEDIA_SIZE) {
       return res.status(400).json({
-        message: "This content already has a media file. Delete old file first or replace flow later.",
+        message: "Total upload size limit exceeded for this content",
+        max_allowed_bytes: MAX_TOTAL_CONTENT_MEDIA_SIZE,
+        existing_total_bytes: existingTotalSize,
+        new_files_total_bytes: newFilesTotalSize,
+        remaining_bytes: Math.max(0, MAX_TOTAL_CONTENT_MEDIA_SIZE - existingTotalSize),
       });
     }
 
-    const storedFileName = buildStoredFileName(file.originalname);
-    const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
-
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: s3Key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
-      })
-    );
-
-    const publicUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${s3Key
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/")}`;
-
     await client.query("BEGIN");
+    transactionStarted = true;
 
-    const mediaInsert = await client.query(
-      `
-        INSERT INTO media_files (
-          original_file_name,
-          stored_file_name,
-          file_type,
-          mime_type,
-          file_size_bytes,
-          storage_provider,
-          local_path,
-          uploaded_by,
-          upload_status
-        )
-        VALUES ($1, $2, $3, $4, $5, 's3', NULL, $6, 'uploaded')
-        RETURNING *
-      `,
-      [
-        file.originalname,
-        storedFileName,
-        fileType,
-        file.mimetype,
-        file.size,
-        authUserId,
-      ]
-    );
+    const uploadedMedia = [];
 
-    const mediaFile = mediaInsert.rows[0];
+    for (const file of files) {
+      const fileType = getFileTypeFromMime(file.mimetype);
+      const storedFileName = buildStoredFileName(file.originalname);
+      const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
 
-    await client.query(
-      `
-        INSERT INTO media_storage_s3 (
-          media_file_id,
-          bucket_name,
-          object_key,
-          file_url,
-          region
-        )
-        VALUES ($1, $2, $3, $4, $5)
-      `,
-      [mediaFile.id, S3_BUCKET, s3Key, publicUrl, AWS_REGION]
-    );
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: s3Key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        })
+      );
 
-    await client.query(
-      `
-        INSERT INTO course_content_media (
-          course_content_id,
-          media_file_id
-        )
-        VALUES ($1, $2)
-      `,
-      [contentId, mediaFile.id]
-    );
+      const publicUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${s3Key
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`;
 
-    await client.query("COMMIT");
+      const mediaInsert = await client.query(
+        `
+          INSERT INTO media_files (
+            original_file_name,
+            stored_file_name,
+            file_type,
+            mime_type,
+            file_size_bytes,
+            storage_provider,
+            local_path,
+            uploaded_by,
+            upload_status
+          )
+          VALUES ($1, $2, $3, $4, $5, 's3', NULL, $6, 'uploaded')
+          RETURNING *
+        `,
+        [
+          file.originalname,
+          storedFileName,
+          fileType,
+          file.mimetype,
+          file.size,
+          authUserId,
+        ]
+      );
 
-    return res.status(201).json({
-      message: "Content media uploaded successfully",
-      media: {
+      const mediaFile = mediaInsert.rows[0];
+
+      await client.query(
+        `
+          INSERT INTO media_storage_s3 (
+            media_file_id,
+            bucket_name,
+            object_key,
+            file_url,
+            region
+          )
+          VALUES ($1, $2, $3, $4, $5)
+        `,
+        [mediaFile.id, S3_BUCKET, s3Key, publicUrl, AWS_REGION]
+      );
+
+      await client.query(
+        `
+          INSERT INTO course_content_media (
+            course_content_id,
+            media_file_id
+          )
+          VALUES ($1, $2)
+        `,
+        [contentId, mediaFile.id]
+      );
+
+      uploadedMedia.push({
         media_file_id: mediaFile.id,
         original_file_name: mediaFile.original_file_name,
         stored_file_name: mediaFile.stored_file_name,
@@ -789,7 +805,15 @@ export async function uploadCourseContentMedia(req, res) {
         object_key: s3Key,
         file_url: publicUrl,
         region: AWS_REGION,
-      },
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      message: "Content media uploaded successfully",
+      uploaded_count: uploadedMedia.length,
+      media: uploadedMedia,
     });
   } catch (error) {
     await client.query("ROLLBACK");
