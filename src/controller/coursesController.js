@@ -816,7 +816,9 @@ let transactionStarted = false;
       media: uploadedMedia,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+  await client.query("ROLLBACK");
+}
     console.error("uploadCourseContentMedia error:", error);
     return res.status(500).json({
       message: "Failed to upload content media",
@@ -962,4 +964,215 @@ export async function deleteCourseContentMedia(req, res) {
     } finally {
         client.release();
     }
+}
+
+export async function getCourseContentById(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    const contentResult = await db.query(
+      `
+      SELECT
+        cc.id,
+        cc.course_id,
+        cc.content_title,
+        cc.content_description,
+        cc.content_type,
+        cc.youtube_url,
+        cc.sort_order,
+        cc.created_at,
+        cc.updated_at
+      FROM course_contents cc
+      JOIN courses c
+        ON c.id = cc.course_id
+      WHERE cc.id = $1
+        AND cc.course_id = $2
+        AND c.deleted_at IS NULL
+      LIMIT 1
+      `,
+      [contentId, courseId]
+    );
+
+    if (!contentResult.rowCount) {
+      return res.status(404).json({ message: "Course content not found" });
+    }
+
+    return res.json({
+      message: "Course content fetched successfully",
+      content: contentResult.rows[0],
+    });
+  } catch (error) {
+    console.error("getCourseContentById error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch course content",
+      error: error.message,
+    });
+  }
+}
+
+export async function getCourseContentMedia(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    const contentCheck = await db.query(
+      `
+      SELECT cc.id
+      FROM course_contents cc
+      JOIN courses c
+        ON c.id = cc.course_id
+      WHERE cc.id = $1
+        AND cc.course_id = $2
+        AND c.deleted_at IS NULL
+      LIMIT 1
+      `,
+      [contentId, courseId]
+    );
+
+    if (!contentCheck.rowCount) {
+      return res.status(404).json({ message: "Course content not found" });
+    }
+
+    const mediaResult = await db.query(
+      `
+      SELECT
+        ccm.course_content_id,
+        mf.id AS media_file_id,
+        mf.original_file_name,
+        mf.stored_file_name,
+        mf.file_type,
+        mf.mime_type,
+        mf.file_size_bytes,
+        mf.storage_provider,
+        mf.upload_status,
+        mf.created_at AS media_created_at,
+        ms3.bucket_name,
+        ms3.object_key,
+        ms3.file_url,
+        ms3.region
+      FROM course_content_media ccm
+      JOIN media_files mf
+        ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3
+        ON ms3.media_file_id = mf.id
+      WHERE ccm.course_content_id = $1
+      ORDER BY mf.id ASC
+      `,
+      [contentId]
+    );
+
+    return res.json({
+      message: "Course content media fetched successfully",
+      content_id: contentId,
+      media: mediaResult.rows,
+    });
+  } catch (error) {
+    console.error("getCourseContentMedia error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch course content media",
+      error: error.message,
+    });
+  }
+}
+
+export async function deleteCourseContent(req, res) {
+  const client = await db.connect();
+
+  try {
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    const contentResult = await client.query(
+      `
+      SELECT cc.id
+      FROM course_contents cc
+      JOIN courses c
+        ON c.id = cc.course_id
+      WHERE cc.id = $1
+        AND cc.course_id = $2
+        AND c.deleted_at IS NULL
+      LIMIT 1
+      `,
+      [contentId, courseId]
+    );
+
+    if (!contentResult.rowCount) {
+      return res.status(404).json({ message: "Course content not found" });
+    }
+
+    const mediaResult = await client.query(
+      `
+      SELECT
+        mf.id AS media_file_id,
+        ms3.bucket_name,
+        ms3.object_key
+      FROM course_content_media ccm
+      JOIN media_files mf
+        ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3
+        ON ms3.media_file_id = mf.id
+      WHERE ccm.course_content_id = $1
+      `,
+      [contentId]
+    );
+
+    await client.query("BEGIN");
+
+    for (const media of mediaResult.rows) {
+      if (media.bucket_name && media.object_key) {
+        await s3.send(
+          new DeleteObjectCommand({
+            Bucket: media.bucket_name,
+            Key: media.object_key,
+          })
+        );
+      }
+
+      await client.query(`DELETE FROM course_content_media WHERE media_file_id = $1`, [media.media_file_id]);
+      await client.query(`DELETE FROM media_storage_s3 WHERE media_file_id = $1`, [media.media_file_id]);
+      await client.query(`DELETE FROM media_files WHERE id = $1`, [media.media_file_id]);
+    }
+
+    await client.query(`DELETE FROM course_contents WHERE id = $1 AND course_id = $2`, [contentId, courseId]);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Course content deleted successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("deleteCourseContent error:", error);
+    return res.status(500).json({
+      message: "Failed to delete course content",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
 }
