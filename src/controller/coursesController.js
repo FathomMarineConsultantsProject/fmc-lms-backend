@@ -1176,3 +1176,261 @@ export async function deleteCourseContent(req, res) {
     client.release();
   }
 }
+
+export async function createCourseContent(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    const { content_title, content_description, content_type, youtube_url, sort_order } = req.body;
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    const result = await db.query(
+      `
+      INSERT INTO course_contents (
+        course_id,
+        content_title,
+        content_description,
+        content_type,
+        youtube_url,
+        sort_order
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+      `,
+      [
+        courseId,
+        content_title,
+        content_description,
+        content_type,
+        youtube_url || null,
+        sort_order || 1,
+      ]
+    );
+
+    return res.status(201).json({
+      message: "Content created successfully",
+      content: result.rows[0],
+    });
+  } catch (error) {
+    console.error("createCourseContent error:", error);
+    return res.status(500).json({
+      message: "Failed to create content",
+      error: error.message,
+    });
+  }
+}
+
+export async function updateCourseContent(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+
+    const { content_title, content_description, content_type, youtube_url, sort_order } = req.body;
+
+    const result = await db.query(
+      `
+      UPDATE course_contents
+      SET
+        content_title = COALESCE($1, content_title),
+        content_description = COALESCE($2, content_description),
+        content_type = COALESCE($3, content_type),
+        youtube_url = COALESCE($4, youtube_url),
+        sort_order = COALESCE($5, sort_order),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $6 AND course_id = $7
+      RETURNING *
+      `,
+      [
+        content_title,
+        content_description,
+        content_type,
+        youtube_url,
+        sort_order,
+        contentId,
+        courseId,
+      ]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ message: "Content not found" });
+    }
+
+    return res.json({
+      message: "Content updated successfully",
+      content: result.rows[0],
+    });
+  } catch (error) {
+    console.error("updateCourseContent error:", error);
+    return res.status(500).json({
+      message: "Failed to update content",
+      error: error.message,
+    });
+  }
+}
+
+export async function getCourseContentMediaById(req, res) {
+  try {
+    const { courseId, contentId, mediaFileId } = req.params;
+
+    const result = await db.query(
+      `
+      SELECT
+        mf.id AS media_file_id,
+        mf.original_file_name,
+        mf.mime_type,
+        mf.file_size_bytes,
+        ms3.file_url,
+        ms3.object_key
+      FROM course_content_media ccm
+      JOIN media_files mf ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
+      JOIN course_contents cc ON cc.id = ccm.course_content_id
+      WHERE cc.id = $1
+        AND cc.course_id = $2
+        AND mf.id = $3
+      LIMIT 1
+      `,
+      [contentId, courseId, mediaFileId]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ message: "Media not found" });
+    }
+
+    return res.json({
+      message: "Media fetched successfully",
+      media: result.rows[0],
+    });
+  } catch (error) {
+    console.error("getCourseContentMediaById error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch media",
+      error: error.message,
+    });
+  }
+}
+
+export async function replaceCourseContentMedia(req, res) {
+  const client = await db.connect();
+
+  try {
+    const { courseId, contentId, mediaFileId } = req.params;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ message: "File required" });
+    }
+
+    const existing = await client.query(
+      `
+      SELECT ms3.bucket_name, ms3.object_key
+      FROM media_files mf
+      JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
+      WHERE mf.id = $1
+      `,
+      [mediaFileId]
+    );
+
+    if (!existing.rowCount) {
+      return res.status(404).json({ message: "Media not found" });
+    }
+
+    // delete old file
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: existing.rows[0].bucket_name,
+        Key: existing.rows[0].object_key,
+      })
+    );
+
+    const storedFileName = buildStoredFileName(file.originalname);
+    const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: s3Key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      })
+    );
+
+    const publicUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
+
+    await client.query("BEGIN");
+
+    await client.query(
+      `
+      UPDATE media_files
+      SET
+        original_file_name = $1,
+        stored_file_name = $2,
+        mime_type = $3,
+        file_size_bytes = $4
+      WHERE id = $5
+      `,
+      [file.originalname, storedFileName, file.mimetype, file.size, mediaFileId]
+    );
+
+    await client.query(
+      `
+      UPDATE media_storage_s3
+      SET object_key = $1, file_url = $2
+      WHERE media_file_id = $3
+      `,
+      [s3Key, publicUrl, mediaFileId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({ message: "Media replaced successfully" });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("replaceCourseContentMedia error:", error);
+    return res.status(500).json({
+      message: "Failed to replace media",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+export async function reorderCourseContents(req, res) {
+  const client = await db.connect();
+
+  try {
+    const { courseId } = req.params;
+    const { contents } = req.body; // [{id, sort_order}]
+
+    await client.query("BEGIN");
+
+    for (const item of contents) {
+      await client.query(
+        `
+        UPDATE course_contents
+        SET sort_order = $1
+        WHERE id = $2 AND course_id = $3
+        `,
+        [item.sort_order, item.id, courseId]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Contents reordered successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("reorderCourseContents error:", error);
+    return res.status(500).json({
+      message: "Failed to reorder contents",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+}
