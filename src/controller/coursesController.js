@@ -1434,3 +1434,216 @@ export async function reorderCourseContents(req, res) {
     client.release();
   }
 }
+
+export async function completeCourseByLoggedInUser(req, res) {
+  const client = await db.connect();
+
+  try {
+    const courseId = Number(req.params.courseId);
+    const userId = getAuthUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    const courseCheck = await client.query(
+      `
+      SELECT id, title, deleted_at
+      FROM courses
+      WHERE id = $1
+        AND deleted_at IS NULL
+      LIMIT 1
+      `,
+      [courseId]
+    );
+
+    if (!courseCheck.rowCount) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    await client.query("BEGIN");
+
+    const existingEnrollment = await client.query(
+      `
+      SELECT user_id, course_id, status, completion_status, completed_at
+      FROM course_enrollments
+      WHERE user_id = $1
+        AND course_id = $2
+      LIMIT 1
+      `,
+      [userId, courseId]
+    );
+
+    if (existingEnrollment.rowCount) {
+      await client.query(
+        `
+        UPDATE course_enrollments
+        SET
+          status = 'completed',
+          completion_status = 'completed',
+          completed_at = NOW(),
+          updated_at = NOW()
+        WHERE user_id = $1
+          AND course_id = $2
+        `,
+        [userId, courseId]
+      );
+    } else {
+      await client.query(
+        `
+        INSERT INTO course_enrollments (
+          user_id,
+          course_id,
+          status,
+          enrolled_at,
+          completion_status,
+          completed_at,
+          updated_at
+        )
+        VALUES ($1, $2, 'completed', NOW(), 'completed', NOW(), NOW())
+        `,
+        [userId, courseId]
+      );
+    }
+
+    await client.query(
+      `
+      INSERT INTO course_completion_history (
+        user_id,
+        course_id,
+        completed_at,
+        created_at
+      )
+      VALUES ($1, $2, NOW(), NOW())
+      `,
+      [userId, courseId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Course marked as completed successfully",
+      user_id: userId,
+      course_id: courseId,
+      completed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("completeCourseByLoggedInUser error:", error);
+    return res.status(500).json({
+      message: "Failed to mark course as completed",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+export async function getMyCourseCompletionStatus(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    const userId = getAuthUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        ce.user_id,
+        ce.course_id,
+        ce.status,
+        ce.completion_status,
+        ce.enrolled_at,
+        ce.completed_at,
+        c.title
+      FROM course_enrollments ce
+      JOIN courses c
+        ON c.id = ce.course_id
+      WHERE ce.user_id = $1
+        AND ce.course_id = $2
+        AND c.deleted_at IS NULL
+      LIMIT 1
+      `,
+      [userId, courseId]
+    );
+
+    if (!result.rowCount) {
+      return res.json({
+        message: "No completion record found",
+        completed: false,
+        user_id: userId,
+        course_id: courseId,
+      });
+    }
+
+    const row = result.rows[0];
+
+    return res.json({
+      message: "Course completion status fetched successfully",
+      completed: row.completion_status === "completed",
+      completion: row,
+    });
+  } catch (error) {
+    console.error("getMyCourseCompletionStatus error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch course completion status",
+      error: error.message,
+    });
+  }
+}
+
+export async function getMyCompletedCourses(req, res) {
+  try {
+    const userId = getAuthUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        ce.user_id,
+        ce.course_id,
+        ce.status,
+        ce.completion_status,
+        ce.enrolled_at,
+        ce.completed_at,
+        c.title,
+        c.description,
+        c.department,
+        c.predefined_course_title,
+        c.content_mode
+      FROM course_enrollments ce
+      JOIN courses c
+        ON c.id = ce.course_id
+      WHERE ce.user_id = $1
+        AND ce.completion_status = 'completed'
+        AND c.deleted_at IS NULL
+      ORDER BY ce.completed_at DESC NULLS LAST, ce.enrolled_at DESC
+      `,
+      [userId]
+    );
+
+    return res.json({
+      message: "Completed courses fetched successfully",
+      completed_courses: result.rows,
+    });
+  } catch (error) {
+    console.error("getMyCompletedCourses error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch completed courses",
+      error: error.message,
+    });
+  }
+}

@@ -2,23 +2,26 @@ import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { uploadCourseFiles } from "../middleware/uploadCourseFiles.js";
 import {
-    createCourse,
-    getCourses,
-    getCourseById,
-    getCoursesByUserId,
-    updateCourse,
-    deleteCourse,
-    uploadCourseContentMedia,
-    getCourseContentMediaSignedUrl,
-    deleteCourseContentMedia,
-    getCourseContentById,
-    getCourseContentMedia,
-    deleteCourseContent,
-    createCourseContent,
-    updateCourseContent,
-    getCourseContentMediaById,
-    replaceCourseContentMedia,
-    reorderCourseContents
+  createCourse,
+  getCourses,
+  getCourseById,
+  getCoursesByUserId,
+  updateCourse,
+  deleteCourse,
+  uploadCourseContentMedia,
+  getCourseContentMediaSignedUrl,
+  deleteCourseContentMedia,
+  getCourseContentById,
+  getCourseContentMedia,
+  deleteCourseContent,
+  createCourseContent,
+  updateCourseContent,
+  getCourseContentMediaById,
+  replaceCourseContentMedia,
+  reorderCourseContents,
+  completeCourseByLoggedInUser,
+  getMyCourseCompletionStatus,
+  getMyCompletedCourses,
 } from "../controller/coursesController.js";
 
 const router = express.Router();
@@ -29,35 +32,54 @@ router.get("/", requireAuth, getCourses);
 router.get("/enrolled/:userId", requireAuth, getCoursesByUserId);
 router.get("/media/:mediaFileId/url", requireAuth, getCourseContentMediaSignedUrl);
 
-router.get(
-    "/:courseId/contents/:contentId",
-    requireAuth,
-    getCourseContentById
+// logged-in user completion routes
+router.post(
+  "/:courseId/complete",
+  requireAuth,
+  completeCourseByLoggedInUser
 );
 
 router.get(
-    "/:courseId/contents/:contentId/media",
-    requireAuth,
-    getCourseContentMedia
+  "/:courseId/completion-status",
+  requireAuth,
+  getMyCourseCompletionStatus
+);
+
+router.get(
+  "/completed/me",
+  requireAuth,
+  getMyCompletedCourses
+);
+
+router.get(
+  "/:courseId/contents/:contentId",
+  requireAuth,
+  getCourseContentById
+);
+
+router.get(
+  "/:courseId/contents/:contentId/media",
+  requireAuth,
+  getCourseContentMedia
 );
 
 router.delete(
-    "/:courseId/contents/:contentId",
-    requireAuth,
-    deleteCourseContent
+  "/:courseId/contents/:contentId",
+  requireAuth,
+  deleteCourseContent
 );
 
 router.post(
-    "/:courseId/contents/:contentId/media",
-    requireAuth,
-    uploadCourseFiles.array("files", 10),
-    uploadCourseContentMedia
+  "/:courseId/contents/:contentId/media",
+  requireAuth,
+  uploadCourseFiles.array("files", 10),
+  uploadCourseContentMedia
 );
 
 router.delete(
-    "/:courseId/contents/:contentId/media/:mediaFileId",
-    requireAuth,
-    deleteCourseContentMedia
+  "/:courseId/contents/:contentId/media/:mediaFileId",
+  requireAuth,
+  deleteCourseContentMedia
 );
 
 // create module
@@ -112,8 +134,11 @@ export default router;
 // PUT    /api/courses/:id
 // DELETE /api/courses/:id
 
-// Enrollments
+// Enrollments / completion
 // GET    /api/courses/enrolled/:userId
+// POST   /api/courses/:courseId/complete
+// GET    /api/courses/:courseId/completion-status
+// GET    /api/courses/completed/me
 
 
 // ======================= COURSE CONTENT (MODULES) =======================
