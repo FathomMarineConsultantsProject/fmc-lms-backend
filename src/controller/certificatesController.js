@@ -634,6 +634,12 @@ export const generateCertificate = async (req, res) => {
       });
     }
 
+    const certificateCompanyId =
+      targetUser.company_id ?? activeIssue.company_id ?? null;
+
+    const certificateShipId =
+      targetUser.ship_id ?? activeIssue.ship_id ?? null;
+
     await client.query("BEGIN");
 
     const existing = await findExistingCertificate(
@@ -700,8 +706,8 @@ export const generateCertificate = async (req, res) => {
         activeIssue.certificate_name,
         activeIssue.certificate_description,
         userId,
-        targetUser.company_id,
-        targetUser.ship_id,
+        certificateCompanyId,
+        certificateShipId,
         sourceCourseId,
         sourceAssessmentId,
         targetUser.full_name,
@@ -746,7 +752,7 @@ export const generateCertificate = async (req, res) => {
   } catch (err) {
     try {
       await client.query("ROLLBACK");
-    } catch (_) {}
+    } catch (_) { }
 
     console.error("generateCertificate error:", err);
     return res.status(500).json({
