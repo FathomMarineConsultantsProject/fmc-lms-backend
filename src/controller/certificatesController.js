@@ -342,8 +342,8 @@ export const issueCertificate = async (req, res) => {
 
     let sourceCourseId = null;
     let sourceAssessmentId = null;
-    let companyId = req.user.company_id || null;
-    let shipId = req.user.ship_id || null;
+    let companyId = null;
+    let shipId = null;
     let metadata = {};
 
     if (requestType === "course") {
@@ -352,9 +352,7 @@ export const issueCertificate = async (req, res) => {
         SELECT
           c.id,
           c.title,
-          c.content_mode,
-          c.company_id,
-          c.ship_id
+          c.content_mode
         FROM courses c
         WHERE c.id = $1
           AND c.deleted_at IS NULL
@@ -376,8 +374,6 @@ export const issueCertificate = async (req, res) => {
       }
 
       sourceCourseId = courseId;
-      companyId = course.company_id ?? companyId;
-      shipId = course.ship_id ?? shipId;
 
       metadata = {
         source_table: "courses",
@@ -406,6 +402,13 @@ export const issueCertificate = async (req, res) => {
       metadata = {
         source_table: "assessments",
       };
+    }
+
+    // For admin/subadmin keep their scope values.
+    // For superadmin keep null, which is now allowed in DB.
+    if (Number(req.user.role_id) !== ROLE_SUPERADMIN) {
+      companyId = req.user.company_id ?? null;
+      shipId = req.user.ship_id ?? null;
     }
 
     const { rows: existingRows } = await client.query(
