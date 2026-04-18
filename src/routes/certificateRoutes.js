@@ -9,6 +9,7 @@ import {
   getCertificatesByUserId,
   getCertificateById,
   getUserInfoForCertificate,
+  getCertificateSourceOptions,
 } from "../controller/certificatesController.js";
 
 export const router = Router();
@@ -23,6 +24,8 @@ router.post("/generate", allowRoles(1, 2, 3, 4), generateCertificate);
 
 // filter generated certificates
 router.post("/filter", allowRoles(1, 2, 3, 4), filterCertificates);
+
+router.get("/options", allowRoles(1, 2, 3), getCertificateSourceOptions);
 
 // read APIs
 router.get("/my", allowRoles(1, 2, 3, 4), getMyCertificates);
