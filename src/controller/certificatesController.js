@@ -1024,6 +1024,98 @@ export const getCertificateById = async (req, res) => {
   }
 };
 
+export const getCertificateSourceOptions = async (req, res) => {
+  try {
+    const role = Number(req.user?.role_id);
+
+    const isSuperAdmin = role === ROLE_SUPERADMIN;
+    const isAdmin = role === ROLE_ADMIN;
+    const isSubAdmin = role === ROLE_SUBADMIN;
+
+    let courseWhere = [`c.deleted_at IS NULL`];
+    let courseParams = [];
+    let cp = 1;
+
+    let assessmentWhere = [`1=1`];
+    let assessmentParams = [];
+    let ap = 1;
+
+    // Apply scope if your courses / assessments are company or ship scoped later.
+    // Right now keeping it safe and simple, because your current courses query
+    // showed no company_id/ship_id columns there.
+    if (isSuperAdmin) {
+      // no extra restriction
+    } else if (isAdmin) {
+      // add company filter here later if courses/assessments get company_id
+    } else if (isSubAdmin) {
+      // add company/ship filter here later if courses/assessments get company_id/ship_id
+    } else {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const coursesQuery = `
+      SELECT
+        c.id,
+        c.title,
+        c.content_mode
+      FROM courses c
+      WHERE ${courseWhere.join(" AND ")}
+        AND LOWER(COALESCE(c.content_mode, '')) IN ('course', 'single_training')
+      ORDER BY c.title ASC
+    `;
+
+    const assessmentsQuery = `
+      SELECT
+        a.assessment_id,
+        a.title
+      FROM assessments a
+      WHERE ${assessmentWhere.join(" AND ")}
+      ORDER BY a.title ASC
+    `;
+
+    const [courseResult, assessmentResult] = await Promise.all([
+      db.query(coursesQuery, courseParams),
+      db.query(assessmentsQuery, assessmentParams),
+    ]);
+
+    const allCourseRows = courseResult.rows || [];
+
+    const courses = allCourseRows
+      .filter((row) => normalizeType(row.content_mode) === "course")
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        type: "course",
+      }));
+
+    const trainings = allCourseRows
+      .filter((row) => normalizeType(row.content_mode) === "single_training")
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        type: "training",
+      }));
+
+    const assessments = (assessmentResult.rows || []).map((row) => ({
+      id: row.assessment_id,
+      title: row.title,
+      type: "assessment",
+    }));
+
+    return res.json({
+      courses,
+      trainings,
+      assessments,
+    });
+  } catch (err) {
+    console.error("getCertificateSourceOptions error:", err);
+    return res.status(500).json({
+      error: "Failed to fetch certificate source options",
+      details: err.message,
+    });
+  }
+};
+
 // POST /certificates/user-info
 export const getUserInfoForCertificate = async (req, res) => {
   try {
