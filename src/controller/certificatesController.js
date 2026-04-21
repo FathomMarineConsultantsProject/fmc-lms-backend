@@ -185,13 +185,15 @@ function getComputedStatusSql(alias = "c") {
 }
 
 async function findExistingCertificate(client, certificateType, userId, courseId, assessmentId) {
+  const statusSql = getComputedStatusSql("c");
+
   if (certificateType === "assessment") {
     const { rows } = await client.query(
       `
-      SELECT certificate_id, certificate_uid
-      FROM certificates
-      WHERE user_id = $1
-        AND assessment_id = $2
+      SELECT c.*, ${statusSql} AS computed_status
+      FROM certificates c
+      WHERE c.user_id = $1
+        AND c.assessment_id = $2
       LIMIT 1
       `,
       [userId, assessmentId]
@@ -201,11 +203,11 @@ async function findExistingCertificate(client, certificateType, userId, courseId
 
   const { rows } = await client.query(
     `
-    SELECT certificate_id, certificate_uid
-    FROM certificates
-    WHERE user_id = $1
-      AND course_id = $2
-      AND certificate_type = $3
+    SELECT c.*, ${statusSql} AS computed_status
+    FROM certificates c
+    WHERE c.user_id = $1
+      AND c.course_id = $2
+      AND c.certificate_type = $3
     LIMIT 1
     `,
     [userId, courseId, certificateType]
@@ -1202,3 +1204,55 @@ export const getUserInfoForCertificate = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch user info" });
   }
 };
+
+export const getCertificateByUid = async (req, res) => {
+  try {
+    const { certificateUid } = req.params;
+    const statusSql = getComputedStatusSql("c");
+
+    const { rows } = await db.query(
+      `
+      SELECT c.*, ${statusSql} AS computed_status
+      FROM certificates c
+      WHERE c.certificate_uid = $1
+      LIMIT 1
+      `,
+      [certificateUid]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Certificate not found" });
+    }
+
+    const cert = rows[0];
+
+    const scopedUser = {
+      user_id: cert.user_id,
+      company_id: cert.company_id,
+      ship_id: cert.ship_id,
+    };
+
+    if (!enforceUserScope(req, scopedUser)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    return res.json(cert);
+  } catch (err) {
+    console.error("getCertificateByUid error:", err);
+    return res.status(500).json({ error: "Failed to fetch certificate" });
+  }
+};
+
+
+// APIS:
+// Write
+// POST /certificates/issue
+// POST /certificates/generate
+// Read
+// GET /certificates/options
+// GET /certificates/my
+// GET /certificates/user/:userId
+// GET /certificates/:id
+// GET /certificates/uid/:certificateUid ← recommended
+// POST /certificates/filter
+// POST /certificates/user-info
