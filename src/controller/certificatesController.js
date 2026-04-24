@@ -540,23 +540,24 @@ export const generateCertificate = async (req, res) => {
 
       const { rows } = await client.query(
         `
-        SELECT
-          ce.user_id,
-          ce.course_id,
-          ce.completed_at,
-          ce.completion_status,
-          ce.certificate_issued,
-          c.title AS item_title,
-          c.content_mode,
-          c.certificate_prefix
-        FROM course_enrollments ce
-        INNER JOIN courses c ON c.id = ce.course_id
-        WHERE ce.user_id = $1
-          AND ce.course_id = $2
-          AND LOWER(COALESCE(ce.completion_status, '')) = 'completed'
-          AND c.deleted_at IS NULL
-        LIMIT 1
-        `,
+  SELECT
+    ce.user_id,
+    ce.course_id,
+    ce.completed_at,
+    ce.completion_status,
+    ce.certificate_issued,
+    c.title AS item_title,
+    c.content_mode,
+    c.certificate_prefix
+  FROM course_enrollments ce
+  INNER JOIN courses c
+    ON c.id = ce.course_id
+  WHERE ce.user_id = $1
+    AND ce.course_id = $2
+    AND LOWER(COALESCE(ce.completion_status, '')) = 'completed'
+    AND c.deleted_at IS NULL
+  LIMIT 1
+  `,
         [userId, courseId]
       );
 
@@ -590,19 +591,23 @@ export const generateCertificate = async (req, res) => {
 
       const { rows } = await client.query(
         `
-        SELECT
-          ar.user_id,
-          ar.assessment_id,
-          COALESCE(ar.completed_at, ar.created_at) AS completed_at,
-          a.title AS item_title,
-          a.certificate_prefix
-        FROM assessment_results ar
-        INNER JOIN assessments a ON a.assessment_id = ar.assessment_id
-        WHERE ar.user_id = $1
-          AND ar.assessment_id = $2
-        ORDER BY COALESCE(ar.completed_at, ar.created_at) DESC
-        LIMIT 1
-        `,
+  SELECT
+    aa.user_id,
+    aa.assessment_id,
+    COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) AS completed_at,
+    aa.score,
+    aa.grade,
+    a.title AS item_title,
+    a.certificate_prefix
+  FROM assessment_attempts aa
+  INNER JOIN assessments a
+    ON a.assessment_id = aa.assessment_id
+  WHERE aa.user_id = $1
+    AND aa.assessment_id = $2
+    AND LOWER(COALESCE(aa.status, '')) IN ('completed', 'submitted', 'passed')
+  ORDER BY COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) DESC
+  LIMIT 1
+  `,
         [userId, assessmentId]
       );
 
@@ -719,8 +724,8 @@ export const generateCertificate = async (req, res) => {
         completion.item_title,
         completion.completed_at,
         activeIssue.expiry_date,
-        finalCertificateType === "assessment" ? null : null,
-        finalCertificateType === "assessment" ? null : null,
+        finalCertificateType === "assessment" ? completion.score : null,
+        finalCertificateType === "assessment" ? completion.grade : null,
         activeIssue.notes,
         activeIssue.issuing_authority,
         activeIssue.issued_by_user_id,
