@@ -1,6 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { allowRoles } from "../middleware/allowRoles.js";
+import { allowRoles } from "../middleware/rbac.js";
 
 import {
   createAssessment,

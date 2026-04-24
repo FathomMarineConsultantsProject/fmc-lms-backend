@@ -11,7 +11,7 @@ import { router as userRoutes } from "./routes/userRoutes.js";
 import { router as authRoutes } from "./routes/authRoutes.js";
 import { router as incidentRoutes } from "./routes/incidentRoutes.js";
 import { router as certificateRoutes } from "./routes/certificateRoutes.js";
-import { router as assessmentRoutes } from "./routes/assessmentRoutes.js";
+import assessmentRoutes from "./routes/assessmentRoutes.js";
 import { router as activityRoutes } from "./routes/activityRoutes.js";
 import mailTestRoutes from "./routes/mailTestRoutes.js";
 import userMailRoutes from "./routes/userMailRoutes.js";
