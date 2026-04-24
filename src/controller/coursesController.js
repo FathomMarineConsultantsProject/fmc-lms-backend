@@ -216,15 +216,18 @@ function buildStoredFileName(originalName) {
 function generateCertificatePrefix(title) {
   if (!title) return null;
 
-  const words = title
-    .trim()
+  // remove spaces & special chars
+  let clean = String(title)
     .toUpperCase()
-    .split(/\s+/)
-    .filter(Boolean);
+    .replace(/[^A-Z0-9]/g, "");
 
-  let prefix = words.map(w => w[0]).join("");
+  // if less than 4 chars → pad with X
+  if (clean.length < 4) {
+    return clean.padEnd(4, "X");
+  }
 
-  return prefix.slice(0, 4); // max 4 chars (your DB limit)
+  // otherwise take first 4 chars
+  return clean.slice(0, 4);
 }
 
 function getFileTypeFromMime(mimeType) {
