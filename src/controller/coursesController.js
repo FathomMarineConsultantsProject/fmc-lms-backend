@@ -6,106 +6,106 @@ import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
 
 const VALID_CONTENT_MODES = new Set(["single_training", "course"]);
 const VALID_CONTENT_TYPES = new Set([
-    "youtube",
-    "document",
-    "video_file",
-    "image",
-    "ppt",
+  "youtube",
+  "document",
+  "video_file",
+  "image",
+  "ppt",
 ]);
 
 const getAuthUserId = (req) => req.user?.user_id ?? req.user?.id ?? null;
 
 const normalizeString = (value) => {
-    if (value === undefined || value === null) return null;
-    const s = String(value).trim();
-    return s ? s : null;
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim();
+  return s ? s : null;
 };
 
 function validateCoursePayload(body, isUpdate = false) {
-    const errors = [];
+  const errors = [];
 
-    const title = normalizeString(body.title);
-    const description = normalizeString(body.description);
-    const department = normalizeString(body.department);
-    const predefined_course_title = normalizeString(body.predefined_course_title);
+  const title = normalizeString(body.title);
+  const description = normalizeString(body.description);
+  const department = normalizeString(body.department);
+  const predefined_course_title = normalizeString(body.predefined_course_title);
 
-    const content_mode = isUpdate
-        ? (body.content_mode !== undefined ? normalizeString(body.content_mode) : undefined)
-        : (normalizeString(body.content_mode) || "course");
+  const content_mode = isUpdate
+    ? (body.content_mode !== undefined ? normalizeString(body.content_mode) : undefined)
+    : (normalizeString(body.content_mode) || "course");
 
-    const contents = Array.isArray(body.contents) ? body.contents : [];
+  const contents = Array.isArray(body.contents) ? body.contents : [];
 
-    if (!isUpdate || body.title !== undefined) {
-        if (!title) errors.push("title is required");
+  if (!isUpdate || body.title !== undefined) {
+    if (!title) errors.push("title is required");
+  }
+
+  if (!isUpdate || body.department !== undefined) {
+    if (!department) errors.push("department is required");
+  }
+
+  if (body.content_mode !== undefined) {
+    if (!content_mode || !VALID_CONTENT_MODES.has(content_mode)) {
+      errors.push("content_mode must be single_training or course");
+    }
+  }
+
+  if (!isUpdate || body.contents !== undefined) {
+    if (!Array.isArray(contents) || contents.length === 0) {
+      errors.push("contents must be a non-empty array");
+    }
+  }
+
+  if (Array.isArray(contents) && body.contents !== undefined) {
+    if (content_mode === "single_training" && contents.length > 1) {
+      errors.push("single_training can only have 1 content item");
     }
 
-    if (!isUpdate || body.department !== undefined) {
-        if (!department) errors.push("department is required");
-    }
+    contents.forEach((item, index) => {
+      const content_title = normalizeString(item.content_title);
+      const content_type = normalizeString(item.content_type);
+      const youtube_url = normalizeString(item.youtube_url);
+      const sort_order = item.sort_order ?? index + 1;
 
-    if (body.content_mode !== undefined) {
-        if (!content_mode || !VALID_CONTENT_MODES.has(content_mode)) {
-            errors.push("content_mode must be single_training or course");
-        }
-    }
+      if (!content_title) {
+        errors.push(`contents[${index}].content_title is required`);
+      }
 
-    if (!isUpdate || body.contents !== undefined) {
-        if (!Array.isArray(contents) || contents.length === 0) {
-            errors.push("contents must be a non-empty array");
-        }
-    }
+      if (!content_type || !VALID_CONTENT_TYPES.has(content_type)) {
+        errors.push(
+          `contents[${index}].content_type must be one of youtube, document, video_file, image, ppt`
+        );
+      }
 
-    if (Array.isArray(contents) && body.contents !== undefined) {
-        if (content_mode === "single_training" && contents.length > 1) {
-            errors.push("single_training can only have 1 content item");
-        }
+      if (content_type === "youtube" && !youtube_url) {
+        errors.push(`contents[${index}].youtube_url is required for youtube content`);
+      }
 
-        contents.forEach((item, index) => {
-            const content_title = normalizeString(item.content_title);
-            const content_type = normalizeString(item.content_type);
-            const youtube_url = normalizeString(item.youtube_url);
-            const sort_order = item.sort_order ?? index + 1;
+      if (content_type !== "youtube" && youtube_url) {
+        errors.push(`contents[${index}].youtube_url is only allowed for youtube content`);
+      }
 
-            if (!content_title) {
-                errors.push(`contents[${index}].content_title is required`);
-            }
+      if (!Number.isInteger(Number(sort_order)) || Number(sort_order) < 1) {
+        errors.push(`contents[${index}].sort_order must be a positive integer`);
+      }
+    });
+  }
 
-            if (!content_type || !VALID_CONTENT_TYPES.has(content_type)) {
-                errors.push(
-                    `contents[${index}].content_type must be one of youtube, document, video_file, image, ppt`
-                );
-            }
-
-            if (content_type === "youtube" && !youtube_url) {
-                errors.push(`contents[${index}].youtube_url is required for youtube content`);
-            }
-
-            if (content_type !== "youtube" && youtube_url) {
-                errors.push(`contents[${index}].youtube_url is only allowed for youtube content`);
-            }
-
-            if (!Number.isInteger(Number(sort_order)) || Number(sort_order) < 1) {
-                errors.push(`contents[${index}].sort_order must be a positive integer`);
-            }
-        });
-    }
-
-    return {
-        errors,
-        payload: {
-            title,
-            description,
-            department,
-            predefined_course_title,
-            content_mode,
-            contents,
-        },
-    };
+  return {
+    errors,
+    payload: {
+      title,
+      description,
+      department,
+      predefined_course_title,
+      content_mode,
+      contents,
+    },
+  };
 }
 
 async function fetchCourseWithContents(courseId) {
-    const courseResult = await db.query(
-        `
+  const courseResult = await db.query(
+    `
       SELECT
         c.id,
         c.title,
@@ -114,6 +114,7 @@ async function fetchCourseWithContents(courseId) {
         c.predefined_course_title,
         c.status,
         c.content_mode,
+        c.certificate_prefix,
         c.created_by,
         c.updated_by,
         c.created_at,
@@ -123,13 +124,13 @@ async function fetchCourseWithContents(courseId) {
       WHERE c.id = $1
         AND c.deleted_at IS NULL
     `,
-        [courseId]
-    );
+    [courseId]
+  );
 
-    if (!courseResult.rowCount) return null;
+  if (!courseResult.rowCount) return null;
 
-    const contentsResult = await db.query(
-        `
+  const contentsResult = await db.query(
+    `
       SELECT
         cc.id,
         cc.course_id,
@@ -144,22 +145,22 @@ async function fetchCourseWithContents(courseId) {
       WHERE cc.course_id = $1
       ORDER BY cc.sort_order ASC, cc.id ASC
     `,
-        [courseId]
-    );
+    [courseId]
+  );
 
-    const contents = contentsResult.rows;
+  const contents = contentsResult.rows;
 
-    if (!contents.length) {
-        return {
-            ...courseResult.rows[0],
-            contents: [],
-        };
-    }
+  if (!contents.length) {
+    return {
+      ...courseResult.rows[0],
+      contents: [],
+    };
+  }
 
-    const contentIds = contents.map((c) => c.id);
+  const contentIds = contents.map((c) => c.id);
 
-    const mediaResult = await db.query(
-        `
+  const mediaResult = await db.query(
+    `
       SELECT
         ccm.course_content_id,
         mf.id AS media_file_id,
@@ -183,119 +184,139 @@ async function fetchCourseWithContents(courseId) {
       WHERE ccm.course_content_id = ANY($1::bigint[])
       ORDER BY mf.id ASC
     `,
-        [contentIds]
-    );
+    [contentIds]
+  );
 
-    const mediaByContentId = new Map();
+  const mediaByContentId = new Map();
 
-    for (const row of mediaResult.rows) {
-        if (!mediaByContentId.has(row.course_content_id)) {
-            mediaByContentId.set(row.course_content_id, []);
-        }
-        mediaByContentId.get(row.course_content_id).push(row);
+  for (const row of mediaResult.rows) {
+    if (!mediaByContentId.has(row.course_content_id)) {
+      mediaByContentId.set(row.course_content_id, []);
     }
+    mediaByContentId.get(row.course_content_id).push(row);
+  }
 
-    return {
-        ...courseResult.rows[0],
-        contents: contents.map((content) => ({
-            ...content,
-            media: mediaByContentId.get(content.id) || [],
-        })),
-    };
+  return {
+    ...courseResult.rows[0],
+    contents: contents.map((content) => ({
+      ...content,
+      media: mediaByContentId.get(content.id) || [],
+    })),
+  };
 }
 
 function sanitizeFileName(name = "") {
-    return String(name).replace(/[^a-zA-Z0-9._-]/g, "_");
+  return String(name).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function buildStoredFileName(originalName) {
-    return `${crypto.randomUUID()}-${sanitizeFileName(originalName)}`;
+  return `${crypto.randomUUID()}-${sanitizeFileName(originalName)}`;
+}
+
+function generateCertificatePrefix(title) {
+  if (!title) return null;
+
+  const words = title
+    .trim()
+    .toUpperCase()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  let prefix = words.map(w => w[0]).join("");
+
+  return prefix.slice(0, 4); // max 4 chars (your DB limit)
 }
 
 function getFileTypeFromMime(mimeType) {
-    if (mimeType.startsWith("image/")) return "image";
-    if (mimeType.startsWith("video/")) return "video_file";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video_file";
 
-    if (
-        mimeType === "application/vnd.ms-powerpoint" ||
-        mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) {
-        return "ppt";
-    }
+  if (
+    mimeType === "application/vnd.ms-powerpoint" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  ) {
+    return "ppt";
+  }
 
-    if (
-        mimeType === "application/pdf" ||
-        mimeType === "application/msword" ||
-        mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-        return "document";
-    }
+  if (
+    mimeType === "application/pdf" ||
+    mimeType === "application/msword" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return "document";
+  }
 
-    return null;
+  return null;
 }
 
 export async function createCourse(req, res) {
-    const client = await db.connect();
+  const client = await db.connect();
 
-    try {
-        const { errors, payload } = validateCoursePayload(req.body, false);
+  try {
+    const { errors, payload } = validateCoursePayload(req.body, false);
 
-        if (errors.length) {
-            return res.status(400).json({
-                message: "Validation failed",
-                errors,
-            });
-        }
+    if (errors.length) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors,
+      });
+    }
 
-        const authUserId = getAuthUserId(req);
+    const authUserId = getAuthUserId(req);
 
-        await client.query("BEGIN");
+    await client.query("BEGIN");
 
-        const courseInsert = await client.query(
-            `
-        INSERT INTO courses (
-          title,
-          description,
-          department,
-          predefined_course_title,
-          status,
-          content_mode,
-          created_by,
-          updated_by
-        )
-        VALUES ($1, $2, $3, $4, 'draft', $5, $6, $6)
-        RETURNING
-          id,
-          title,
-          description,
-          department,
-          predefined_course_title,
-          status,
-          content_mode,
-          created_by,
-          updated_by,
-          created_at,
-          updated_at,
-          deleted_at
-      `,
-            [
-                payload.title,
-                payload.description,
-                payload.department,
-                payload.predefined_course_title,
-                payload.content_mode,
-                authUserId,
-            ]
-        );
+    const prefixSource = payload.predefined_course_title || payload.title;
+    const certificatePrefix = generateCertificatePrefix(prefixSource);
 
-        const course = courseInsert.rows[0];
-        const insertedContents = [];
+    const courseInsert = await client.query(
+      `
+INSERT INTO courses (
+  title,
+  description,
+  department,
+  predefined_course_title,
+  status,
+  content_mode,
+  certificate_prefix,
+  created_by,
+  updated_by
+)
+VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $7)
+RETURNING
+  id,
+  title,
+  description,
+  department,
+  predefined_course_title,
+  status,
+  content_mode,
+  certificate_prefix,
+  created_by,
+  updated_by,
+  created_at,
+  updated_at,
+  deleted_at
+`,
+      [
+        payload.title,
+        payload.description,
+        payload.department,
+        payload.predefined_course_title,
+        payload.content_mode,
+        certificatePrefix,
+        authUserId,
+      ]
+    );
 
-        for (let i = 0; i < payload.contents.length; i++) {
-            const item = payload.contents[i];
+    const course = courseInsert.rows[0];
+    const insertedContents = [];
 
-            const contentInsert = await client.query(
-                `
+    for (let i = 0; i < payload.contents.length; i++) {
+      const item = payload.contents[i];
+
+      const contentInsert = await client.query(
+        `
           INSERT INTO course_contents (
             course_id,
             content_title,
@@ -316,44 +337,44 @@ export async function createCourse(req, res) {
             created_at,
             updated_at
         `,
-                [
-                    course.id,
-                    normalizeString(item.content_title),
-                    normalizeString(item.content_description),
-                    normalizeString(item.content_type),
-                    normalizeString(item.youtube_url),
-                    Number(item.sort_order ?? i + 1),
-                ]
-            );
+        [
+          course.id,
+          normalizeString(item.content_title),
+          normalizeString(item.content_description),
+          normalizeString(item.content_type),
+          normalizeString(item.youtube_url),
+          Number(item.sort_order ?? i + 1),
+        ]
+      );
 
-            insertedContents.push(contentInsert.rows[0]);
-        }
-
-        await client.query("COMMIT");
-
-        return res.status(201).json({
-            message: "Course created successfully",
-            course: {
-                ...course,
-                contents: insertedContents,
-            },
-        });
-    } catch (error) {
-        await client.query("ROLLBACK");
-        console.error("createCourse error:", error);
-        return res.status(500).json({
-            message: "Failed to create course",
-            error: error.message,
-        });
-    } finally {
-        client.release();
+      insertedContents.push(contentInsert.rows[0]);
     }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      message: "Course created successfully",
+      course: {
+        ...course,
+        contents: insertedContents,
+      },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("createCourse error:", error);
+    return res.status(500).json({
+      message: "Failed to create course",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 export async function getCourses(req, res) {
-    try {
-        const result = await db.query(
-            `
+  try {
+    const result = await db.query(
+      `
         SELECT
           c.id,
           c.title,
@@ -362,6 +383,7 @@ export async function getCourses(req, res) {
           c.predefined_course_title,
           c.status,
           c.content_mode,
+c.certificate_prefix,
           c.created_by,
           c.updated_by,
           c.created_at,
@@ -374,54 +396,54 @@ export async function getCourses(req, res) {
         GROUP BY c.id
         ORDER BY c.created_at DESC
       `
-        );
+    );
 
-        return res.json({
-            message: "Courses fetched successfully",
-            courses: result.rows,
-        });
-    } catch (error) {
-        console.error("getCourses error:", error);
-        return res.status(500).json({
-            message: "Failed to fetch courses",
-            error: error.message,
-        });
-    }
+    return res.json({
+      message: "Courses fetched successfully",
+      courses: result.rows,
+    });
+  } catch (error) {
+    console.error("getCourses error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch courses",
+      error: error.message,
+    });
+  }
 }
 
 export async function getCourseById(req, res) {
-    try {
-        const courseId = Number(req.params.id);
+  try {
+    const courseId = Number(req.params.id);
 
-        if (!courseId || Number.isNaN(courseId)) {
-            return res.status(400).json({ message: "Invalid course id" });
-        }
-
-        const course = await fetchCourseWithContents(courseId);
-
-        if (!course) {
-            return res.status(404).json({ message: "Course not found" });
-        }
-
-        return res.json({
-            message: "Course fetched successfully",
-            course,
-        });
-    } catch (error) {
-        console.error("getCourseById error:", error);
-        return res.status(500).json({
-            message: "Failed to fetch course",
-            error: error.message,
-        });
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
     }
+
+    const course = await fetchCourseWithContents(courseId);
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    return res.json({
+      message: "Course fetched successfully",
+      course,
+    });
+  } catch (error) {
+    console.error("getCourseById error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch course",
+      error: error.message,
+    });
+  }
 }
 
 export async function getCoursesByUserId(req, res) {
-    try {
-        const { userId } = req.params;
+  try {
+    const { userId } = req.params;
 
-        const result = await db.query(
-            `
+    const result = await db.query(
+      `
         SELECT
           c.id,
           c.title,
@@ -430,6 +452,7 @@ export async function getCoursesByUserId(req, res) {
           c.predefined_course_title,
           c.status,
           c.content_mode,
+          c.certificate_prefix,
           ce.status AS enrollment_status,
           ce.enrolled_at,
           COUNT(cc.id)::int AS contents_count
@@ -446,64 +469,64 @@ export async function getCoursesByUserId(req, res) {
           ce.enrolled_at
         ORDER BY ce.enrolled_at DESC
       `,
-            [userId]
-        );
+      [userId]
+    );
 
-        return res.json({
-            message: "Enrolled courses fetched successfully",
-            courses: result.rows,
-        });
-    } catch (error) {
-        console.error("getCoursesByUserId error:", error);
-        return res.status(500).json({
-            message: "Failed to fetch enrolled courses",
-            error: error.message,
-        });
-    }
+    return res.json({
+      message: "Enrolled courses fetched successfully",
+      courses: result.rows,
+    });
+  } catch (error) {
+    console.error("getCoursesByUserId error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch enrolled courses",
+      error: error.message,
+    });
+  }
 }
 
 export async function updateCourse(req, res) {
-    const client = await db.connect();
+  const client = await db.connect();
 
-    try {
-        const courseId = Number(req.params.id);
+  try {
+    const courseId = Number(req.params.id);
 
-        if (!courseId || Number.isNaN(courseId)) {
-            return res.status(400).json({ message: "Invalid course id" });
-        }
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
 
-        const existingCourse = await client.query(
-            `
+    const existingCourse = await client.query(
+      `
         SELECT id
         FROM courses
         WHERE id = $1
           AND deleted_at IS NULL
       `,
-            [courseId]
-        );
+      [courseId]
+    );
 
-        if (!existingCourse.rowCount) {
-            return res.status(404).json({ message: "Course not found" });
-        }
+    if (!existingCourse.rowCount) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
-        const { errors, payload } = validateCoursePayload(req.body, true);
+    const { errors, payload } = validateCoursePayload(req.body, true);
 
-        if (errors.length) {
-            return res.status(400).json({
-                message: "Validation failed",
-                errors,
-            });
-        }
+    if (errors.length) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors,
+      });
+    }
 
-        const authUserId = getAuthUserId(req);
+    const authUserId = getAuthUserId(req);
 
-        await client.query("BEGIN");
+    await client.query("BEGIN");
 
-        const bodyHasPredefinedCourseTitle =
-            Object.prototype.hasOwnProperty.call(req.body, "predefined_course_title");
+    const bodyHasPredefinedCourseTitle =
+      Object.prototype.hasOwnProperty.call(req.body, "predefined_course_title");
 
-        await client.query(
-            `
+    await client.query(
+      `
     UPDATE courses
     SET
       title = COALESCE($1, title),
@@ -517,26 +540,26 @@ export async function updateCourse(req, res) {
       updated_by = $7
     WHERE id = $8
   `,
-            [
-                payload.title,
-                payload.description,
-                payload.department,
-                bodyHasPredefinedCourseTitle,
-                payload.predefined_course_title,
-                payload.content_mode,
-                authUserId,
-                courseId,
-            ]
-        );
+      [
+        payload.title,
+        payload.description,
+        payload.department,
+        bodyHasPredefinedCourseTitle,
+        payload.predefined_course_title,
+        payload.content_mode,
+        authUserId,
+        courseId,
+      ]
+    );
 
-        if (Array.isArray(req.body.contents)) {
-            await client.query(`DELETE FROM course_contents WHERE course_id = $1`, [courseId]);
+    if (Array.isArray(req.body.contents)) {
+      await client.query(`DELETE FROM course_contents WHERE course_id = $1`, [courseId]);
 
-            for (let i = 0; i < payload.contents.length; i++) {
-                const item = payload.contents[i];
+      for (let i = 0; i < payload.contents.length; i++) {
+        const item = payload.contents[i];
 
-                await client.query(
-                    `
+        await client.query(
+          `
             INSERT INTO course_contents (
               course_id,
               content_title,
@@ -547,78 +570,78 @@ export async function updateCourse(req, res) {
             )
             VALUES ($1, $2, $3, $4, $5, $6)
           `,
-                    [
-                        courseId,
-                        normalizeString(item.content_title),
-                        normalizeString(item.content_description),
-                        normalizeString(item.content_type),
-                        normalizeString(item.youtube_url),
-                        Number(item.sort_order ?? i + 1),
-                    ]
-                );
-            }
-        }
-
-        await client.query("COMMIT");
-
-        const course = await fetchCourseWithContents(courseId);
-
-        return res.json({
-            message: "Course updated successfully",
-            course,
-        });
-    } catch (error) {
-        await client.query("ROLLBACK");
-        console.error("updateCourse error:", error);
-        return res.status(500).json({
-            message: "Failed to update course",
-            error: error.message,
-        });
-    } finally {
-        client.release();
+          [
+            courseId,
+            normalizeString(item.content_title),
+            normalizeString(item.content_description),
+            normalizeString(item.content_type),
+            normalizeString(item.youtube_url),
+            Number(item.sort_order ?? i + 1),
+          ]
+        );
+      }
     }
+
+    await client.query("COMMIT");
+
+    const course = await fetchCourseWithContents(courseId);
+
+    return res.json({
+      message: "Course updated successfully",
+      course,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("updateCourse error:", error);
+    return res.status(500).json({
+      message: "Failed to update course",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 export async function deleteCourse(req, res) {
-    try {
-        const courseId = Number(req.params.id);
+  try {
+    const courseId = Number(req.params.id);
 
-        if (!courseId || Number.isNaN(courseId)) {
-            return res.status(400).json({ message: "Invalid course id" });
-        }
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
 
-        const result = await db.query(
-            `
+    const result = await db.query(
+      `
         UPDATE courses
         SET deleted_at = CURRENT_TIMESTAMP
         WHERE id = $1
           AND deleted_at IS NULL
         RETURNING id
       `,
-            [courseId]
-        );
+      [courseId]
+    );
 
-        if (!result.rowCount) {
-            return res.status(404).json({
-                message: "Course not found or already deleted",
-            });
-        }
-
-        return res.json({
-            message: "Course deleted successfully",
-        });
-    } catch (error) {
-        console.error("deleteCourse error:", error);
-        return res.status(500).json({
-            message: "Failed to delete course",
-            error: error.message,
-        });
+    if (!result.rowCount) {
+      return res.status(404).json({
+        message: "Course not found or already deleted",
+      });
     }
+
+    return res.json({
+      message: "Course deleted successfully",
+    });
+  } catch (error) {
+    console.error("deleteCourse error:", error);
+    return res.status(500).json({
+      message: "Failed to delete course",
+      error: error.message,
+    });
+  }
 }
 
 export async function uploadCourseContentMedia(req, res) {
   const client = await db.connect();
-let transactionStarted = false;
+  let transactionStarted = false;
   try {
     const courseId = Number(req.params.courseId);
     const contentId = Number(req.params.contentId);
@@ -817,8 +840,8 @@ let transactionStarted = false;
     });
   } catch (error) {
     if (transactionStarted) {
-  await client.query("ROLLBACK");
-}
+      await client.query("ROLLBACK");
+    }
     console.error("uploadCourseContentMedia error:", error);
     return res.status(500).json({
       message: "Failed to upload content media",
@@ -830,15 +853,15 @@ let transactionStarted = false;
 }
 
 export async function getCourseContentMediaSignedUrl(req, res) {
-    try {
-        const mediaFileId = Number(req.params.mediaFileId);
+  try {
+    const mediaFileId = Number(req.params.mediaFileId);
 
-        if (!mediaFileId || Number.isNaN(mediaFileId)) {
-            return res.status(400).json({ message: "Invalid media file id" });
-        }
+    if (!mediaFileId || Number.isNaN(mediaFileId)) {
+      return res.status(400).json({ message: "Invalid media file id" });
+    }
 
-        const result = await db.query(
-            `
+    const result = await db.query(
+      `
         SELECT
           mf.id AS media_file_id,
           mf.original_file_name,
@@ -851,63 +874,63 @@ export async function getCourseContentMediaSignedUrl(req, res) {
         WHERE mf.id = $1
         LIMIT 1
       `,
-            [mediaFileId]
-        );
+      [mediaFileId]
+    );
 
-        if (!result.rowCount) {
-            return res.status(404).json({ message: "Media file not found" });
-        }
-
-        const media = result.rows[0];
-
-        const signedUrl = await getSignedUrl(
-            s3,
-            new GetObjectCommand({
-                Bucket: media.bucket_name,
-                Key: media.object_key,
-                ResponseContentType: media.mime_type,
-            }),
-            { expiresIn: SIGNED_URL_EXPIRES }
-        );
-
-        return res.json({
-            message: "Signed URL generated successfully",
-            media_file_id: media.media_file_id,
-            original_file_name: media.original_file_name,
-            signed_url: signedUrl,
-            expires_in_seconds: SIGNED_URL_EXPIRES,
-        });
-    } catch (error) {
-        console.error("getCourseContentMediaSignedUrl error:", error);
-        return res.status(500).json({
-            message: "Failed to generate signed URL",
-            error: error.message,
-        });
+    if (!result.rowCount) {
+      return res.status(404).json({ message: "Media file not found" });
     }
+
+    const media = result.rows[0];
+
+    const signedUrl = await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: media.bucket_name,
+        Key: media.object_key,
+        ResponseContentType: media.mime_type,
+      }),
+      { expiresIn: SIGNED_URL_EXPIRES }
+    );
+
+    return res.json({
+      message: "Signed URL generated successfully",
+      media_file_id: media.media_file_id,
+      original_file_name: media.original_file_name,
+      signed_url: signedUrl,
+      expires_in_seconds: SIGNED_URL_EXPIRES,
+    });
+  } catch (error) {
+    console.error("getCourseContentMediaSignedUrl error:", error);
+    return res.status(500).json({
+      message: "Failed to generate signed URL",
+      error: error.message,
+    });
+  }
 }
 
 export async function deleteCourseContentMedia(req, res) {
-    const client = await db.connect();
+  const client = await db.connect();
 
-    try {
-        const courseId = Number(req.params.courseId);
-        const contentId = Number(req.params.contentId);
-        const mediaFileId = Number(req.params.mediaFileId);
+  try {
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+    const mediaFileId = Number(req.params.mediaFileId);
 
-        if (!courseId || Number.isNaN(courseId)) {
-            return res.status(400).json({ message: "Invalid course id" });
-        }
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
 
-        if (!contentId || Number.isNaN(contentId)) {
-            return res.status(400).json({ message: "Invalid content id" });
-        }
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
 
-        if (!mediaFileId || Number.isNaN(mediaFileId)) {
-            return res.status(400).json({ message: "Invalid media file id" });
-        }
+    if (!mediaFileId || Number.isNaN(mediaFileId)) {
+      return res.status(400).json({ message: "Invalid media file id" });
+    }
 
-        const result = await client.query(
-            `
+    const result = await client.query(
+      `
         SELECT
           ccm.course_content_id,
           mf.id AS media_file_id,
@@ -925,45 +948,45 @@ export async function deleteCourseContentMedia(req, res) {
           AND mf.id = $3
         LIMIT 1
       `,
-            [courseId, contentId, mediaFileId]
-        );
+      [courseId, contentId, mediaFileId]
+    );
 
-        if (!result.rowCount) {
-            return res.status(404).json({ message: "Media mapping not found" });
-        }
-
-        const media = result.rows[0];
-
-        await client.query("BEGIN");
-
-        if (media.bucket_name && media.object_key) {
-            await s3.send(
-                new DeleteObjectCommand({
-                    Bucket: media.bucket_name,
-                    Key: media.object_key,
-                })
-            );
-        }
-
-        await client.query(`DELETE FROM course_content_media WHERE media_file_id = $1`, [mediaFileId]);
-        await client.query(`DELETE FROM media_storage_s3 WHERE media_file_id = $1`, [mediaFileId]);
-        await client.query(`DELETE FROM media_files WHERE id = $1`, [mediaFileId]);
-
-        await client.query("COMMIT");
-
-        return res.json({
-            message: "Content media deleted successfully",
-        });
-    } catch (error) {
-        await client.query("ROLLBACK");
-        console.error("deleteCourseContentMedia error:", error);
-        return res.status(500).json({
-            message: "Failed to delete content media",
-            error: error.message,
-        });
-    } finally {
-        client.release();
+    if (!result.rowCount) {
+      return res.status(404).json({ message: "Media mapping not found" });
     }
+
+    const media = result.rows[0];
+
+    await client.query("BEGIN");
+
+    if (media.bucket_name && media.object_key) {
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: media.bucket_name,
+          Key: media.object_key,
+        })
+      );
+    }
+
+    await client.query(`DELETE FROM course_content_media WHERE media_file_id = $1`, [mediaFileId]);
+    await client.query(`DELETE FROM media_storage_s3 WHERE media_file_id = $1`, [mediaFileId]);
+    await client.query(`DELETE FROM media_files WHERE id = $1`, [mediaFileId]);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Content media deleted successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("deleteCourseContentMedia error:", error);
+    return res.status(500).json({
+      message: "Failed to delete content media",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 export async function getCourseContentById(req, res) {
@@ -1623,7 +1646,8 @@ export async function getMyCompletedCourses(req, res) {
         c.description,
         c.department,
         c.predefined_course_title,
-        c.content_mode
+        c.content_mode,
+        c.certificate_prefix
       FROM course_enrollments ce
       JOIN courses c
         ON c.id = ce.course_id
