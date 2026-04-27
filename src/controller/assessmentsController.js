@@ -13,6 +13,9 @@ const calculatePercentage = (score, total) => {
   return Number(((Number(score) / Number(total)) * 100).toFixed(2));
 };
 
+const MCQ_TYPES = ["mcq_single", "mcq_multiple"];
+const ASSESSMENT_TYPES = ["mcq_single", "mcq_multiple", "subjective"];
+
 // ================= CREATE ASSESSMENT =================
 
 export const createAssessment = async (req, res) => {
@@ -48,10 +51,10 @@ export const createAssessment = async (req, res) => {
       });
     }
 
-    if (!["mcq", "subjective"].includes(assessment_type)) {
+    if (!ASSESSMENT_TYPES.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "assessment_type must be mcq or subjective",
+        message: "assessment_type must be mcq_single, mcq_multiple or subjective",
       });
     }
 
@@ -69,19 +72,32 @@ export const createAssessment = async (req, res) => {
     for (const q of questions) {
       totalMarks += Number(q.marks || 1);
 
+      if (!ASSESSMENT_TYPES.includes(q.question_type)) {
+        throw new Error("Invalid question_type");
+      }
+
       if (q.question_type !== assessment_type) {
         throw new Error("All question_type values must match assessment_type");
       }
 
-      if (assessment_type === "mcq") {
+      if (MCQ_TYPES.includes(assessment_type)) {
         if (!Array.isArray(q.options) || q.options.length < 2) {
           throw new Error("MCQ questions must have at least 2 options");
         }
 
         const correctCount = q.options.filter((opt) => opt.is_correct).length;
-        if (correctCount < 1) {
-          throw new Error("Each MCQ question must have at least one correct option");
+
+        if (assessment_type === "mcq_single" && correctCount !== 1) {
+          throw new Error("mcq_single questions must have exactly one correct option");
         }
+
+        if (assessment_type === "mcq_multiple" && correctCount < 1) {
+          throw new Error("mcq_multiple questions must have at least one correct option");
+        }
+      }
+
+      if (assessment_type === "subjective" && q.options?.length) {
+        throw new Error("Subjective questions cannot have options");
       }
     }
 
@@ -167,7 +183,7 @@ export const createAssessment = async (req, res) => {
 
       const question = questionResult.rows[0];
 
-      if (assessment_type === "mcq") {
+      if (MCQ_TYPES.includes(assessment_type)) {
         for (let j = 0; j < q.options.length; j++) {
           const opt = q.options[j];
 
@@ -277,6 +293,8 @@ export const getAssessments = async (req, res) => {
 };
 
 // ================= GET ASSESSMENT BY ID =================
+
+
 
 export const getAssessmentById = async (req, res) => {
   try {
@@ -658,11 +676,14 @@ export const submitAssessment = async (req, res) => {
       const question = questionResult.rows[0];
 
       let selectedOptionId = ans.selected_option_id || null;
+      let selectedOptionIds = Array.isArray(ans.selected_option_ids)
+        ? ans.selected_option_ids
+        : null;
       let answerText = ans.answer_text || null;
       let isCorrect = null;
       let marksAwarded = 0;
 
-      if (question.question_type === "mcq") {
+      if (question.question_type === "mcq_single") {
         if (!selectedOptionId) {
           throw new Error("selected_option_id is required for MCQ question");
         }
@@ -692,6 +713,49 @@ export const submitAssessment = async (req, res) => {
         }
       }
 
+      if (question.question_type === "mcq_multiple") {
+        if (!selectedOptionIds || selectedOptionIds.length === 0) {
+          throw new Error("selected_option_ids array is required for MCQ multiple question");
+        }
+
+        const optionsResult = await client.query(
+          `
+    SELECT option_id, is_correct
+    FROM assessment_options
+    WHERE question_id = $1
+    `,
+          [question.question_id]
+        );
+
+        const allOptions = optionsResult.rows;
+
+        const validOptionIds = allOptions.map((opt) => String(opt.option_id));
+        const correctOptionIds = allOptions
+          .filter((opt) => opt.is_correct)
+          .map((opt) => String(opt.option_id))
+          .sort();
+
+        const submittedOptionIds = selectedOptionIds.map(String).sort();
+
+        const hasInvalidOption = submittedOptionIds.some(
+          (id) => !validOptionIds.includes(id)
+        );
+
+        if (hasInvalidOption) {
+          throw new Error("Invalid selected_option_ids submitted");
+        }
+
+        isCorrect =
+          submittedOptionIds.length === correctOptionIds.length &&
+          submittedOptionIds.every((id, index) => id === correctOptionIds[index]);
+
+        if (isCorrect) {
+          marksAwarded = Number(question.marks);
+          scoreObtained += marksAwarded;
+          correctCount += 1;
+        }
+      }
+
       if (question.question_type === "subjective") {
         if (!answerText) {
           throw new Error("answer_text is required for subjective question");
@@ -705,26 +769,29 @@ export const submitAssessment = async (req, res) => {
       await client.query(
         `
         INSERT INTO assessment_answers (
-          attempt_id,
-          question_id,
-          selected_option_id,
-          answer_text,
-          is_correct,
-          marks_awarded
-        )
-        VALUES ($1,$2,$3,$4,$5,$6)
-        ON CONFLICT (attempt_id, question_id)
-        DO UPDATE SET
-          selected_option_id = EXCLUDED.selected_option_id,
-          answer_text = EXCLUDED.answer_text,
-          is_correct = EXCLUDED.is_correct,
-          marks_awarded = EXCLUDED.marks_awarded,
-          answered_at = NOW()
+  attempt_id,
+  question_id,
+  selected_option_id,
+  selected_option_ids,
+  answer_text,
+  is_correct,
+  marks_awarded
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7)
+ON CONFLICT (attempt_id, question_id)
+DO UPDATE SET
+  selected_option_id = EXCLUDED.selected_option_id,
+  selected_option_ids = EXCLUDED.selected_option_ids,
+  answer_text = EXCLUDED.answer_text,
+  is_correct = EXCLUDED.is_correct,
+  marks_awarded = EXCLUDED.marks_awarded,
+  answered_at = NOW()
         `,
         [
           attempt_id,
           question.question_id,
           selectedOptionId,
+          selectedOptionIds,
           answerText,
           isCorrect,
           marksAwarded,
@@ -824,21 +891,33 @@ export const getAttemptResult = async (req, res) => {
     }
 
     const answersResult = await db.query(
-      `
-      SELECT 
-        ans.*,
-        q.question_text,
-        q.question_type,
-        q.marks,
-        opt.option_text AS selected_option_text
-      FROM assessment_answers ans
-      JOIN assessment_questions q ON q.question_id = ans.question_id
-      LEFT JOIN assessment_options opt ON opt.option_id = ans.selected_option_id
-      WHERE ans.attempt_id = $1
-      ORDER BY q.question_order ASC
-      `,
-      [attemptId]
-    );
+  `
+  SELECT 
+    ans.*,
+    q.question_text,
+    q.question_type,
+    q.marks,
+    opt.option_text AS selected_option_text,
+    COALESCE(
+      json_agg(
+        json_build_object(
+          'option_id', multi_opt.option_id,
+          'option_text', multi_opt.option_text
+        )
+      ) FILTER (WHERE multi_opt.option_id IS NOT NULL),
+      '[]'
+    ) AS selected_options
+  FROM assessment_answers ans
+  JOIN assessment_questions q ON q.question_id = ans.question_id
+  LEFT JOIN assessment_options opt ON opt.option_id = ans.selected_option_id
+  LEFT JOIN assessment_options multi_opt 
+    ON multi_opt.option_id = ANY(COALESCE(ans.selected_option_ids, ARRAY[]::uuid[]))
+  WHERE ans.attempt_id = $1
+  GROUP BY ans.answer_id, q.question_id, opt.option_text
+  ORDER BY q.question_order ASC
+  `,
+  [attemptId]
+);
 
     return res.json({
       success: true,
