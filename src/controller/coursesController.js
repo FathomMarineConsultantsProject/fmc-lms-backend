@@ -252,6 +252,21 @@ function getFileTypeFromMime(mimeType) {
   return null;
 }
 
+function addMonths(dateInput, months) {
+  const date = new Date(dateInput);
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+function toDateOnlyString(dateInput) {
+  const date = new Date(dateInput);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export async function createCourse(req, res) {
   const client = await db.connect();
 
@@ -313,6 +328,54 @@ RETURNING
     );
 
     const course = courseInsert.rows[0];
+
+    const certificateIssueInsert = await client.query(
+      `
+  INSERT INTO certificate_issues (
+    source_type,
+    course_id,
+    assessment_id,
+    certificate_name,
+    certificate_description,
+    notes,
+    issuing_authority,
+    issue_date,
+    expiry_date,
+    issued_by_user_id,
+    issued_by_name_snapshot,
+    company_id,
+    ship_id,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    'course',
+    $1,
+    NULL,
+    $2,
+    $3,
+    NULL,
+    'Fathom Marine Consultants',
+    NOW(),
+    $4,
+    $5,
+    NULL,
+    NULL,
+    NULL,
+    NOW(),
+    NOW()
+  )
+  RETURNING *
+  `,
+      [
+        course.id,
+        course.title,
+        course.description,
+        toDateOnlyString(addMonths(new Date(), 3)),
+        authUserId,
+      ]
+    );
+
     const insertedContents = [];
 
     for (let i = 0; i < payload.contents.length; i++) {
@@ -361,6 +424,7 @@ RETURNING
         ...course,
         contents: insertedContents,
       },
+      certificate_issue: certificateIssueInsert.rows[0],
     });
   } catch (error) {
     await client.query("ROLLBACK");
