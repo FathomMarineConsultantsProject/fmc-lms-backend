@@ -13,6 +13,9 @@ const calculatePercentage = (score, total) => {
   return Number(((Number(score) / Number(total)) * 100).toFixed(2));
 };
 
+const MCQ_TYPES = ["mcq_single", "mcq_multiple"];
+const ASSESSMENT_TYPES = ["mcq_single", "mcq_multiple", "subjective"];
+
 // ================= CREATE ASSESSMENT =================
 
 export const createAssessment = async (req, res) => {
@@ -48,10 +51,10 @@ export const createAssessment = async (req, res) => {
       });
     }
 
-    if (!["mcq", "subjective"].includes(assessment_type)) {
+    if (!ASSESSMENT_TYPES.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "assessment_type must be mcq or subjective",
+        message: "assessment_type must be mcq_single, mcq_multiple or subjective",
       });
     }
 
@@ -69,19 +72,32 @@ export const createAssessment = async (req, res) => {
     for (const q of questions) {
       totalMarks += Number(q.marks || 1);
 
+      if (!ASSESSMENT_TYPES.includes(q.question_type)) {
+        throw new Error("Invalid question_type");
+      }
+
       if (q.question_type !== assessment_type) {
         throw new Error("All question_type values must match assessment_type");
       }
 
-      if (assessment_type === "mcq") {
+      if (MCQ_TYPES.includes(assessment_type)) {
         if (!Array.isArray(q.options) || q.options.length < 2) {
           throw new Error("MCQ questions must have at least 2 options");
         }
 
         const correctCount = q.options.filter((opt) => opt.is_correct).length;
-        if (correctCount < 1) {
-          throw new Error("Each MCQ question must have at least one correct option");
+
+        if (assessment_type === "mcq_single" && correctCount !== 1) {
+          throw new Error("mcq_single questions must have exactly one correct option");
         }
+
+        if (assessment_type === "mcq_multiple" && correctCount < 1) {
+          throw new Error("mcq_multiple questions must have at least one correct option");
+        }
+      }
+
+      if (assessment_type === "subjective" && q.options?.length) {
+        throw new Error("Subjective questions cannot have options");
       }
     }
 
@@ -167,7 +183,7 @@ export const createAssessment = async (req, res) => {
 
       const question = questionResult.rows[0];
 
-      if (assessment_type === "mcq") {
+      if (MCQ_TYPES.includes(assessment_type)) {
         for (let j = 0; j < q.options.length; j++) {
           const opt = q.options[j];
 
@@ -277,6 +293,8 @@ export const getAssessments = async (req, res) => {
 };
 
 // ================= GET ASSESSMENT BY ID =================
+
+
 
 export const getAssessmentById = async (req, res) => {
   try {
@@ -662,7 +680,7 @@ export const submitAssessment = async (req, res) => {
       let isCorrect = null;
       let marksAwarded = 0;
 
-      if (question.question_type === "mcq") {
+      if (question.question_type === "mcq_single") {
         if (!selectedOptionId) {
           throw new Error("selected_option_id is required for MCQ question");
         }
