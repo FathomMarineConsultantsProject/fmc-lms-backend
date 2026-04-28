@@ -484,15 +484,13 @@ export const updateAssessmentQuestions = async (req, res) => {
 
     await client.query("BEGIN");
 
-    const assessmentResult = await client.query(
-      `
-      SELECT assessment_id, assessment_type
-      FROM assessments
-      WHERE assessment_id = $1
-      AND is_deleted = false
-      `,
-      [assessmentId]
-    );
+    await client.query(
+  `
+  DELETE FROM assessment_questions
+  WHERE assessment_id = $1
+  `,
+  [assessmentId]
+);
 
     if (assessmentResult.rows.length === 0) {
       throw new Error("Assessment not found");
