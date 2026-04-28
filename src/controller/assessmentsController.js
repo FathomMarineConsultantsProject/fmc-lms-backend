@@ -294,8 +294,6 @@ export const getAssessments = async (req, res) => {
 
 // ================= GET ASSESSMENT BY ID =================
 
-
-
 export const getAssessmentById = async (req, res) => {
   try {
     const { assessmentId } = req.params;
@@ -468,6 +466,267 @@ export const updateAssessment = async (req, res) => {
   }
 };
 
+// ================= UPDATE ASSESSMENT QUESTIONS + OPTIONS =================
+
+export const updateAssessmentQuestions = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { assessmentId } = req.params;
+    const { questions = [] } = req.body;
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "questions array is required",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const assessmentResult = await client.query(
+      `
+      SELECT assessment_id, assessment_type
+      FROM assessments
+      WHERE assessment_id = $1
+      AND is_deleted = false
+      `,
+      [assessmentId]
+    );
+
+    if (assessmentResult.rows.length === 0) {
+      throw new Error("Assessment not found");
+    }
+
+    const assessment = assessmentResult.rows[0];
+
+    let totalMarks = 0;
+
+    for (const q of questions) {
+      totalMarks += Number(q.marks || 1);
+
+      if (!ASSESSMENT_TYPES.includes(q.question_type)) {
+        throw new Error("Invalid question_type");
+      }
+
+      if (q.question_type !== assessment.assessment_type) {
+        throw new Error("Question type must match assessment type");
+      }
+
+      if (MCQ_TYPES.includes(assessment.assessment_type)) {
+        if (!Array.isArray(q.options) || q.options.length < 2) {
+          throw new Error("MCQ questions must have at least 2 options");
+        }
+
+        const correctCount = q.options.filter((opt) => opt.is_correct).length;
+
+        if (assessment.assessment_type === "mcq_single" && correctCount !== 1) {
+          throw new Error("mcq_single question must have exactly one correct option");
+        }
+
+        if (assessment.assessment_type === "mcq_multiple" && correctCount < 1) {
+          throw new Error("mcq_multiple question must have at least one correct option");
+        }
+      }
+
+      if (assessment.assessment_type === "subjective" && q.options?.length) {
+        throw new Error("Subjective questions cannot have options");
+      }
+    }
+
+    await client.query(
+      `
+      UPDATE assessment_questions
+      SET is_deleted = true,
+          updated_at = NOW()
+      WHERE assessment_id = $1
+      `,
+      [assessmentId]
+    );
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+
+      const questionResult = await client.query(
+        `
+        INSERT INTO assessment_questions (
+          assessment_id,
+          question_text,
+          question_type,
+          marks,
+          question_order,
+          explanation,
+          is_required
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *
+        `,
+        [
+          assessmentId,
+          q.question_text,
+          q.question_type,
+          q.marks || 1,
+          q.question_order || i + 1,
+          q.explanation || null,
+          q.is_required !== false,
+        ]
+      );
+
+      const question = questionResult.rows[0];
+
+      if (MCQ_TYPES.includes(assessment.assessment_type)) {
+        for (let j = 0; j < q.options.length; j++) {
+          const opt = q.options[j];
+
+          await client.query(
+            `
+            INSERT INTO assessment_options (
+              question_id,
+              option_text,
+              is_correct,
+              option_order
+            )
+            VALUES ($1,$2,$3,$4)
+            `,
+            [
+              question.question_id,
+              opt.option_text,
+              normalizeBool(opt.is_correct, false),
+              opt.option_order || j + 1,
+            ]
+          );
+        }
+      }
+    }
+
+    await client.query(
+      `
+      UPDATE assessments
+      SET total_marks = $1,
+          updated_at = NOW()
+      WHERE assessment_id = $2
+      `,
+      [totalMarks, assessmentId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Assessment questions updated successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Update assessment questions error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update assessment questions",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ================= UPDATE QUESTION OPTIONS =================
+
+export const updateQuestionOptions = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { questionId } = req.params;
+    const { options = [] } = req.body;
+
+    if (!Array.isArray(options) || options.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "At least 2 options are required",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const questionResult = await client.query(
+      `
+      SELECT q.*, a.assessment_type
+      FROM assessment_questions q
+      JOIN assessments a ON a.assessment_id = q.assessment_id
+      WHERE q.question_id = $1
+      AND q.is_deleted = false
+      AND a.is_deleted = false
+      `,
+      [questionId]
+    );
+
+    if (questionResult.rows.length === 0) {
+      throw new Error("Question not found");
+    }
+
+    const question = questionResult.rows[0];
+
+    if (!MCQ_TYPES.includes(question.question_type)) {
+      throw new Error("Options can only be updated for MCQ questions");
+    }
+
+    const correctCount = options.filter((opt) => opt.is_correct).length;
+
+    if (question.question_type === "mcq_single" && correctCount !== 1) {
+      throw new Error("mcq_single question must have exactly one correct option");
+    }
+
+    if (question.question_type === "mcq_multiple" && correctCount < 1) {
+      throw new Error("mcq_multiple question must have at least one correct option");
+    }
+
+    await client.query(
+      `
+      DELETE FROM assessment_options
+      WHERE question_id = $1
+      `,
+      [questionId]
+    );
+
+    for (let i = 0; i < options.length; i++) {
+      const opt = options[i];
+
+      await client.query(
+        `
+        INSERT INTO assessment_options (
+          question_id,
+          option_text,
+          is_correct,
+          option_order
+        )
+        VALUES ($1,$2,$3,$4)
+        `,
+        [
+          questionId,
+          opt.option_text,
+          normalizeBool(opt.is_correct, false),
+          opt.option_order || i + 1,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Question options updated successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Update question options error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update question options",
+    });
+  } finally {
+    client.release();
+  }
+};
+
 // ================= DELETE ASSESSMENT =================
 
 export const deleteAssessment = async (req, res) => {
@@ -505,6 +764,152 @@ export const deleteAssessment = async (req, res) => {
       success: false,
       message: "Failed to delete assessment",
     });
+  }
+};
+
+// ================= DELETE QUESTION =================
+
+export const deleteQuestion = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { questionId } = req.params;
+
+    await client.query("BEGIN");
+
+    const questionResult = await client.query(
+      `
+      SELECT question_id, assessment_id, marks
+      FROM assessment_questions
+      WHERE question_id = $1
+      AND is_deleted = false
+      `,
+      [questionId]
+    );
+
+    if (questionResult.rows.length === 0) {
+      throw new Error("Question not found");
+    }
+
+    const question = questionResult.rows[0];
+
+    await client.query(
+      `
+      UPDATE assessment_questions
+      SET is_deleted = true,
+          updated_at = NOW()
+      WHERE question_id = $1
+      `,
+      [questionId]
+    );
+
+    await client.query(
+      `
+      UPDATE assessments
+      SET total_marks = COALESCE((
+        SELECT SUM(marks)
+        FROM assessment_questions
+        WHERE assessment_id = $1
+        AND is_deleted = false
+      ), 0),
+      updated_at = NOW()
+      WHERE assessment_id = $1
+      `,
+      [question.assessment_id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Question deleted successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Delete question error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to delete question",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ================= DELETE OPTION =================
+
+export const deleteOption = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { optionId } = req.params;
+
+    await client.query("BEGIN");
+
+    const optionResult = await client.query(
+      `
+      SELECT o.*, q.question_type
+      FROM assessment_options o
+      JOIN assessment_questions q ON q.question_id = o.question_id
+      WHERE o.option_id = $1
+      AND q.is_deleted = false
+      `,
+      [optionId]
+    );
+
+    if (optionResult.rows.length === 0) {
+      throw new Error("Option not found");
+    }
+
+    const option = optionResult.rows[0];
+
+    const countResult = await client.query(
+      `
+      SELECT
+        COUNT(*)::INTEGER AS total_options,
+        COUNT(*) FILTER (WHERE is_correct = true)::INTEGER AS correct_options
+      FROM assessment_options
+      WHERE question_id = $1
+      `,
+      [option.question_id]
+    );
+
+    const totalOptions = Number(countResult.rows[0].total_options);
+    const correctOptions = Number(countResult.rows[0].correct_options);
+
+    if (totalOptions <= 2) {
+      throw new Error("MCQ question must have at least 2 options");
+    }
+
+    if (option.is_correct && correctOptions <= 1) {
+      throw new Error("Cannot delete the only correct option");
+    }
+
+    await client.query(
+      `
+      DELETE FROM assessment_options
+      WHERE option_id = $1
+      `,
+      [optionId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Option deleted successfully",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Delete option error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to delete option",
+    });
+  } finally {
+    client.release();
   }
 };
 
