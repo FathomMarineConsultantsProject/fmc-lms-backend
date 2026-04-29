@@ -13,6 +13,69 @@ const VALID_CONTENT_TYPES = new Set([
   "ppt",
 ]);
 
+const getRoleId = (req) => Number(req.user?.role_id);
+
+function getCreateScope(req) {
+  const roleId = getRoleId(req);
+
+  if (roleId === 1) {
+    return {
+      company_id: req.body.company_id || null,
+      ship_id: req.body.ship_id || null,
+    };
+  }
+
+  if (roleId === 2) {
+    return {
+      company_id: req.user.company_id,
+      ship_id: req.body.ship_id || null,
+    };
+  }
+
+  return {
+    company_id: req.user.company_id,
+    ship_id: req.user.ship_id || null,
+  };
+}
+
+function addScopeWhere(req, alias, params, options = {}) {
+  const roleId = getRoleId(req);
+  const publishedOnly = options.publishedOnly || false;
+
+  if (roleId === 1) return "";
+
+  let sql = "";
+
+  params.push(req.user.company_id);
+  sql += ` AND ${alias}.company_id = $${params.length}`;
+
+  if (roleId === 3 || roleId === 4) {
+    params.push(req.user.ship_id);
+    sql += ` AND (${alias}.ship_id = $${params.length} OR ${alias}.ship_id IS NULL)`;
+  }
+
+  if (roleId === 4 && publishedOnly) {
+    sql += ` AND ${alias}.is_published = true`;
+  }
+
+  return sql;
+}
+
+async function checkCourseScope(req, courseId, client = db) {
+  const params = [courseId];
+
+  let query = `
+    SELECT c.id
+    FROM courses c
+    WHERE c.id = $1
+      AND c.deleted_at IS NULL
+  `;
+
+  query += addScopeWhere(req, "c", params);
+
+  const result = await client.query(query, params);
+  return result.rowCount > 0;
+}
 const getAuthUserId = (req) => req.user?.user_id ?? req.user?.id ?? null;
 
 const normalizeString = (value) => {
@@ -107,19 +170,21 @@ async function fetchCourseWithContents(courseId) {
   const courseResult = await db.query(
     `
       SELECT
-        c.id,
-        c.title,
-        c.description,
-        c.department,
-        c.predefined_course_title,
-        c.status,
-        c.content_mode,
-        c.certificate_prefix,
-        c.created_by,
-        c.updated_by,
-        c.created_at,
-        c.updated_at,
-        c.deleted_at
+  c.id,
+  c.title,
+  c.description,
+  c.department,
+  c.predefined_course_title,
+  c.status,
+  c.content_mode,
+  c.certificate_prefix,
+  c.company_id,
+  c.ship_id,
+  c.created_by,
+  c.updated_by,
+  c.created_at,
+  c.updated_at,
+  c.deleted_at
       FROM courses c
       WHERE c.id = $1
         AND c.deleted_at IS NULL
@@ -281,6 +346,7 @@ export async function createCourse(req, res) {
     }
 
     const authUserId = getAuthUserId(req);
+    const scope = getCreateScope(req);
 
     await client.query("BEGIN");
 
@@ -297,10 +363,12 @@ INSERT INTO courses (
   status,
   content_mode,
   certificate_prefix,
+  company_id,
+  ship_id,
   created_by,
   updated_by
 )
-VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $7)
+VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $9)
 RETURNING
   id,
   title,
@@ -310,6 +378,8 @@ RETURNING
   status,
   content_mode,
   certificate_prefix,
+  company_id,
+  ship_id,
   created_by,
   updated_by,
   created_at,
@@ -323,6 +393,8 @@ RETURNING
         payload.predefined_course_title,
         payload.content_mode,
         certificatePrefix,
+        scope.company_id,
+        scope.ship_id,
         authUserId,
       ]
     );
@@ -349,22 +421,22 @@ RETURNING
     updated_at
   )
   VALUES (
-    'course',
-    $1,
-    NULL,
-    $2,
-    $3,
-    NULL,
-    'Fathom Marine Consultants',
-    NOW(),
-    $4,
-    $5,
-    NULL,
-    NULL,
-    NULL,
-    NOW(),
-    NOW()
-  )
+  'course',
+  $1,
+  NULL,
+  $2,
+  $3,
+  NULL,
+  'Fathom Marine Consultants',
+  NOW(),
+  $4,
+  $5,
+  NULL,
+  $6,
+  $7,
+  NOW(),
+  NOW()
+    )
   RETURNING *
   `,
       [
@@ -373,6 +445,8 @@ RETURNING
         course.description,
         toDateOnlyString(addMonths(new Date(), 3)),
         authUserId,
+        scope.company_id,
+        scope.ship_id,
       ]
     );
 
@@ -440,30 +514,39 @@ RETURNING
 
 export async function getCourses(req, res) {
   try {
-    const result = await db.query(
-      `
-        SELECT
-          c.id,
-          c.title,
-          c.description,
-          c.department,
-          c.predefined_course_title,
-          c.status,
-          c.content_mode,
-c.certificate_prefix,
-          c.created_by,
-          c.updated_by,
-          c.created_at,
-          c.updated_at,
-          COUNT(cc.id)::int AS contents_count
-        FROM courses c
-        LEFT JOIN course_contents cc
-          ON cc.course_id = c.id
-        WHERE c.deleted_at IS NULL
-        GROUP BY c.id
-        ORDER BY c.created_at DESC
-      `
-    );
+    const params = [];
+
+    let query = `
+      SELECT
+        c.id,
+        c.title,
+        c.description,
+        c.department,
+        c.predefined_course_title,
+        c.status,
+        c.content_mode,
+        c.certificate_prefix,
+        c.company_id,
+        c.ship_id,
+        c.created_by,
+        c.updated_by,
+        c.created_at,
+        c.updated_at,
+        COUNT(cc.id)::int AS contents_count
+      FROM courses c
+      LEFT JOIN course_contents cc
+        ON cc.course_id = c.id
+      WHERE c.deleted_at IS NULL
+    `;
+
+    query += addScopeWhere(req, "c", params);
+
+    query += `
+      GROUP BY c.id
+      ORDER BY c.created_at DESC
+    `;
+
+    const result = await db.query(query, params);
 
     return res.json({
       message: "Courses fetched successfully",
@@ -486,11 +569,24 @@ export async function getCourseById(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
-    const course = await fetchCourseWithContents(courseId);
+    const params = [courseId];
 
-    if (!course) {
+    let checkQuery = `
+      SELECT c.id
+      FROM courses c
+      WHERE c.id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    checkQuery += addScopeWhere(req, "c", params);
+
+    const check = await db.query(checkQuery, params);
+
+    if (!check.rowCount) {
       return res.status(404).json({ message: "Course not found" });
     }
+
+    const course = await fetchCourseWithContents(courseId);
 
     return res.json({
       message: "Course fetched successfully",
@@ -509,35 +605,41 @@ export async function getCoursesByUserId(req, res) {
   try {
     const { userId } = req.params;
 
-    const result = await db.query(
-      `
-        SELECT
-          c.id,
-          c.title,
-          c.description,
-          c.department,
-          c.predefined_course_title,
-          c.status,
-          c.content_mode,
-          c.certificate_prefix,
-          ce.status AS enrollment_status,
-          ce.enrolled_at,
-          COUNT(cc.id)::int AS contents_count
-        FROM course_enrollments ce
-        JOIN courses c
-          ON c.id = ce.course_id
-        LEFT JOIN course_contents cc
-          ON cc.course_id = c.id
-        WHERE ce.user_id = $1
-          AND c.deleted_at IS NULL
-        GROUP BY
-          c.id,
-          ce.status,
-          ce.enrolled_at
-        ORDER BY ce.enrolled_at DESC
-      `,
-      [userId]
-    );
+    const params = [userId];
+
+    let query = `
+      SELECT
+        c.id,
+        c.title,
+        c.description,
+        c.department,
+        c.predefined_course_title,
+        c.status,
+        c.content_mode,
+        c.certificate_prefix,
+        ce.status AS enrollment_status,
+        ce.enrolled_at,
+        COUNT(cc.id)::int AS contents_count
+      FROM course_enrollments ce
+      JOIN courses c
+        ON c.id = ce.course_id
+      LEFT JOIN course_contents cc
+        ON cc.course_id = c.id
+      WHERE ce.user_id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    query += addScopeWhere(req, "c", params);
+
+    query += `
+      GROUP BY
+        c.id,
+        ce.status,
+        ce.enrolled_at
+      ORDER BY ce.enrolled_at DESC
+    `;
+
+    const result = await db.query(query, params);
 
     return res.json({
       message: "Enrolled courses fetched successfully",
@@ -562,15 +664,18 @@ export async function updateCourse(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
-    const existingCourse = await client.query(
-      `
-        SELECT id
-        FROM courses
-        WHERE id = $1
-          AND deleted_at IS NULL
-      `,
-      [courseId]
-    );
+    const checkParams = [courseId];
+
+    let checkQuery = `
+      SELECT c.id
+      FROM courses c
+      WHERE c.id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    checkQuery += addScopeWhere(req, "c", checkParams);
+
+    const existingCourse = await client.query(checkQuery, checkParams);
 
     if (!existingCourse.rowCount) {
       return res.status(404).json({ message: "Course not found" });
@@ -594,19 +699,20 @@ export async function updateCourse(req, res) {
 
     await client.query(
       `
-    UPDATE courses
-    SET
-      title = COALESCE($1, title),
-      description = COALESCE($2, description),
-      department = COALESCE($3, department),
-      predefined_course_title = CASE
-        WHEN $4::boolean THEN $5
-        ELSE predefined_course_title
-      END,
-      content_mode = COALESCE($6, content_mode),
-      updated_by = $7
-    WHERE id = $8
-  `,
+      UPDATE courses
+      SET
+        title = COALESCE($1, title),
+        description = COALESCE($2, description),
+        department = COALESCE($3, department),
+        predefined_course_title = CASE
+          WHEN $4::boolean THEN $5
+          ELSE predefined_course_title
+        END,
+        content_mode = COALESCE($6, content_mode),
+        updated_by = $7,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $8
+      `,
       [
         payload.title,
         payload.description,
@@ -627,15 +733,15 @@ export async function updateCourse(req, res) {
 
         await client.query(
           `
-            INSERT INTO course_contents (
-              course_id,
-              content_title,
-              content_description,
-              content_type,
-              youtube_url,
-              sort_order
-            )
-            VALUES ($1, $2, $3, $4, $5, $6)
+          INSERT INTO course_contents (
+            course_id,
+            content_title,
+            content_description,
+            content_type,
+            youtube_url,
+            sort_order
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
           `,
           [
             courseId,
@@ -677,16 +783,22 @@ export async function deleteCourse(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
-    const result = await db.query(
-      `
-        UPDATE courses
-        SET deleted_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-          AND deleted_at IS NULL
-        RETURNING id
-      `,
-      [courseId]
-    );
+    const params = [courseId];
+
+    let query = `
+      UPDATE courses c
+      SET deleted_at = CURRENT_TIMESTAMP
+      WHERE c.id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    query += addScopeWhere(req, "c", params);
+
+    query += `
+      RETURNING c.id
+    `;
+
+    const result = await db.query(query, params);
 
     if (!result.rowCount) {
       return res.status(404).json({
@@ -733,6 +845,12 @@ export async function uploadCourseContentMedia(req, res) {
 
     if (!files.length) {
       return res.status(400).json({ message: "At least one file is required" });
+    }
+
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
     }
 
     const contentResult = await client.query(
@@ -927,22 +1045,33 @@ export async function getCourseContentMediaSignedUrl(req, res) {
       return res.status(400).json({ message: "Invalid media file id" });
     }
 
-    const result = await db.query(
-      `
-        SELECT
-          mf.id AS media_file_id,
-          mf.original_file_name,
-          mf.mime_type,
-          ms3.bucket_name,
-          ms3.object_key
-        FROM media_files mf
-        JOIN media_storage_s3 ms3
-          ON ms3.media_file_id = mf.id
-        WHERE mf.id = $1
-        LIMIT 1
-      `,
-      [mediaFileId]
-    );
+    const params = [mediaFileId];
+
+    let query = `
+      SELECT
+        mf.id AS media_file_id,
+        mf.original_file_name,
+        mf.mime_type,
+        ms3.bucket_name,
+        ms3.object_key
+      FROM media_files mf
+      JOIN media_storage_s3 ms3
+        ON ms3.media_file_id = mf.id
+      JOIN course_content_media ccm
+        ON ccm.media_file_id = mf.id
+      JOIN course_contents cc
+        ON cc.id = ccm.course_content_id
+      JOIN courses c
+        ON c.id = cc.course_id
+      WHERE mf.id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    query += addScopeWhere(req, "c", params);
+
+    query += ` LIMIT 1`;
+
+    const result = await db.query(query, params);
 
     if (!result.rowCount) {
       return res.status(404).json({ message: "Media file not found" });
@@ -996,24 +1125,27 @@ export async function deleteCourseContentMedia(req, res) {
       return res.status(400).json({ message: "Invalid media file id" });
     }
 
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const result = await client.query(
       `
-        SELECT
-          ccm.course_content_id,
-          mf.id AS media_file_id,
-          ms3.bucket_name,
-          ms3.object_key
-        FROM course_content_media ccm
-        JOIN course_contents cc
-          ON cc.id = ccm.course_content_id
-        JOIN media_files mf
-          ON mf.id = ccm.media_file_id
-        LEFT JOIN media_storage_s3 ms3
-          ON ms3.media_file_id = mf.id
-        WHERE cc.course_id = $1
-          AND ccm.course_content_id = $2
-          AND mf.id = $3
-        LIMIT 1
+      SELECT
+        ccm.course_content_id,
+        mf.id AS media_file_id,
+        ms3.bucket_name,
+        ms3.object_key
+      FROM course_content_media ccm
+      JOIN course_contents cc ON cc.id = ccm.course_content_id
+      JOIN media_files mf ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
+      WHERE cc.course_id = $1
+        AND ccm.course_content_id = $2
+        AND mf.id = $3
+      LIMIT 1
       `,
       [courseId, contentId, mediaFileId]
     );
@@ -1041,9 +1173,7 @@ export async function deleteCourseContentMedia(req, res) {
 
     await client.query("COMMIT");
 
-    return res.json({
-      message: "Content media deleted successfully",
-    });
+    return res.json({ message: "Content media deleted successfully" });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("deleteCourseContentMedia error:", error);
@@ -1069,24 +1199,18 @@ export async function getCourseContentById(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
+    const allowed = await checkCourseScope(req, courseId);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const contentResult = await db.query(
       `
-      SELECT
-        cc.id,
-        cc.course_id,
-        cc.content_title,
-        cc.content_description,
-        cc.content_type,
-        cc.youtube_url,
-        cc.sort_order,
-        cc.created_at,
-        cc.updated_at
-      FROM course_contents cc
-      JOIN courses c
-        ON c.id = cc.course_id
-      WHERE cc.id = $1
-        AND cc.course_id = $2
-        AND c.deleted_at IS NULL
+      SELECT *
+      FROM course_contents
+      WHERE id = $1
+        AND course_id = $2
       LIMIT 1
       `,
       [contentId, courseId]
@@ -1122,15 +1246,18 @@ export async function getCourseContentMedia(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
+    const allowed = await checkCourseScope(req, courseId);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const contentCheck = await db.query(
       `
-      SELECT cc.id
-      FROM course_contents cc
-      JOIN courses c
-        ON c.id = cc.course_id
-      WHERE cc.id = $1
-        AND cc.course_id = $2
-        AND c.deleted_at IS NULL
+      SELECT id
+      FROM course_contents
+      WHERE id = $1
+        AND course_id = $2
       LIMIT 1
       `,
       [contentId, courseId]
@@ -1158,10 +1285,8 @@ export async function getCourseContentMedia(req, res) {
         ms3.file_url,
         ms3.region
       FROM course_content_media ccm
-      JOIN media_files mf
-        ON mf.id = ccm.media_file_id
-      LEFT JOIN media_storage_s3 ms3
-        ON ms3.media_file_id = mf.id
+      JOIN media_files mf ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
       WHERE ccm.course_content_id = $1
       ORDER BY mf.id ASC
       `,
@@ -1197,15 +1322,18 @@ export async function deleteCourseContent(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const contentResult = await client.query(
       `
-      SELECT cc.id
-      FROM course_contents cc
-      JOIN courses c
-        ON c.id = cc.course_id
-      WHERE cc.id = $1
-        AND cc.course_id = $2
-        AND c.deleted_at IS NULL
+      SELECT id
+      FROM course_contents
+      WHERE id = $1
+        AND course_id = $2
       LIMIT 1
       `,
       [contentId, courseId]
@@ -1222,10 +1350,8 @@ export async function deleteCourseContent(req, res) {
         ms3.bucket_name,
         ms3.object_key
       FROM course_content_media ccm
-      JOIN media_files mf
-        ON mf.id = ccm.media_file_id
-      LEFT JOIN media_storage_s3 ms3
-        ON ms3.media_file_id = mf.id
+      JOIN media_files mf ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
       WHERE ccm.course_content_id = $1
       `,
       [contentId]
@@ -1276,6 +1402,23 @@ export async function createCourseContent(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
+    const params = [courseId];
+
+    let checkQuery = `
+      SELECT c.id
+      FROM courses c
+      WHERE c.id = $1
+        AND c.deleted_at IS NULL
+    `;
+
+    checkQuery += addScopeWhere(req, "c", params);
+
+    const courseCheck = await db.query(checkQuery, params);
+
+    if (!courseCheck.rowCount) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const result = await db.query(
       `
       INSERT INTO course_contents (
@@ -1319,6 +1462,20 @@ export async function updateCourseContent(req, res) {
 
     const { content_title, content_description, content_type, youtube_url, sort_order } = req.body;
 
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    const allowed = await checkCourseScope(req, courseId);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const result = await db.query(
       `
       UPDATE course_contents
@@ -1329,7 +1486,8 @@ export async function updateCourseContent(req, res) {
         youtube_url = COALESCE($4, youtube_url),
         sort_order = COALESCE($5, sort_order),
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $6 AND course_id = $7
+      WHERE id = $6
+        AND course_id = $7
       RETURNING *
       `,
       [
@@ -1362,7 +1520,27 @@ export async function updateCourseContent(req, res) {
 
 export async function getCourseContentMediaById(req, res) {
   try {
-    const { courseId, contentId, mediaFileId } = req.params;
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+    const mediaFileId = Number(req.params.mediaFileId);
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    if (!mediaFileId || Number.isNaN(mediaFileId)) {
+      return res.status(400).json({ message: "Invalid media file id" });
+    }
+
+    const allowed = await checkCourseScope(req, courseId);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     const result = await db.query(
       `
@@ -1406,34 +1584,62 @@ export async function replaceCourseContentMedia(req, res) {
   const client = await db.connect();
 
   try {
-    const { courseId, contentId, mediaFileId } = req.params;
+    const courseId = Number(req.params.courseId);
+    const contentId = Number(req.params.contentId);
+    const mediaFileId = Number(req.params.mediaFileId);
     const file = req.file;
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!contentId || Number.isNaN(contentId)) {
+      return res.status(400).json({ message: "Invalid content id" });
+    }
+
+    if (!mediaFileId || Number.isNaN(mediaFileId)) {
+      return res.status(400).json({ message: "Invalid media file id" });
+    }
 
     if (!file) {
       return res.status(400).json({ message: "File required" });
     }
 
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const existing = await client.query(
       `
-      SELECT ms3.bucket_name, ms3.object_key
-      FROM media_files mf
-      JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
-      WHERE mf.id = $1
+      SELECT
+        ms3.bucket_name,
+        ms3.object_key
+      FROM course_content_media ccm
+      JOIN course_contents cc ON cc.id = ccm.course_content_id
+      JOIN media_files mf ON mf.id = ccm.media_file_id
+      LEFT JOIN media_storage_s3 ms3 ON ms3.media_file_id = mf.id
+      WHERE cc.course_id = $1
+        AND cc.id = $2
+        AND mf.id = $3
+      LIMIT 1
       `,
-      [mediaFileId]
+      [courseId, contentId, mediaFileId]
     );
 
     if (!existing.rowCount) {
       return res.status(404).json({ message: "Media not found" });
     }
 
-    // delete old file
-    await s3.send(
-      new DeleteObjectCommand({
-        Bucket: existing.rows[0].bucket_name,
-        Key: existing.rows[0].object_key,
-      })
-    );
+    if (existing.rows[0].bucket_name && existing.rows[0].object_key) {
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: existing.rows[0].bucket_name,
+          Key: existing.rows[0].object_key,
+        })
+      );
+    }
 
     const storedFileName = buildStoredFileName(file.originalname);
     const s3Key = `courses/${courseId}/contents/${contentId}/${storedFileName}`;
@@ -1492,8 +1698,22 @@ export async function reorderCourseContents(req, res) {
   const client = await db.connect();
 
   try {
-    const { courseId } = req.params;
-    const { contents } = req.body; // [{id, sort_order}]
+    const courseId = Number(req.params.courseId);
+    const { contents } = req.body;
+
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!Array.isArray(contents) || !contents.length) {
+      return res.status(400).json({ message: "contents array is required" });
+    }
+
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     await client.query("BEGIN");
 
@@ -1501,8 +1721,10 @@ export async function reorderCourseContents(req, res) {
       await client.query(
         `
         UPDATE course_contents
-        SET sort_order = $1
-        WHERE id = $2 AND course_id = $3
+        SET sort_order = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+          AND course_id = $3
         `,
         [item.sort_order, item.id, courseId]
       );
@@ -1550,6 +1772,12 @@ export async function completeCourseByLoggedInUser(req, res) {
       `,
       [courseId]
     );
+
+    const allowed = await checkCourseScope(req, courseId, client);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     if (!courseCheck.rowCount) {
       return res.status(404).json({ message: "Course not found" });
@@ -1646,6 +1874,12 @@ export async function getMyCourseCompletionStatus(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
+    const allowed = await checkCourseScope(req, courseId);
+
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const result = await db.query(
       `
       SELECT
@@ -1700,8 +1934,9 @@ export async function getMyCompletedCourses(req, res) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const result = await db.query(
-      `
+    const params = [userId];
+
+    let query = `
       SELECT
         ce.user_id,
         ce.course_id,
@@ -1714,17 +1949,24 @@ export async function getMyCompletedCourses(req, res) {
         c.department,
         c.predefined_course_title,
         c.content_mode,
-        c.certificate_prefix
+        c.certificate_prefix,
+        c.company_id,
+        c.ship_id
       FROM course_enrollments ce
       JOIN courses c
         ON c.id = ce.course_id
       WHERE ce.user_id = $1
         AND ce.completion_status = 'completed'
         AND c.deleted_at IS NULL
+    `;
+
+    query += addScopeWhere(req, "c", params);
+
+    query += `
       ORDER BY ce.completed_at DESC NULLS LAST, ce.enrolled_at DESC
-      `,
-      [userId]
-    );
+    `;
+
+    const result = await db.query(query, params);
 
     return res.json({
       message: "Completed courses fetched successfully",

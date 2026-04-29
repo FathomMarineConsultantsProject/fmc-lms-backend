@@ -5,6 +5,68 @@ const isAdminRole = (roleId) => [1, 2, 3].includes(Number(roleId));
 const getUserId = (req) => req.user?.user_id || req.user?.id;
 const getRoleId = (req) => Number(req.user?.role_id);
 
+function getCreateScope(req) {
+  const roleId = getRoleId(req);
+
+  if (roleId === 1) {
+    return {
+      company_id: req.body.company_id || null,
+      ship_id: req.body.ship_id || null,
+    };
+  }
+
+  if (roleId === 2) {
+    return {
+      company_id: req.user.company_id,
+      ship_id: req.body.ship_id || null,
+    };
+  }
+
+  return {
+    company_id: req.user.company_id,
+    ship_id: req.user.ship_id || null,
+  };
+}
+
+function addScopeWhere(req, alias, params, options = {}) {
+  const roleId = getRoleId(req);
+  const publishedOnly = options.publishedOnly || false;
+
+  if (roleId === 1) return "";
+
+  let sql = "";
+
+  params.push(req.user.company_id);
+  sql += ` AND ${alias}.company_id = $${params.length}`;
+
+  if (roleId === 3 || roleId === 4) {
+    params.push(req.user.ship_id);
+    sql += ` AND (${alias}.ship_id = $${params.length} OR ${alias}.ship_id IS NULL)`;
+  }
+
+  if (roleId === 4 && publishedOnly) {
+    sql += ` AND ${alias}.is_published = true`;
+  }
+
+  return sql;
+}
+
+async function checkAssessmentScope(req, assessmentId, client = db) {
+  const params = [assessmentId];
+
+  let query = `
+    SELECT a.assessment_id
+    FROM assessments a
+    WHERE a.assessment_id = $1
+      AND a.is_deleted = false
+  `;
+
+  query += addScopeWhere(req, "a", params);
+
+  const result = await client.query(query, params);
+  return result.rowCount > 0;
+}
+
 const normalizeBool = (v, fallback = false) =>
   typeof v === "boolean" ? v : fallback;
 
@@ -101,7 +163,9 @@ export const createAssessment = async (req, res) => {
       }
     }
 
+    const scope = getCreateScope(req);
     const assessmentResult = await client.query(
+
       `
       INSERT INTO assessments (
         title,
@@ -144,8 +208,8 @@ export const createAssessment = async (req, res) => {
         max_attempts || 1,
         normalizeBool(randomize_questions, false),
         normalizeBool(show_result_immediately, true),
-        company_id || req.user?.company_id || null,
-        ship_id || req.user?.ship_id || null,
+        scope.company_id,
+        scope.ship_id,
         userId,
         userId,
       ]
@@ -300,6 +364,15 @@ export const getAssessmentById = async (req, res) => {
     const roleId = getRoleId(req);
     const user = req.user;
 
+    const allowed = await checkAssessmentScope(req, assessmentId);
+
+    if (!allowed) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
+
     const assessmentResult = await db.query(
       `
       SELECT *
@@ -310,14 +383,14 @@ export const getAssessmentById = async (req, res) => {
       [assessmentId]
     );
 
-    if (assessmentResult.rows.length === 0) {
+    const assessment = assessmentResult.rows[0];
+
+    if (!assessment) {
       return res.status(404).json({
         success: false,
         message: "Assessment not found",
       });
     }
-
-    const assessment = assessmentResult.rows[0];
 
     if (roleId === 4 && !assessment.is_published) {
       return res.status(403).json({
@@ -383,6 +456,7 @@ export const updateAssessment = async (req, res) => {
   try {
     const { assessmentId } = req.params;
     const userId = getUserId(req);
+    const roleId = getRoleId(req);
 
     const {
       title,
@@ -401,8 +475,31 @@ export const updateAssessment = async (req, res) => {
       ship_id,
     } = req.body;
 
-    const result = await db.query(
-      `
+    const allowed = await checkAssessmentScope(req, assessmentId);
+
+    if (!allowed) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
+
+    const params = [
+      title ?? null,
+      description ?? null,
+      category ?? null,
+      difficulty_level ?? null,
+      passing_percentage ?? null,
+      duration_minutes ?? null,
+      instructions ?? null,
+      is_published ?? null,
+      allow_multiple_attempts ?? null,
+      max_attempts ?? null,
+      randomize_questions ?? null,
+      show_result_immediately ?? null,
+    ];
+
+    let query = `
       UPDATE assessments
       SET
         title = COALESCE($1, title),
@@ -416,41 +513,29 @@ export const updateAssessment = async (req, res) => {
         allow_multiple_attempts = COALESCE($9, allow_multiple_attempts),
         max_attempts = COALESCE($10, max_attempts),
         randomize_questions = COALESCE($11, randomize_questions),
-        show_result_immediately = COALESCE($12, show_result_immediately),
-        company_id = COALESCE($13, company_id),
-        ship_id = COALESCE($14, ship_id),
-        updated_by = $15,
-        updated_at = NOW()
-      WHERE assessment_id = $16
-      AND is_deleted = false
-      RETURNING *
-      `,
-      [
-        title ?? null,
-        description ?? null,
-        category ?? null,
-        difficulty_level ?? null,
-        passing_percentage ?? null,
-        duration_minutes ?? null,
-        instructions ?? null,
-        is_published ?? null,
-        allow_multiple_attempts ?? null,
-        max_attempts ?? null,
-        randomize_questions ?? null,
-        show_result_immediately ?? null,
-        company_id ?? null,
-        ship_id ?? null,
-        userId,
-        assessmentId,
-      ]
-    );
+        show_result_immediately = COALESCE($12, show_result_immediately)
+    `;
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Assessment not found",
-      });
+    // Only superadmin can change assessment company/ship scope
+    if (roleId === 1) {
+      params.push(company_id ?? null);
+      query += `, company_id = COALESCE($${params.length}, company_id)`;
+
+      params.push(ship_id ?? null);
+      query += `, ship_id = COALESCE($${params.length}, ship_id)`;
     }
+
+    params.push(userId);
+    query += `, updated_by = $${params.length}, updated_at = NOW()`;
+
+    params.push(assessmentId);
+    query += `
+      WHERE assessment_id = $${params.length}
+        AND is_deleted = false
+      RETURNING *
+    `;
+
+    const result = await db.query(query, params);
 
     return res.json({
       success: true,
@@ -493,6 +578,12 @@ export const updateAssessmentQuestions = async (req, res) => {
       `,
       [assessmentId]
     );
+
+    const allowed = await checkAssessmentScope(req, assessmentId, client);
+
+    if (!allowed) {
+      throw new Error("Assessment not found");
+    }
 
     if (assessmentResult.rows.length === 0) {
       throw new Error("Assessment not found");
@@ -644,23 +735,26 @@ export const updateQuestionOptions = async (req, res) => {
 
     await client.query("BEGIN");
 
-    const questionResult = await client.query(
-      `
-      SELECT q.*, a.assessment_type
-      FROM assessment_questions q
-      JOIN assessments a ON a.assessment_id = q.assessment_id
-      WHERE q.question_id = $1
-      AND q.is_deleted = false
-      AND a.is_deleted = false
-      `,
-      [questionId]
-    );
+    const questionResult = await client.query(`
+  SELECT q.*, a.assessment_type
+  FROM assessment_questions q
+  JOIN assessments a ON a.assessment_id = q.assessment_id
+  WHERE q.question_id = $1
+  AND q.is_deleted = false
+  AND a.is_deleted = false
+`, [questionId]);
 
     if (questionResult.rows.length === 0) {
       throw new Error("Question not found");
     }
 
     const question = questionResult.rows[0];
+
+    const allowed = await checkAssessmentScope(req, question.assessment_id, client);
+
+    if (!allowed) {
+      throw new Error("Assessment not found");
+    }
 
     if (!MCQ_TYPES.includes(question.question_type)) {
       throw new Error("Options can only be updated for MCQ questions");
@@ -732,18 +826,22 @@ export const deleteAssessment = async (req, res) => {
     const { assessmentId } = req.params;
     const userId = getUserId(req);
 
-    const result = await db.query(
-      `
-      UPDATE assessments
-      SET is_deleted = true,
-          updated_by = $1,
-          updated_at = NOW()
-      WHERE assessment_id = $2
-      AND is_deleted = false
-      RETURNING assessment_id
-      `,
-      [userId, assessmentId]
-    );
+    const params = [userId, assessmentId];
+
+    let query = `
+  UPDATE assessments a
+  SET is_deleted = true,
+      updated_by = $1,
+      updated_at = NOW()
+  WHERE a.assessment_id = $2
+    AND a.is_deleted = false
+`;
+
+    query += addScopeWhere(req, "a", params);
+
+    query += ` RETURNING a.assessment_id`;
+
+    const result = await db.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -790,6 +888,12 @@ export const deleteQuestion = async (req, res) => {
     }
 
     const question = questionResult.rows[0];
+
+    const allowed = await checkAssessmentScope(req, question.assessment_id, client);
+
+    if (!allowed) {
+      throw new Error("Assessment not found");
+    }
 
     await client.query(
       `
@@ -847,11 +951,11 @@ export const deleteOption = async (req, res) => {
 
     const optionResult = await client.query(
       `
-      SELECT o.*, q.question_type
-      FROM assessment_options o
-      JOIN assessment_questions q ON q.question_id = o.question_id
-      WHERE o.option_id = $1
-      AND q.is_deleted = false
+      SELECT o.*, q.question_type, q.assessment_id
+FROM assessment_options o
+JOIN assessment_questions q ON q.question_id = o.question_id
+WHERE o.option_id = $1
+AND q.is_deleted = false
       `,
       [optionId]
     );
@@ -861,6 +965,12 @@ export const deleteOption = async (req, res) => {
     }
 
     const option = optionResult.rows[0];
+
+    const allowed = await checkAssessmentScope(req, option.assessment_id, client);
+
+    if (!allowed) {
+      throw new Error("Assessment not found");
+    }
 
     const countResult = await client.query(
       `
@@ -918,16 +1028,19 @@ export const startAssessment = async (req, res) => {
     const { assessmentId } = req.params;
     const userId = getUserId(req);
 
-    const assessmentResult = await db.query(
-      `
-      SELECT *
-      FROM assessments
-      WHERE assessment_id = $1
-      AND is_deleted = false
-      AND is_published = true
-      `,
-      [assessmentId]
-    );
+    const params = [assessmentId];
+
+    let query = `
+  SELECT *
+  FROM assessments a
+  WHERE a.assessment_id = $1
+    AND a.is_deleted = false
+    AND a.is_published = true
+`;
+
+    query += addScopeWhere(req, "a", params);
+
+    const assessmentResult = await db.query(query, params);
 
     if (assessmentResult.rows.length === 0) {
       return res.status(404).json({
@@ -1055,6 +1168,12 @@ export const submitAssessment = async (req, res) => {
     }
 
     const attempt = attemptResult.rows[0];
+
+    const allowed = await checkAssessmentScope(req, attempt.assessment_id, client);
+
+    if (!allowed) {
+      throw new Error("Assessment not found");
+    }
 
     let scoreObtained = 0;
     let correctCount = 0;
@@ -1279,6 +1398,8 @@ export const getAttemptResult = async (req, res) => {
       WHERE aa.attempt_id = $1
     `;
 
+    query += addScopeWhere(req, "a", params);
+
     if (roleId === 4) {
       params.push(userId);
       query += ` AND aa.user_id = $${params.length}`;
@@ -1294,7 +1415,7 @@ export const getAttemptResult = async (req, res) => {
     }
 
     const answersResult = await db.query(
-  `
+      `
   SELECT 
     ans.*,
     q.question_text,
@@ -1319,8 +1440,8 @@ export const getAttemptResult = async (req, res) => {
   GROUP BY ans.answer_id, q.question_id, opt.option_text
   ORDER BY q.question_order ASC
   `,
-  [attemptId]
-);
+      [attemptId]
+    );
 
     return res.json({
       success: true,
@@ -1344,22 +1465,26 @@ export const getMyResults = async (req, res) => {
   try {
     const userId = getUserId(req);
 
-    const result = await db.query(
-      `
-      SELECT 
-        aa.*,
-        a.title,
-        a.assessment_type,
-        a.difficulty_level,
-        a.passing_percentage,
-        a.total_marks
-      FROM assessment_attempts aa
-      JOIN assessments a ON a.assessment_id = aa.assessment_id
-      WHERE aa.user_id = $1
-      ORDER BY aa.created_at DESC
-      `,
-      [userId]
-    );
+    const params = [userId];
+
+    let query = `
+  SELECT 
+    aa.*,
+    a.title,
+    a.assessment_type,
+    a.difficulty_level,
+    a.passing_percentage,
+    a.total_marks
+  FROM assessment_attempts aa
+  JOIN assessments a ON a.assessment_id = aa.assessment_id
+  WHERE aa.user_id = $1
+`;
+
+    query += addScopeWhere(req, "a", params);
+
+    query += ` ORDER BY aa.created_at DESC`;
+
+    const result = await db.query(query, params);
 
     return res.json({
       success: true,
@@ -1380,6 +1505,15 @@ export const getMyResults = async (req, res) => {
 export const getAssessmentAnalytics = async (req, res) => {
   try {
     const { assessmentId } = req.params;
+
+    const allowed = await checkAssessmentScope(req, assessmentId);
+
+    if (!allowed) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
 
     const overviewResult = await db.query(
       `
