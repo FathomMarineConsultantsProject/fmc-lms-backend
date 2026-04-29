@@ -41,13 +41,19 @@ function getCreateScope(req) {
 function addScopeWhere(req, alias, params, options = {}) {
   const roleId = getRoleId(req);
   const publishedOnly = options.publishedOnly || false;
+  const includeGlobal = options.includeGlobal || false;
 
   if (roleId === 1) return "";
 
   let sql = "";
 
   params.push(req.user.company_id);
-  sql += ` AND ${alias}.company_id = $${params.length}`;
+
+  if (includeGlobal) {
+    sql += ` AND (${alias}.company_id = $${params.length} OR ${alias}.company_id IS NULL)`;
+  } else {
+    sql += ` AND ${alias}.company_id = $${params.length}`;
+  }
 
   if (roleId === 3 || roleId === 4) {
     params.push(req.user.ship_id);
@@ -61,7 +67,7 @@ function addScopeWhere(req, alias, params, options = {}) {
   return sql;
 }
 
-async function checkCourseScope(req, courseId, client = db) {
+async function checkCourseScope(req, courseId, client = db, options = {}) {
   const params = [courseId];
 
   let query = `
@@ -71,7 +77,7 @@ async function checkCourseScope(req, courseId, client = db) {
       AND c.deleted_at IS NULL
   `;
 
-  query += addScopeWhere(req, "c", params);
+  query += addScopeWhere(req, "c", params, options);
 
   const result = await client.query(query, params);
   return result.rowCount > 0;
@@ -539,7 +545,7 @@ export async function getCourses(req, res) {
       WHERE c.deleted_at IS NULL
     `;
 
-    query += addScopeWhere(req, "c", params);
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
 
     query += `
       GROUP BY c.id
@@ -578,7 +584,7 @@ export async function getCourseById(req, res) {
         AND c.deleted_at IS NULL
     `;
 
-    checkQuery += addScopeWhere(req, "c", params);
+    checkQuery += addScopeWhere(req, "c", params, { includeGlobal: true });
 
     const check = await db.query(checkQuery, params);
 
@@ -629,7 +635,7 @@ export async function getCoursesByUserId(req, res) {
         AND c.deleted_at IS NULL
     `;
 
-    query += addScopeWhere(req, "c", params);
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
 
     query += `
       GROUP BY
@@ -1067,7 +1073,7 @@ export async function getCourseContentMediaSignedUrl(req, res) {
         AND c.deleted_at IS NULL
     `;
 
-    query += addScopeWhere(req, "c", params);
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
 
     query += ` LIMIT 1`;
 
@@ -1199,7 +1205,7 @@ export async function getCourseContentById(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
-    const allowed = await checkCourseScope(req, courseId);
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1246,7 +1252,7 @@ export async function getCourseContentMedia(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
-    const allowed = await checkCourseScope(req, courseId);
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1470,7 +1476,7 @@ export async function updateCourseContent(req, res) {
       return res.status(400).json({ message: "Invalid content id" });
     }
 
-    const allowed = await checkCourseScope(req, courseId);
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1536,7 +1542,7 @@ export async function getCourseContentMediaById(req, res) {
       return res.status(400).json({ message: "Invalid media file id" });
     }
 
-    const allowed = await checkCourseScope(req, courseId);
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1773,7 +1779,7 @@ export async function completeCourseByLoggedInUser(req, res) {
       [courseId]
     );
 
-    const allowed = await checkCourseScope(req, courseId, client);
+    const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1874,7 +1880,7 @@ export async function getMyCourseCompletionStatus(req, res) {
       return res.status(400).json({ message: "Invalid course id" });
     }
 
-    const allowed = await checkCourseScope(req, courseId);
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({ message: "Course not found" });
@@ -1960,7 +1966,7 @@ export async function getMyCompletedCourses(req, res) {
         AND c.deleted_at IS NULL
     `;
 
-    query += addScopeWhere(req, "c", params);
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
 
     query += `
       ORDER BY ce.completed_at DESC NULLS LAST, ce.enrolled_at DESC
