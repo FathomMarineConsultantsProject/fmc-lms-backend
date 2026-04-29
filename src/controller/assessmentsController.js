@@ -31,13 +31,19 @@ function getCreateScope(req) {
 function addScopeWhere(req, alias, params, options = {}) {
   const roleId = getRoleId(req);
   const publishedOnly = options.publishedOnly || false;
+  const includeGlobal = options.includeGlobal || false;
 
   if (roleId === 1) return "";
 
   let sql = "";
 
   params.push(req.user.company_id);
-  sql += ` AND ${alias}.company_id = $${params.length}`;
+
+  if (includeGlobal) {
+    sql += ` AND (${alias}.company_id = $${params.length} OR ${alias}.company_id IS NULL)`;
+  } else {
+    sql += ` AND ${alias}.company_id = $${params.length}`;
+  }
 
   if (roleId === 3 || roleId === 4) {
     params.push(req.user.ship_id);
@@ -51,7 +57,7 @@ function addScopeWhere(req, alias, params, options = {}) {
   return sql;
 }
 
-async function checkAssessmentScope(req, assessmentId, client = db) {
+async function checkAssessmentScope(req, assessmentId, client = db, options = {}) {
   const params = [assessmentId];
 
   let query = `
@@ -61,7 +67,7 @@ async function checkAssessmentScope(req, assessmentId, client = db) {
       AND a.is_deleted = false
   `;
 
-  query += addScopeWhere(req, "a", params);
+  query += addScopeWhere(req, "a", params, options);
 
   const result = await client.query(query, params);
   return result.rowCount > 0;
@@ -312,28 +318,10 @@ export const getAssessments = async (req, res) => {
 
     const params = [];
 
-    if (roleId === 2) {
-      params.push(user.company_id);
-      query += ` AND a.company_id = $${params.length}`;
-    }
-
-    if (roleId === 3) {
-      params.push(user.company_id);
-      query += ` AND a.company_id = $${params.length}`;
-
-      params.push(user.ship_id);
-      query += ` AND (a.ship_id = $${params.length} OR a.ship_id IS NULL)`;
-    }
-
-    if (roleId === 4) {
-      params.push(user.company_id);
-      query += ` AND a.company_id = $${params.length}`;
-
-      params.push(user.ship_id);
-      query += ` AND (a.ship_id = $${params.length} OR a.ship_id IS NULL)`;
-
-      query += ` AND a.is_published = true`;
-    }
+    query += addScopeWhere(req, "a", params, {
+      includeGlobal: true,
+      publishedOnly: true,
+    });
 
     query += `
       GROUP BY a.assessment_id
@@ -364,7 +352,7 @@ export const getAssessmentById = async (req, res) => {
     const roleId = getRoleId(req);
     const user = req.user;
 
-    const allowed = await checkAssessmentScope(req, assessmentId);
+    const allowed = await checkAssessmentScope(req, assessmentId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({
@@ -1031,14 +1019,17 @@ export const startAssessment = async (req, res) => {
     const params = [assessmentId];
 
     let query = `
-  SELECT *
-  FROM assessments a
-  WHERE a.assessment_id = $1
-    AND a.is_deleted = false
-    AND a.is_published = true
-`;
+      SELECT *
+      FROM assessments a
+      WHERE a.assessment_id = $1
+        AND a.is_deleted = false
+        AND a.is_published = true
+    `;
 
-    query += addScopeWhere(req, "a", params);
+    query += addScopeWhere(req, "a", params, {
+      includeGlobal: true,
+      publishedOnly: true,
+    });
 
     const assessmentResult = await db.query(query, params);
 
@@ -1169,7 +1160,7 @@ export const submitAssessment = async (req, res) => {
 
     const attempt = attemptResult.rows[0];
 
-    const allowed = await checkAssessmentScope(req, attempt.assessment_id, client);
+    const allowed = await checkAssessmentScope(req, attempt.assessment_id, client, { includeGlobal: true });
 
     if (!allowed) {
       throw new Error("Assessment not found");
@@ -1398,7 +1389,7 @@ export const getAttemptResult = async (req, res) => {
       WHERE aa.attempt_id = $1
     `;
 
-    query += addScopeWhere(req, "a", params);
+    query += addScopeWhere(req, "a", params, { includeGlobal: true });
 
     if (roleId === 4) {
       params.push(userId);
@@ -1480,7 +1471,7 @@ export const getMyResults = async (req, res) => {
   WHERE aa.user_id = $1
 `;
 
-    query += addScopeWhere(req, "a", params);
+    query += addScopeWhere(req, "a", params, { includeGlobal: true });
 
     query += ` ORDER BY aa.created_at DESC`;
 
@@ -1506,7 +1497,7 @@ export const getAssessmentAnalytics = async (req, res) => {
   try {
     const { assessmentId } = req.params;
 
-    const allowed = await checkAssessmentScope(req, assessmentId);
+    const allowed = await checkAssessmentScope(req, assessmentId, db, { includeGlobal: true });
 
     if (!allowed) {
       return res.status(404).json({
