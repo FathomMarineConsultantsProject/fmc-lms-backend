@@ -1562,14 +1562,31 @@ export const getAssessmentAnalytics = async (req, res) => {
   }
 };
 
+// ======================== CREATE ASSESSMENT FROM EXCEL =================
 
-// ======================== UPLOAD ASSESSMENT FROM EXCEL =================
-
-export const uploadAssessmentExcel = async (req, res) => {
+export const createAssessmentFromExcel = async (req, res) => {
   const client = await db.connect();
 
   try {
-    const { assessmentId } = req.params;
+    const userId = getUserId(req);
+
+    const {
+      title,
+      description,
+      assessment_type,
+      category,
+      difficulty_level,
+      passing_percentage,
+      duration_minutes,
+      instructions,
+      is_published,
+      allow_multiple_attempts,
+      max_attempts,
+      randomize_questions,
+      show_result_immediately,
+      company_id,
+      ship_id,
+    } = req.body;
 
     if (!req.file) {
       return res.status(400).json({
@@ -1578,36 +1595,34 @@ export const uploadAssessmentExcel = async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
-
-    // get assessment
-    const assessmentResult = await client.query(
-      `SELECT * FROM assessments WHERE assessment_id = $1 AND is_deleted = false`,
-      [assessmentId]
-    );
-
-    if (assessmentResult.rows.length === 0) {
-      throw new Error("Assessment not found");
+    if (!title || !assessment_type) {
+      return res.status(400).json({
+        success: false,
+        message: "title and assessment_type are required",
+      });
     }
 
-    const assessment = assessmentResult.rows[0];
+    if (!ASSESSMENT_TYPES.includes(assessment_type)) {
+      return res.status(400).json({
+        success: false,
+        message: "assessment_type must be mcq_single, mcq_multiple or subjective",
+      });
+    }
 
-    // parse excel
     const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = xlsx.utils.sheet_to_json(sheet);
 
     if (!rows.length) {
-      throw new Error("Excel is empty");
+      return res.status(400).json({
+        success: false,
+        message: "Excel is empty",
+      });
     }
 
-    let totalMarks = 0;
+    await client.query("BEGIN");
 
-    // delete old questions (same logic you fixed)
-    await client.query(
-      `DELETE FROM assessment_questions WHERE assessment_id = $1`,
-      [assessmentId]
-    );
+    let totalMarks = 0;
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
@@ -1619,7 +1634,104 @@ export const uploadAssessmentExcel = async (req, res) => {
         throw new Error(`Row ${i + 1}: question is required`);
       }
 
+      if (!marks || marks <= 0) {
+        throw new Error(`Row ${i + 1}: total marks must be greater than 0`);
+      }
+
       totalMarks += marks;
+
+      if (MCQ_TYPES.includes(assessment_type)) {
+        const options = [
+          row["option 1"],
+          row["option 2"],
+          row["option 3"],
+          row["option 4"],
+        ].filter(Boolean);
+
+        if (options.length < 2) {
+          throw new Error(`Row ${i + 1}: at least 2 options required`);
+        }
+
+        const correctRaw = String(row["correct options"] || "")
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean);
+
+        const correctIndexes = correctRaw.map((v) => Number(v) - 1);
+
+        if (correctIndexes.some((idx) => Number.isNaN(idx) || idx < 0 || idx >= options.length)) {
+          throw new Error(`Row ${i + 1}: correct options must be valid option numbers`);
+        }
+
+        if (assessment_type === "mcq_single" && correctIndexes.length !== 1) {
+          throw new Error(`Row ${i + 1}: mcq_single must have exactly 1 correct option`);
+        }
+
+        if (assessment_type === "mcq_multiple" && correctIndexes.length < 1) {
+          throw new Error(`Row ${i + 1}: mcq_multiple needs at least 1 correct option`);
+        }
+      }
+    }
+
+    const scope = getCreateScope(req);
+
+    const assessmentResult = await client.query(
+      `
+      INSERT INTO assessments (
+        title,
+        description,
+        assessment_type,
+        category,
+        difficulty_level,
+        passing_percentage,
+        duration_minutes,
+        total_marks,
+        instructions,
+        is_published,
+        allow_multiple_attempts,
+        max_attempts,
+        randomize_questions,
+        show_result_immediately,
+        company_id,
+        ship_id,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+        $11,$12,$13,$14,$15,$16,$17,$18
+      )
+      RETURNING *
+      `,
+      [
+        title,
+        description || null,
+        assessment_type,
+        category || null,
+        difficulty_level || null,
+        passing_percentage || 0,
+        duration_minutes || null,
+        totalMarks,
+        instructions || null,
+        normalizeBool(is_published === "true" || is_published === true, false),
+        normalizeBool(allow_multiple_attempts === "true" || allow_multiple_attempts === true, false),
+        max_attempts || 1,
+        normalizeBool(randomize_questions === "true" || randomize_questions === true, false),
+        normalizeBool(show_result_immediately === "true" || show_result_immediately === true, true),
+        scope.company_id,
+        scope.ship_id,
+        userId,
+        userId,
+      ]
+    );
+
+    const assessment = assessmentResult.rows[0];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      const questionText = row["question"];
+      const marks = Number(row["total marks"] || 1);
 
       const questionResult = await client.query(
         `
@@ -1634,18 +1746,17 @@ export const uploadAssessmentExcel = async (req, res) => {
         RETURNING *
         `,
         [
-          assessmentId,
+          assessment.assessment_id,
           questionText,
-          assessment.assessment_type,
+          assessment_type,
           marks,
-          i + 1,
+          Number(row["question no."] || i + 1),
         ]
       );
 
       const question = questionResult.rows[0];
 
-      // ================= MCQ =================
-      if (MCQ_TYPES.includes(assessment.assessment_type)) {
+      if (MCQ_TYPES.includes(assessment_type)) {
         const options = [
           row["option 1"],
           row["option 2"],
@@ -1653,23 +1764,11 @@ export const uploadAssessmentExcel = async (req, res) => {
           row["option 4"],
         ].filter(Boolean);
 
-        if (options.length < 2) {
-          throw new Error(`Row ${i + 1}: at least 2 options required`);
-        }
-
-        const correctRaw = String(row["correct options"] || "")
+        const correctIndexes = String(row["correct options"] || "")
           .split(",")
-          .map((v) => v.trim());
-
-        let correctIndexes = correctRaw.map((v) => Number(v) - 1);
-
-        if (assessment.assessment_type === "mcq_single" && correctIndexes.length !== 1) {
-          throw new Error(`Row ${i + 1}: mcq_single must have exactly 1 correct option`);
-        }
-
-        if (assessment.assessment_type === "mcq_multiple" && correctIndexes.length < 1) {
-          throw new Error(`Row ${i + 1}: mcq_multiple needs at least 1 correct`);
-        }
+          .map((v) => v.trim())
+          .filter(Boolean)
+          .map((v) => Number(v) - 1);
 
         for (let j = 0; j < options.length; j++) {
           await client.query(
@@ -1691,38 +1790,188 @@ export const uploadAssessmentExcel = async (req, res) => {
           );
         }
       }
-
-      // ================= SUBJECTIVE =================
-      if (assessment.assessment_type === "subjective") {
-        // no options needed
-      }
     }
-
-    await client.query(
-      `
-      UPDATE assessments
-      SET total_marks = $1,
-          updated_at = NOW()
-      WHERE assessment_id = $2
-      `,
-      [totalMarks, assessmentId]
-    );
 
     await client.query("COMMIT");
 
-    return res.json({
+    return res.status(201).json({
       success: true,
-      message: "Excel uploaded and questions created successfully",
+      message: "Assessment created from Excel successfully",
+      data: assessment,
     });
   } catch (error) {
     await client.query("ROLLBACK");
-    console.error("Excel upload error:", error);
+    console.error("Create assessment from Excel error:", error);
 
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message || "Failed to create assessment from Excel",
     });
   } finally {
     client.release();
   }
 };
+
+// ======================== UPLOAD ASSESSMENT FROM EXCEL =================
+
+// export const uploadAssessmentExcel = async (req, res) => {
+//   const client = await db.connect();
+
+//   try {
+//     const { assessmentId } = req.params;
+
+//     if (!req.file) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Excel file is required",
+//       });
+//     }
+
+//     await client.query("BEGIN");
+
+//     // get assessment
+//     const assessmentResult = await client.query(
+//       `SELECT * FROM assessments WHERE assessment_id = $1 AND is_deleted = false`,
+//       [assessmentId]
+//     );
+
+//     if (assessmentResult.rows.length === 0) {
+//       throw new Error("Assessment not found");
+//     }
+
+//     const assessment = assessmentResult.rows[0];
+
+//     // parse excel
+//     const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+//     const sheet = workbook.Sheets[workbook.SheetNames[0]];
+//     const rows = xlsx.utils.sheet_to_json(sheet);
+
+//     if (!rows.length) {
+//       throw new Error("Excel is empty");
+//     }
+
+//     let totalMarks = 0;
+
+//     // delete old questions (same logic you fixed)
+//     await client.query(
+//       `DELETE FROM assessment_questions WHERE assessment_id = $1`,
+//       [assessmentId]
+//     );
+
+//     for (let i = 0; i < rows.length; i++) {
+//       const row = rows[i];
+
+//       const questionText = row["question"];
+//       const marks = Number(row["total marks"] || 1);
+
+//       if (!questionText) {
+//         throw new Error(`Row ${i + 1}: question is required`);
+//       }
+
+//       totalMarks += marks;
+
+//       const questionResult = await client.query(
+//         `
+//         INSERT INTO assessment_questions (
+//           assessment_id,
+//           question_text,
+//           question_type,
+//           marks,
+//           question_order
+//         )
+//         VALUES ($1,$2,$3,$4,$5)
+//         RETURNING *
+//         `,
+//         [
+//           assessmentId,
+//           questionText,
+//           assessment.assessment_type,
+//           marks,
+//           i + 1,
+//         ]
+//       );
+
+//       const question = questionResult.rows[0];
+
+//       // ================= MCQ =================
+//       if (MCQ_TYPES.includes(assessment.assessment_type)) {
+//         const options = [
+//           row["option 1"],
+//           row["option 2"],
+//           row["option 3"],
+//           row["option 4"],
+//         ].filter(Boolean);
+
+//         if (options.length < 2) {
+//           throw new Error(`Row ${i + 1}: at least 2 options required`);
+//         }
+
+//         const correctRaw = String(row["correct options"] || "")
+//           .split(",")
+//           .map((v) => v.trim());
+
+//         let correctIndexes = correctRaw.map((v) => Number(v) - 1);
+
+//         if (assessment.assessment_type === "mcq_single" && correctIndexes.length !== 1) {
+//           throw new Error(`Row ${i + 1}: mcq_single must have exactly 1 correct option`);
+//         }
+
+//         if (assessment.assessment_type === "mcq_multiple" && correctIndexes.length < 1) {
+//           throw new Error(`Row ${i + 1}: mcq_multiple needs at least 1 correct`);
+//         }
+
+//         for (let j = 0; j < options.length; j++) {
+//           await client.query(
+//             `
+//             INSERT INTO assessment_options (
+//               question_id,
+//               option_text,
+//               is_correct,
+//               option_order
+//             )
+//             VALUES ($1,$2,$3,$4)
+//             `,
+//             [
+//               question.question_id,
+//               options[j],
+//               correctIndexes.includes(j),
+//               j + 1,
+//             ]
+//           );
+//         }
+//       }
+
+//       // ================= SUBJECTIVE =================
+//       if (assessment.assessment_type === "subjective") {
+//         // no options needed
+//       }
+//     }
+
+//     await client.query(
+//       `
+//       UPDATE assessments
+//       SET total_marks = $1,
+//           updated_at = NOW()
+//       WHERE assessment_id = $2
+//       `,
+//       [totalMarks, assessmentId]
+//     );
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       success: true,
+//       message: "Excel uploaded and questions created successfully",
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("Excel upload error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message,
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
