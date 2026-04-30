@@ -17,7 +17,7 @@ import {
   updateQuestionOptions,
   deleteQuestion,
   deleteOption,
-  // uploadAssessmentExcel,
+  uploadAssessmentExcel,
 createAssessmentFromExcel, 
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
@@ -40,12 +40,12 @@ router.post(
 );
 
 // ---------- OPTIONAL (existing assessment upload) ----------
-// router.post(
-//   "/:assessmentId/upload-excel",
-//   allowRoles(1, 2, 3),
-//   uploadExcel.single("file"),
-//   uploadAssessmentExcel
-// );
+router.post(
+  "/:assessmentId/upload-excel",
+  allowRoles(1, 2, 3),
+  uploadExcel.single("file"),
+  uploadAssessmentExcel
+);
 
 router.get("/", getAssessments);
 
