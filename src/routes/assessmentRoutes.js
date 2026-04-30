@@ -17,9 +17,8 @@ import {
   updateQuestionOptions,
   deleteQuestion,
   deleteOption,
-  uploadAssessmentExcel,
-  uploadAssessmentExcel,
-// createAssessmentFromExcel, 
+  // uploadAssessmentExcel,
+createAssessmentFromExcel, 
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -32,28 +31,21 @@ router.get("/attempts/:attemptId/result", getAttemptResult);
 
 router.post("/", allowRoles(1, 2, 3), createAssessment);
 
+// MAIN NEW API (IMPORTANT)
 router.post(
-  "/:assessmentId/upload-excel",
+  "/import-excel",
   allowRoles(1, 2, 3),
   uploadExcel.single("file"),
-  uploadAssessmentExcel
+  createAssessmentFromExcel
 );
 
-router.post("/", allowRoles(1, 2, 3), createAssessment);
-
+// ---------- OPTIONAL (existing assessment upload) ----------
 // router.post(
-//   "/import-excel",
+//   "/:assessmentId/upload-excel",
 //   allowRoles(1, 2, 3),
 //   uploadExcel.single("file"),
-//   createAssessmentFromExcel
+//   uploadAssessmentExcel
 // );
-
-router.post(
-  "/:assessmentId/upload-excel",
-  allowRoles(1, 2, 3),
-  uploadExcel.single("file"),
-  uploadAssessmentExcel
-);
 
 router.get("/", getAssessments);
 
