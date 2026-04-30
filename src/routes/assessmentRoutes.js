@@ -17,9 +17,13 @@ import {
   updateQuestionOptions,
   deleteQuestion,
   deleteOption,
+  uploadAssessmentExcel,
+  uploadAssessmentExcel,
+// createAssessmentFromExcel, 
 } from "../controller/assessmentsController.js";
+import { uploadExcel } from "../middleware/uploadExcel.js";
 
-const router = express.Router(); .0
+const router = express.Router();
 
 router.use(requireAuth);
 
@@ -27,6 +31,30 @@ router.get("/results/me", getMyResults);
 router.get("/attempts/:attemptId/result", getAttemptResult);
 
 router.post("/", allowRoles(1, 2, 3), createAssessment);
+
+router.post(
+  "/:assessmentId/upload-excel",
+  allowRoles(1, 2, 3),
+  uploadExcel.single("file"),
+  uploadAssessmentExcel
+);
+
+router.post("/", allowRoles(1, 2, 3), createAssessment);
+
+// router.post(
+//   "/import-excel",
+//   allowRoles(1, 2, 3),
+//   uploadExcel.single("file"),
+//   createAssessmentFromExcel
+// );
+
+router.post(
+  "/:assessmentId/upload-excel",
+  allowRoles(1, 2, 3),
+  uploadExcel.single("file"),
+  uploadAssessmentExcel
+);
+
 router.get("/", getAssessments);
 
 router.post("/:assessmentId/start", startAssessment);
