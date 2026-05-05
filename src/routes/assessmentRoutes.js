@@ -18,7 +18,9 @@ import {
   deleteQuestion,
   deleteOption,
   // uploadAssessmentExcel,
-createAssessmentFromExcel, 
+  createAssessmentFromExcel,
+  getUserResultsByRole,
+  getAnalyticsByRole,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -52,6 +54,18 @@ router.get("/", getAssessments);
 router.post("/:assessmentId/start", startAssessment);
 router.post("/:assessmentId/submit", submitAssessment);
 router.get("/:assessmentId/analytics", allowRoles(1, 2, 3), getAssessmentAnalytics);
+
+router.get(
+  "/results/users",
+  allowRoles(1, 2, 3, 4),
+  getUserResultsByRole
+);
+
+router.get(
+  "/analytics/users",
+  allowRoles(1, 2, 3, 4),
+  getAnalyticsByRole
+);
 
 router.get("/:assessmentId", getAssessmentById);
 router.put("/:assessmentId", allowRoles(1, 2, 3), updateAssessment);
