@@ -1975,3 +1975,208 @@ export const createAssessmentFromExcel = async (req, res) => {
 //     client.release();
 //   }
 // };
+
+// ================= USER RESULTS BY ROLE =================
+
+export const getUserResultsByRole = async (req, res) => {
+  try {
+    const roleId = getRoleId(req);
+    const userId = getUserId(req);
+
+    const params = [];
+
+    let query = `
+      SELECT
+        aa.attempt_id,
+        aa.assessment_id,
+        aa.user_id,
+        aa.status,
+        aa.score_obtained,
+        aa.percentage,
+        aa.is_passed,
+        aa.correct_answers_count,
+        aa.total_questions,
+        aa.attempt_number,
+        aa.started_at,
+        aa.submitted_at,
+        aa.created_at,
+
+        a.title AS assessment_title,
+        a.assessment_type,
+        a.category,
+        a.difficulty_level,
+        a.passing_percentage,
+        a.total_marks,
+
+        u.full_name,
+        u.email,
+        u.role_id,
+        u.company_id,
+        u.ship_id,
+
+        c.company_name,
+        s.ship_name
+
+      FROM assessment_attempts aa
+      JOIN assessments a ON a.assessment_id = aa.assessment_id
+      JOIN users u ON u.user_id = aa.user_id
+      LEFT JOIN company c ON c.company_id = u.company_id
+      LEFT JOIN ships s ON s.ship_id = u.ship_id
+      WHERE a.is_deleted = false
+    `;
+
+    if (roleId === 1) {
+      // superadmin sees all
+    } else if (roleId === 2) {
+      params.push(req.user.company_id);
+      query += ` AND u.company_id = $${params.length}`;
+    } else if (roleId === 3) {
+      params.push(req.user.company_id);
+      query += ` AND u.company_id = $${params.length}`;
+
+      params.push(req.user.ship_id);
+      query += ` AND u.ship_id = $${params.length}`;
+    } else {
+      params.push(userId);
+      query += ` AND aa.user_id = $${params.length}`;
+    }
+
+    query += `
+      ORDER BY aa.created_at DESC
+    `;
+
+    const result = await db.query(query, params);
+
+    return res.json({
+      success: true,
+      count: result.rows.length,
+      data: result.rows,
+    });
+  } catch (error) {
+    console.error("Get user results by role error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch user results",
+    });
+  }
+};
+
+// ================= ANALYTICS BY ROLE =================
+
+export const getAnalyticsByRole = async (req, res) => {
+  try {
+    const roleId = getRoleId(req);
+    const userId = getUserId(req);
+
+    const params = [];
+
+    let whereSql = `
+      WHERE a.is_deleted = false
+      AND aa.status IN ('submitted', 'evaluated')
+    `;
+
+    if (roleId === 1) {
+      // superadmin sees all
+    } else if (roleId === 2) {
+      params.push(req.user.company_id);
+      whereSql += ` AND u.company_id = $${params.length}`;
+    } else if (roleId === 3) {
+      params.push(req.user.company_id);
+      whereSql += ` AND u.company_id = $${params.length}`;
+
+      params.push(req.user.ship_id);
+      whereSql += ` AND u.ship_id = $${params.length}`;
+    } else {
+      params.push(userId);
+      whereSql += ` AND aa.user_id = $${params.length}`;
+    }
+
+    const overviewResult = await db.query(
+      `
+      SELECT
+        COUNT(*)::INTEGER AS total_attempts,
+        COUNT(DISTINCT aa.user_id)::INTEGER AS total_users,
+        COUNT(DISTINCT aa.assessment_id)::INTEGER AS total_assessments,
+        AVG(aa.percentage)::NUMERIC(5,2) AS average_percentage,
+        MAX(aa.percentage)::NUMERIC(5,2) AS highest_percentage,
+        MIN(aa.percentage)::NUMERIC(5,2) AS lowest_percentage,
+        COUNT(*) FILTER (WHERE aa.is_passed = true)::INTEGER AS passed_count,
+        COUNT(*) FILTER (WHERE aa.is_passed = false)::INTEGER AS failed_count,
+        COUNT(*) FILTER (WHERE aa.status = 'submitted')::INTEGER AS pending_review_count
+      FROM assessment_attempts aa
+      JOIN assessments a ON a.assessment_id = aa.assessment_id
+      JOIN users u ON u.user_id = aa.user_id
+      ${whereSql}
+      `,
+      params
+    );
+
+    const assessmentBreakdownResult = await db.query(
+      `
+      SELECT
+        a.assessment_id,
+        a.title,
+        a.assessment_type,
+        a.category,
+        COUNT(*)::INTEGER AS total_attempts,
+        COUNT(DISTINCT aa.user_id)::INTEGER AS unique_users,
+        AVG(aa.percentage)::NUMERIC(5,2) AS average_percentage,
+        COUNT(*) FILTER (WHERE aa.is_passed = true)::INTEGER AS passed_count,
+        COUNT(*) FILTER (WHERE aa.is_passed = false)::INTEGER AS failed_count,
+        COUNT(*) FILTER (WHERE aa.status = 'submitted')::INTEGER AS pending_review_count
+      FROM assessment_attempts aa
+      JOIN assessments a ON a.assessment_id = aa.assessment_id
+      JOIN users u ON u.user_id = aa.user_id
+      ${whereSql}
+      GROUP BY a.assessment_id
+      ORDER BY total_attempts DESC
+      `,
+      params
+    );
+
+    const userBreakdownResult = await db.query(
+      `
+      SELECT
+        u.user_id,
+        u.full_name,
+        u.email,
+        u.role_id,
+        u.company_id,
+        u.ship_id,
+        c.company_name,
+        s.ship_name,
+        COUNT(*)::INTEGER AS total_attempts,
+        AVG(aa.percentage)::NUMERIC(5,2) AS average_percentage,
+        COUNT(*) FILTER (WHERE aa.is_passed = true)::INTEGER AS passed_count,
+        COUNT(*) FILTER (WHERE aa.is_passed = false)::INTEGER AS failed_count,
+        COUNT(*) FILTER (WHERE aa.status = 'submitted')::INTEGER AS pending_review_count
+      FROM assessment_attempts aa
+      JOIN assessments a ON a.assessment_id = aa.assessment_id
+      JOIN users u ON u.user_id = aa.user_id
+      LEFT JOIN company c ON c.company_id = u.company_id
+      LEFT JOIN ships s ON s.ship_id = u.ship_id
+      ${whereSql}
+      GROUP BY u.user_id, c.company_name, s.ship_name
+      ORDER BY total_attempts DESC
+      `,
+      params
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        overview: overviewResult.rows[0],
+        assessment_breakdown: assessmentBreakdownResult.rows,
+        user_breakdown: userBreakdownResult.rows,
+      },
+    });
+  } catch (error) {
+    console.error("Get analytics by role error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch analytics",
+    });
+  }
+};
