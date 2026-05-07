@@ -2180,3 +2180,110 @@ export const getAnalyticsByRole = async (req, res) => {
     });
   }
 };
+
+// ================= GET ASSESSMENT QUESTIONS =================
+
+export const getAssessmentQuestions = async (req, res) => {
+  try {
+    const { assessmentId } = req.params;
+
+    const allowed = await checkAssessmentScope(
+      req,
+      assessmentId,
+      db,
+      { includeGlobal: true }
+    );
+
+    if (!allowed) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
+
+    const assessmentResult = await db.query(
+      `
+      SELECT
+        assessment_id,
+        title,
+        assessment_type,
+        duration_minutes,
+        instructions,
+        randomize_questions
+      FROM assessments
+      WHERE assessment_id = $1
+      AND is_deleted = false
+      `,
+      [assessmentId]
+    );
+
+    if (assessmentResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
+
+    const assessment = assessmentResult.rows[0];
+
+    const questionsResult = await db.query(
+      `
+      SELECT
+        question_id,
+        question_text,
+        question_type,
+        marks,
+        question_order,
+        is_required
+      FROM assessment_questions
+      WHERE assessment_id = $1
+      AND is_deleted = false
+      ORDER BY question_order ASC
+      `,
+      [assessmentId]
+    );
+
+    const questions = [];
+
+    for (const q of questionsResult.rows) {
+      let options = [];
+
+      if (MCQ_TYPES.includes(q.question_type)) {
+        const optionsResult = await db.query(
+          `
+          SELECT
+            option_id,
+            option_text,
+            option_order
+          FROM assessment_options
+          WHERE question_id = $1
+          ORDER BY option_order ASC
+          `,
+          [q.question_id]
+        );
+
+        options = optionsResult.rows;
+      }
+
+      questions.push({
+        ...q,
+        options,
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        assessment,
+        questions,
+      },
+    });
+  } catch (error) {
+    console.error("Get assessment questions error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch questions",
+    });
+  }
+};

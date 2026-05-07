@@ -21,6 +21,7 @@ import {
   createAssessmentFromExcel,
   getUserResultsByRole,
   getAnalyticsByRole,
+  getAssessmentQuestions,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -66,6 +67,11 @@ router.get(
   allowRoles(1, 2, 3, 4),
   getAnalyticsByRole
 );
+
+router.get(
+  "/:assessmentId/questions",
+  getAssessmentQuestions
+); 
 
 router.get("/:assessmentId", getAssessmentById);
 router.put("/:assessmentId", allowRoles(1, 2, 3), updateAssessment);
