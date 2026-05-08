@@ -1,14 +1,13 @@
 // src/controller/incidentsController.js
 import { db } from "../db.js";
+import validator from "validator";
 
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
 const ROLE_SUBADMIN = 3;
 const ROLE_CREW = 4;
 
-const isUuid = (v) =>
-  typeof v === "string" &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(v);
+const isUuid = (v) => validator.isUUID(v + "");
 
 const buildIncidentListQuery = (user) => {
   const { role_id, company_id, ship_id } = user;
