@@ -1,5 +1,5 @@
 // src/controller/incidentsController.js
-import { db } from '../db.js';
+import { db } from "../db.js";
 
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
@@ -7,11 +7,11 @@ const ROLE_SUBADMIN = 3;
 const ROLE_CREW = 4;
 
 const isUuid = (v) =>
-  typeof v === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(v);
 
 const buildIncidentListQuery = (user) => {
-  const { role_id, company_id, ship_id, user_id } = user;
+  const { role_id, company_id, ship_id } = user;
 
   if (role_id === ROLE_SUPERADMIN) {
     return {
@@ -38,142 +38,101 @@ const buildIncidentListQuery = (user) => {
     };
   }
 
-  if (role_id === ROLE_SUBADMIN) {
-    return {
-      text: `
-        SELECT *
-        FROM incident_reports
-        WHERE is_deleted IS NOT TRUE
-          AND company_id = $1
-          AND ship_id = $2
-        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
-      `,
-      values: [company_id, ship_id],
-    };
-  }
-
-  // role4 crew
   return {
     text: `
       SELECT *
       FROM incident_reports
       WHERE is_deleted IS NOT TRUE
-        AND (
-          reported_by_user_id = $1
-          OR (
-            ship_id = $2
-            AND visible_to_ship_only IS TRUE
-          )
-          OR (
-            company_id = $3
-            AND (visible_to_ship_only IS NOT TRUE)
-          )
-        )
+        AND company_id = $1
+        AND ship_id = $2
       ORDER BY occurred_at DESC NULLS LAST, created_at DESC
     `,
-    values: [user_id, ship_id, company_id],
+    values: [company_id, ship_id],
   };
 };
 
-const canSeeIncident = (user, incident) => {
-  const { role_id, company_id, ship_id, user_id } = user;
+const canAccessIncident = (user, incident) => {
+  if (user.role_id === ROLE_SUPERADMIN) return true;
 
-  if (role_id === ROLE_SUPERADMIN) return true;
-
-  if (role_id === ROLE_ADMIN) {
-    return String(incident.company_id) === String(company_id);
+  if (user.role_id === ROLE_ADMIN) {
+    return String(incident.company_id) === String(user.company_id);
   }
 
-  if (role_id === ROLE_SUBADMIN) {
-    return (
-      String(incident.company_id) === String(company_id) &&
-      Number(incident.ship_id) === Number(ship_id)
-    );
-  }
-
-  // crew
-  if (Number(incident.reported_by_user_id) === Number(user_id)) return true;
-
-  if (Number(incident.ship_id) === Number(ship_id) && incident.visible_to_ship_only === true) {
-    return true;
-  }
-
-  if (String(incident.company_id) === String(company_id) && incident.visible_to_ship_only !== true) {
-    return true;
-  }
-
-  return false;
+  return (
+    String(incident.company_id) === String(user.company_id) &&
+    Number(incident.ship_id) === Number(user.ship_id)
+  );
 };
 
-// Rules applied
+const canModifyIncident = (user, incident) => {
+  if (!canAccessIncident(user, incident)) return false;
 
-// Role 1: all incidents
+  if (user.role_id === ROLE_CREW) {
+    return Number(incident.reported_by_user_id) === Number(user.user_id);
+  }
 
-// Role 2: incidents where company_id = req.user.company_id
+  return true;
+};
 
-// Role 3: incidents where company_id = req.user.company_id AND ship_id = req.user.ship_id
-
-// Role 4 (crew):
-
-// can see:
-
-// same ship incidents with visible_to_ship_only=true
-
-// same company incidents with visible_to_ship_only=false
-
-// their own reported incidents always
-
-// can create incidents (forced reported_by_user_id = req.user.user_id)
-
-// can update/delete only their own incidents
-
-// GET /incidents
 export const getAllIncidents = async (req, res) => {
   try {
     const q = buildIncidentListQuery(req.user);
     const { rows } = await db.query(q.text, q.values);
     res.json(rows);
   } catch (err) {
-    console.error('Error getting incidents:', err);
-    res.status(500).json({ error: 'Failed to fetch incidents' });
+    console.error("Error getting incidents:", err);
+    res.status(500).json({ error: "Failed to fetch incidents" });
   }
 };
 
-// GET /incidents/:id
 export const getIncidentById = async (req, res) => {
   const incidentId = req.params.id;
-  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: "incident_id must be a UUID" });
+  }
 
   try {
     const { rows } = await db.query(
-      `SELECT * FROM incident_reports
-       WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      `
+      SELECT *
+      FROM incident_reports
+      WHERE incident_id = $1
+        AND is_deleted IS NOT TRUE
+      `,
       [incidentId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Incident not found' });
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Incident not found" });
+    }
 
     const incident = rows[0];
-    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
+
+    if (!canAccessIncident(req.user, incident)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     res.json(incident);
   } catch (err) {
-    console.error('Error getting incident:', err);
-    res.status(500).json({ error: 'Failed to fetch incident' });
+    console.error("Error getting incident:", err);
+    res.status(500).json({ error: "Failed to fetch incident" });
   }
 };
 
-// POST /incidents
 export const createIncident = async (req, res) => {
   const {
     ship_id,
-    company_id,
     visible_to_ship_only,
     title,
     description,
     incident_type,
     severity,
+    priority,
     location_on_ship,
+    immediate_action,
     root_cause,
+    lesson_learned,
     corrective_action,
     preventive_action,
     status,
@@ -184,63 +143,79 @@ export const createIncident = async (req, res) => {
   } = req.body;
 
   const shipId = parseInt(ship_id, 10);
-  if (Number.isNaN(shipId)) return res.status(400).json({ error: 'ship_id must be a number' });
-  if (!title) return res.status(400).json({ error: 'title is required' });
+
+  if (Number.isNaN(shipId)) {
+    return res.status(400).json({ error: "ship_id must be a number" });
+  }
+
+  if (!title?.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
 
   const { role_id, company_id: myCompanyId, ship_id: myShipId, user_id: myUserId } = req.user;
 
   try {
-    // ship must exist
-    const shipRes = await db.query(`SELECT ship_id, company_id FROM ships WHERE ship_id = $1`, [shipId]);
-    if (!shipRes.rows.length) return res.status(404).json({ error: 'Ship not found' });
+    const shipRes = await db.query(
+      `SELECT ship_id, company_id FROM ships WHERE ship_id = $1`,
+      [shipId]
+    );
+
+    if (!shipRes.rows.length) {
+      return res.status(404).json({ error: "Ship not found" });
+    }
 
     const shipCompanyId = shipRes.rows[0].company_id;
-    const finalCompanyId = company_id ? String(company_id) : String(shipCompanyId);
 
-    if (String(finalCompanyId) !== String(shipCompanyId)) {
-      return res.status(400).json({ error: 'company_id mismatch with ship.company_id' });
+    if (role_id === ROLE_ADMIN && String(shipCompanyId) !== String(myCompanyId)) {
+      return res.status(403).json({ error: "Forbidden: ship is outside your company" });
     }
 
-    // scope rules
-    if (role_id === ROLE_ADMIN) {
-      if (String(finalCompanyId) !== String(myCompanyId)) {
-        return res.status(403).json({ error: 'Forbidden (company scope)' });
-      }
+    if (
+      (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) &&
+      (String(shipCompanyId) !== String(myCompanyId) || Number(shipId) !== Number(myShipId))
+    ) {
+      return res.status(403).json({ error: "Forbidden: ship is outside your scope" });
     }
 
-    if (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) {
-      if (String(finalCompanyId) !== String(myCompanyId) || Number(shipId) !== Number(myShipId)) {
-        return res.status(403).json({ error: 'Forbidden (ship scope)' });
-      }
-    }
-
-    // reporter forced for everyone except superadmin (superadmin may specify)
-    const reporterId =
-      role_id === ROLE_SUPERADMIN && req.body.reported_by_user_id
-        ? parseInt(req.body.reported_by_user_id, 10)
-        : myUserId;
+    const reporterId = myUserId;
 
     const { rows } = await db.query(
       `
       INSERT INTO incident_reports (
-        ship_id, company_id, reported_by_user_id,
-        visible_to_ship_only, title, description,
-        incident_type, severity, location_on_ship,
-        root_cause, corrective_action, preventive_action,
-        status, occurred_at, reported_at, closed_at,
-        reference_code, is_deleted, created_at, updated_at
+        ship_id,
+        company_id,
+        reported_by_user_id,
+        visible_to_ship_only,
+        title,
+        description,
+        incident_type,
+        severity,
+        priority,
+        location_on_ship,
+        immediate_action,
+        root_cause,
+        lesson_learned,
+        corrective_action,
+        preventive_action,
+        status,
+        occurred_at,
+        reported_at,
+        closed_at,
+        reference_code,
+        is_deleted,
+        created_at,
+        updated_at
       )
       VALUES (
         $1, $2, $3,
-        COALESCE($4, false),
-        $5, $6,
-        $7, $8, $9,
-        $10, $11, $12,
-        COALESCE($13, 'Reported'),
-        $14,
-        COALESCE($15, NOW()),
-        $16,
+        COALESCE($4, true),
+        $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15,
+        COALESCE($16, 'Reported'),
         $17,
+        COALESCE($18, NOW()),
+        $19,
+        $20,
         false,
         NOW(),
         NOW()
@@ -249,15 +224,18 @@ export const createIncident = async (req, res) => {
       `,
       [
         shipId,
-        finalCompanyId,
+        shipCompanyId,
         reporterId,
         visible_to_ship_only,
-        title,
+        title.trim(),
         description || null,
         incident_type || null,
         severity || null,
+        priority || null,
         location_on_ship || null,
+        immediate_action || null,
         root_cause || null,
+        lesson_learned || null,
         corrective_action || null,
         preventive_action || null,
         status || null,
@@ -270,52 +248,43 @@ export const createIncident = async (req, res) => {
 
     res.status(201).json(rows[0]);
   } catch (err) {
-    console.error('Error creating incident:', err);
-    if (err.code === '23503') {
-      return res.status(400).json({ error: 'Foreign key constraint failed' });
-    }
-    res.status(500).json({ error: 'Failed to create incident' });
+    console.error("Error creating incident:", err);
+    res.status(500).json({ error: "Failed to create incident" });
   }
 };
 
-// PUT /incidents/:id
 export const updateIncident = async (req, res) => {
   const incidentId = req.params.id;
-  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: "incident_id must be a UUID" });
+  }
 
   try {
     const currentRes = await db.query(
-      `SELECT * FROM incident_reports WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      `
+      SELECT *
+      FROM incident_reports
+      WHERE incident_id = $1
+        AND is_deleted IS NOT TRUE
+      `,
       [incidentId]
     );
-    if (!currentRes.rows.length) return res.status(404).json({ error: 'Incident not found' });
+
+    if (!currentRes.rows.length) {
+      return res.status(404).json({ error: "Incident not found" });
+    }
 
     const incident = currentRes.rows[0];
 
-    // authorize
-    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
-
-    // crew can only update their own reported incidents
-    if (req.user.role_id === ROLE_CREW && Number(incident.reported_by_user_id) !== Number(req.user.user_id)) {
-      return res.status(403).json({ error: 'Forbidden (only own incident)' });
+    if (!canModifyIncident(req.user, incident)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    // prevent lower roles from moving incident to other ship/company
-    const nextShipId = req.body.ship_id ? parseInt(req.body.ship_id, 10) : null;
-    const nextCompanyId = req.body.company_id ? String(req.body.company_id) : null;
-
-    if ((req.user.role_id === ROLE_ADMIN || req.user.role_id === ROLE_SUBADMIN || req.user.role_id === ROLE_CREW) &&
-        (nextShipId || nextCompanyId)) {
-      // they must remain in their scope
-      const mustCompany = String(req.user.company_id);
-      const mustShip = req.user.ship_id;
-
-      if (nextCompanyId && String(nextCompanyId) !== mustCompany) {
-        return res.status(403).json({ error: 'Forbidden (cannot change company_id)' });
-      }
-      if ((req.user.role_id === ROLE_SUBADMIN || req.user.role_id === ROLE_CREW) && nextShipId && Number(nextShipId) !== Number(mustShip)) {
-        return res.status(403).json({ error: 'Forbidden (cannot change ship_id)' });
-      }
+    if (req.body.ship_id || req.body.company_id || req.body.reported_by_user_id) {
+      return res.status(400).json({
+        error: "ship_id, company_id and reported_by_user_id cannot be changed",
+      });
     }
 
     const {
@@ -324,8 +293,11 @@ export const updateIncident = async (req, res) => {
       description,
       incident_type,
       severity,
+      priority,
       location_on_ship,
+      immediate_action,
       root_cause,
+      lesson_learned,
       corrective_action,
       preventive_action,
       status,
@@ -335,7 +307,7 @@ export const updateIncident = async (req, res) => {
       reference_code,
     } = req.body;
 
-    const { rowCount } = await db.query(
+    const { rows } = await db.query(
       `
       UPDATE incident_reports
       SET
@@ -344,26 +316,34 @@ export const updateIncident = async (req, res) => {
         description          = COALESCE($3, description),
         incident_type        = COALESCE($4, incident_type),
         severity             = COALESCE($5, severity),
-        location_on_ship     = COALESCE($6, location_on_ship),
-        root_cause           = COALESCE($7, root_cause),
-        corrective_action    = COALESCE($8, corrective_action),
-        preventive_action    = COALESCE($9, preventive_action),
-        status               = COALESCE($10, status),
-        occurred_at          = COALESCE($11, occurred_at),
-        reported_at          = COALESCE($12, reported_at),
-        closed_at            = COALESCE($13, closed_at),
-        reference_code       = COALESCE($14, reference_code),
+        priority             = COALESCE($6, priority),
+        location_on_ship     = COALESCE($7, location_on_ship),
+        immediate_action     = COALESCE($8, immediate_action),
+        root_cause           = COALESCE($9, root_cause),
+        lesson_learned       = COALESCE($10, lesson_learned),
+        corrective_action    = COALESCE($11, corrective_action),
+        preventive_action    = COALESCE($12, preventive_action),
+        status               = COALESCE($13, status),
+        occurred_at          = COALESCE($14, occurred_at),
+        reported_at          = COALESCE($15, reported_at),
+        closed_at            = COALESCE($16, closed_at),
+        reference_code       = COALESCE($17, reference_code),
         updated_at           = NOW()
-      WHERE incident_id = $15
+      WHERE incident_id = $18
+        AND is_deleted IS NOT TRUE
+      RETURNING *
       `,
       [
         visible_to_ship_only ?? null,
-        title ?? null,
+        title?.trim() || null,
         description ?? null,
         incident_type ?? null,
         severity ?? null,
+        priority ?? null,
         location_on_ship ?? null,
+        immediate_action ?? null,
         root_cause ?? null,
+        lesson_learned ?? null,
         corrective_action ?? null,
         preventive_action ?? null,
         status ?? null,
@@ -375,46 +355,54 @@ export const updateIncident = async (req, res) => {
       ]
     );
 
-    if (!rowCount) return res.status(404).json({ error: 'Incident not found' });
-    res.json({ message: 'Incident updated' });
+    res.json(rows[0]);
   } catch (err) {
-    console.error('Error updating incident:', err);
-    res.status(500).json({ error: 'Failed to update incident' });
+    console.error("Error updating incident:", err);
+    res.status(500).json({ error: "Failed to update incident" });
   }
 };
 
-// DELETE /incidents/:id (soft delete)
 export const deleteIncident = async (req, res) => {
   const incidentId = req.params.id;
-  if (!isUuid(incidentId)) return res.status(400).json({ error: 'incident_id must be a UUID' });
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: "incident_id must be a UUID" });
+  }
 
   try {
     const currentRes = await db.query(
-      `SELECT * FROM incident_reports WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      `
+      SELECT *
+      FROM incident_reports
+      WHERE incident_id = $1
+        AND is_deleted IS NOT TRUE
+      `,
       [incidentId]
     );
-    if (!currentRes.rows.length) return res.status(404).json({ error: 'Incident not found' });
+
+    if (!currentRes.rows.length) {
+      return res.status(404).json({ error: "Incident not found" });
+    }
 
     const incident = currentRes.rows[0];
 
-    if (!canSeeIncident(req.user, incident)) return res.status(403).json({ error: 'Forbidden' });
-
-    // crew can only delete their own incident
-    if (req.user.role_id === ROLE_CREW && Number(incident.reported_by_user_id) !== Number(req.user.user_id)) {
-      return res.status(403).json({ error: 'Forbidden (only own incident)' });
+    if (!canModifyIncident(req.user, incident)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { rowCount } = await db.query(
-      `UPDATE incident_reports
-       SET is_deleted = true, updated_at = NOW()
-       WHERE incident_id = $1`,
+    await db.query(
+      `
+      UPDATE incident_reports
+      SET is_deleted = true,
+          updated_at = NOW()
+      WHERE incident_id = $1
+      `,
       [incidentId]
     );
 
-    if (!rowCount) return res.status(404).json({ error: 'Incident not found' });
-    res.json({ message: 'Incident deleted (soft delete)' });
+    res.json({ message: "Incident deleted successfully" });
   } catch (err) {
-    console.error('Error deleting incident:', err);
-    res.status(500).json({ error: 'Failed to delete incident' });
+    console.error("Error deleting incident:", err);
+    res.status(500).json({ error: "Failed to delete incident" });
   }
 };
