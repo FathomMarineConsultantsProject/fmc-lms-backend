@@ -20,6 +20,7 @@ import { router as deviceRoutes } from "./routes/deviceRoutes.js";
 import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 import { router as integrationRoutes } from "./routes/integrationRoutes.js";
 import courseRoutes from "./routes/courseRoutes.js";
+import unityCourseRoutes from './routes/unityCourseRoutes.js';
 
 const app = express();
 
@@ -48,8 +49,20 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Activity-Key" , "X-Device-Key"],
-  optionsSuccessStatus: 204,
+  allowedHeaders: [
+  "Content-Type",
+  "Authorization",
+
+  // Existing activity/device API headers
+  "X-Activity-Key",
+  "ACTIVITY_API_KEY",
+  "X-Device-Key",
+
+  // Unity course progress API headers
+  "X-Unity-Course-Key",
+  "UNITY_COURSE_API_KEY",
+  "Unity-Course-API-Key",
+],
 };
 
 app.use(cors(corsOptions));
@@ -90,6 +103,19 @@ app.use("/api/users", userExportRoutes);
 app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
+
+/**
+ * Unity course progress APIs
+ *
+ * POST /unity-courses/progress/track
+ * - Unity app sends course progress here.
+ * - Protected by UNITY_COURSE_API_KEY.
+ *
+ * GET /unity-courses/progress
+ * - Dashboard/admin reads stored Unity course progress.
+ * - Protected by normal login token.
+ */
+app.use('/unity-courses', unityCourseRoutes);
 
 // ✅ CORS error handler MUST be after cors()
 app.use((err, req, res, next) => {
