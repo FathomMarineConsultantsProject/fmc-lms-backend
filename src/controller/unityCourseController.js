@@ -74,7 +74,25 @@ const parseUnityTimestamp = (value) => {
 
   const s = String(value).trim();
 
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2}):(\d{2})$/);
+  // Format 1: YYYY-MM-DD-HH
+  // Example: 2026-05-14-11
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const [, Y, M, D, h] = m;
+
+    return new Date(
+      Number(Y),
+      Number(M) - 1,
+      Number(D),
+      Number(h),
+      0,
+      0
+    );
+  }
+
+  // Format 2: YYYY-MM-DD-HH:mm
+  // Example: 2026-05-14-11:30
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2}):(\d{2})$/);
   if (m) {
     const [, Y, M, D, h, min] = m;
 
@@ -88,6 +106,8 @@ const parseUnityTimestamp = (value) => {
     );
   }
 
+  // Format 3: ISO string fallback
+  // Example: 2026-05-14T11:30:00Z
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
 
