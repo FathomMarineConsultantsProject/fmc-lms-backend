@@ -98,6 +98,9 @@ function validateCoursePayload(body, isUpdate = false) {
   const department = normalizeString(body.department);
   const predefined_course_title = normalizeString(body.predefined_course_title);
 
+  const ranks = Array.isArray(body.ranks) ? body.ranks : [];
+  const ship_types = Array.isArray(body.ship_types) ? body.ship_types : [];
+
   const content_mode = isUpdate
     ? (body.content_mode !== undefined ? normalizeString(body.content_mode) : undefined)
     : (normalizeString(body.content_mode) || "course");
@@ -168,6 +171,8 @@ function validateCoursePayload(body, isUpdate = false) {
       predefined_course_title,
       content_mode,
       contents,
+      ranks,
+      ship_types
     },
   };
 }
@@ -186,6 +191,8 @@ async function fetchCourseWithContents(courseId) {
   c.certificate_prefix,
   c.company_id,
   c.ship_id,
+  c.ranks,
+  c.ship_types,
   c.created_by,
   c.updated_by,
   c.created_at,
@@ -372,9 +379,11 @@ INSERT INTO courses (
   company_id,
   ship_id,
   created_by,
-  updated_by
+  updated_by,
+  ranks,
+  ship_types
 )
-VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $9)
+VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $9, $10, $11)
 RETURNING
   id,
   title,
@@ -402,6 +411,8 @@ RETURNING
         scope.company_id,
         scope.ship_id,
         authUserId,
+        payload.ranks,
+        payload.ship_types
       ]
     );
 
@@ -534,6 +545,8 @@ export async function getCourses(req, res) {
         c.certificate_prefix,
         c.company_id,
         c.ship_id,
+        c.ranks,
+        c.ship_types,
         c.created_by,
         c.updated_by,
         c.created_at,
@@ -623,6 +636,8 @@ export async function getCoursesByUserId(req, res) {
         c.status,
         c.content_mode,
         c.certificate_prefix,
+        c.ranks,
+        c.ship_types,
         ce.status AS enrollment_status,
         ce.enrolled_at,
         COUNT(cc.id)::int AS contents_count
@@ -716,7 +731,9 @@ export async function updateCourse(req, res) {
         END,
         content_mode = COALESCE($6, content_mode),
         updated_by = $7,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = CURRENT_TIMESTAMP,
+        ranks = COALESCE($9, ranks),
+        ship_types = COALESCE($10, ship_types)
       WHERE id = $8
       `,
       [
@@ -728,6 +745,8 @@ export async function updateCourse(req, res) {
         payload.content_mode,
         authUserId,
         courseId,
+        payload.ranks,
+        payload.ship_types
       ]
     );
 
@@ -1957,7 +1976,9 @@ export async function getMyCompletedCourses(req, res) {
         c.content_mode,
         c.certificate_prefix,
         c.company_id,
-        c.ship_id
+        c.ship_id,
+        c.ranks,
+        c.ship_types
       FROM course_enrollments ce
       JOIN courses c
         ON c.id = ce.course_id

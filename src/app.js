@@ -126,7 +126,7 @@ app.use((err, req, res, next) => {
 });
 
 export default app; // vercel important
-
+// const PORT = process.env.PORT || 4000;
 // app.listen(PORT, () => {
 //   console.log(`FMC backend listening on http://localhost:${PORT}`);
 // });
