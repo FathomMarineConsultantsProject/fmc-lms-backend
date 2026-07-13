@@ -7,6 +7,9 @@ import {
   createIncident,
   updateIncident,
   deleteIncident,
+  getRequestedTrainings,          
+  getRecentTrainingRequestCount,  
+  requestIncidentTraining
 } from "../controller/incidentsController.js";
 
 export const router = Router();
