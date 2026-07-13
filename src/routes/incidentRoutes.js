@@ -20,6 +20,19 @@ export const router = Router();
 
 router.use(requireAuth);
 
+//New incident training routes
+// Get all incidents that have a training requested (for dashboard notifications)
+router.get("/training-requests", getRequestedTrainings);
+
+
+//  Update an incident to flag it for training creation
+router.post("/:id/request-training", requestIncidentTraining);
+
+// count of recent trainings requested in last 7 days
+router.get("/training-requests/recent-count", getRecentTrainingRequestCount);
+//end
+
+
 /**
  * @openapi
  * /incidents:

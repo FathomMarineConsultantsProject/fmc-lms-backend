@@ -405,3 +405,120 @@ export const deleteIncident = async (req, res) => {
     res.status(500).json({ error: "Failed to delete incident" });
   }
 };
+
+//new incident training
+export const getRequestedTrainings = async (req, res) => {
+  const { role_id, company_id, ship_id } = req.user;
+
+  try {
+    let queryText = `
+      SELECT 
+        incident_id, 
+        title, 
+        severity, 
+        reference_code, 
+        training_request_type, 
+        training_requested_at 
+      FROM incident_reports
+      WHERE is_deleted IS NOT TRUE 
+        AND training_requested = true
+    `;
+    const queryValues = [];
+
+    // Apply role-based filtering matching your incident access logic
+    if (role_id === ROLE_ADMIN) {
+      queryText += ` AND company_id = $1`;
+      queryValues.push(company_id);
+    } else if (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) {
+      queryText += ` AND company_id = $1 AND ship_id = $2`;
+      queryValues.push(company_id, ship_id);
+    }
+
+    queryText += ` ORDER BY training_requested_at DESC`;
+
+    const { rows } = await db.query(queryText, queryValues);
+    res.json(rows);
+  } catch (err) {
+    console.error("Error fetching requested trainings:", err);
+    res.status(500).json({ error: "Failed to fetch requested trainings" });
+  }
+};
+
+export const getRecentTrainingRequestCount = async (req, res) => {
+  const { role_id, company_id, ship_id } = req.user;
+
+  try {
+    let queryText = `
+      SELECT COUNT(*)::int AS count
+      FROM incident_reports
+      WHERE is_deleted IS NOT TRUE
+        AND training_requested = true
+        AND training_requested_at >= NOW() - INTERVAL '7 days'
+    `;
+    const queryValues = [];
+
+    // Apply role-based filtering matching your incident access logic
+    if (role_id === ROLE_ADMIN) {
+      queryText += ` AND company_id = $1`;
+      queryValues.push(company_id);
+    } else if (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) {
+      queryText += ` AND company_id = $1 AND ship_id = $2`;
+      queryValues.push(company_id, ship_id);
+    }
+
+    const { rows } = await db.query(queryText, queryValues);
+    res.json({ count: rows[0].count });
+  } catch (err) {
+    console.error("Error fetching recent training request count:", err);
+    res.status(500).json({ error: "Failed to fetch count" });
+  }
+};
+
+export const requestIncidentTraining = async (req, res) => {
+  const incidentId = req.params.id;
+  const { training_type } = req.body; 
+
+  if (!isUuid(incidentId)) {
+    return res.status(400).json({ error: "incident_id must be a UUID" });
+  }
+
+  if (training_type && !Array.isArray(training_type)) {
+    return res.status(400).json({ error: "training_type must be an array of strings" });
+  }
+
+  try {
+    const currentRes = await db.query(
+      `SELECT * FROM incident_reports WHERE incident_id = $1 AND is_deleted IS NOT TRUE`,
+      [incidentId]
+    );
+
+    if (!currentRes.rows.length) {
+      return res.status(404).json({ error: "Incident not found" });
+    }
+
+    
+    // It allows Superadmins everything, but restricts normal users to their company/ship.
+    if (!canAccessIncident(req.user, currentRes.rows[0])) {
+      return res.status(403).json({ error: "Forbidden: You do not have access to this incident" });
+    }
+
+    const { rows } = await db.query(
+      `
+      UPDATE incident_reports
+      SET 
+        training_requested = true,
+        training_request_type = COALESCE($1, training_request_type),
+        training_requested_at = NOW(),
+        updated_at = NOW()
+      WHERE incident_id = $2
+      RETURNING *
+      `,
+      [training_type || null, incidentId]
+    );
+
+    res.json({ message: "Training requested successfully", incident: rows[0] });
+  } catch (err) {
+    console.error("Error requesting training:", err);
+    res.status(500).json({ error: "Failed to request training" });
+  }
+};
