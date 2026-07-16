@@ -274,18 +274,15 @@ export const updateIncident = async (req, res) => {
       return res.status(404).json({ error: "Incident not found" });
     }
 
-    const incident = currentRes.rows[0];
+    // const incident = currentRes.rows[0];
 
-    if (!canModifyIncident(req.user, incident)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
+    // if (!canModifyIncident(req.user, incident)) {
+    //   return res.status(403).json({ error: "Forbidden" });
     if (req.body.ship_id || req.body.company_id || req.body.reported_by_user_id) {
       return res.status(400).json({
         error: "ship_id, company_id and reported_by_user_id cannot be changed",
       });
     }
-
     const {
       visible_to_ship_only,
       title,
@@ -354,7 +351,7 @@ export const updateIncident = async (req, res) => {
       ]
     );
 
-    res.json(rows[0]);
+    res.json(rows[0]);   
   } catch (err) {
     console.error("Error updating incident:", err);
     res.status(500).json({ error: "Failed to update incident" });
@@ -363,6 +360,10 @@ export const updateIncident = async (req, res) => {
 
 export const deleteIncident = async (req, res) => {
   const incidentId = req.params.id;
+
+  if (req.user.role_id !== 1) {
+    return res.status(403).json({ error: "Forbidden: Only Superadmins can delete incidents." });
+  }
 
   if (!isUuid(incidentId)) {
     return res.status(400).json({ error: "incident_id must be a UUID" });
@@ -383,11 +384,11 @@ export const deleteIncident = async (req, res) => {
       return res.status(404).json({ error: "Incident not found" });
     }
 
-    const incident = currentRes.rows[0];
+    // const incident = currentRes.rows[0];
 
-    if (!canModifyIncident(req.user, incident)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    // if (!canModifyIncident(req.user, incident)) {
+    //   return res.status(403).json({ error: "Forbidden" });
+    //}
 
     await db.query(
       `
