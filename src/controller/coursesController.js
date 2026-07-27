@@ -2007,3 +2007,265 @@ export async function getMyCompletedCourses(req, res) {
     });
   }
 }
+
+
+//assign courses to users
+export async function assignCourseToUsers(req, res) {
+  const client = await db.connect();
+
+  try {
+    const roleId = getRoleId(req);
+
+    // 1. Authorization Check: Only role IDs 1 (Superadmin), 2 (Admin), and 3 (Subadmin) can assign
+    if (![1, 2, 3].includes(roleId)) {
+      return res.status(403).json({ 
+        message: "Forbidden: You do not have permission to assign courses." 
+      });
+    }
+
+    const courseId = Number(req.params.courseId);
+    const { targetUserIds } = req.body;
+    const assignerId = getAuthUserId(req);
+
+    // 2. Validation
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!Array.isArray(targetUserIds) || targetUserIds.length === 0) {
+      return res.status(400).json({ message: "targetUserIds must be a non-empty array" });
+    }
+
+    const validUserIds = targetUserIds.map(Number).filter(id => !Number.isNaN(id));
+    
+    if (validUserIds.length === 0) {
+      return res.status(400).json({ message: "No valid user IDs provided" });
+    }
+
+    // 3. Course Scope Check: Ensure the assigner has access to this course
+    const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
+    
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found or access denied" });
+    }
+
+    await client.query("BEGIN");
+
+    // 4. Existing Enrollment Check (Fetch the 'assigned' status too!)
+    const existingEnrollments = await client.query(
+      `
+      SELECT user_id, assigned 
+      FROM course_enrollments 
+      WHERE course_id = $1 AND user_id = ANY($2::int[])
+      `,
+      [courseId, validUserIds]
+    );
+
+    // Categorize our users
+    const existingRecords = existingEnrollments.rows;
+    
+    // Users who already have assigned = true
+    const alreadyAssignedIds = existingRecords.filter(r => r.assigned).map(r => r.user_id);
+    
+    // Users who have assigned = false (self-enrolled, need an upgrade)
+    const upgradeIds = existingRecords.filter(r => !r.assigned).map(r => r.user_id);
+    
+    // Users who have no record at all (need an insert)
+    const newInsertIds = validUserIds.filter(id => 
+      !alreadyAssignedIds.includes(id) && !upgradeIds.includes(id)
+    );
+
+    if (upgradeIds.length === 0 && newInsertIds.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ 
+        message: "All provided users are already assigned to this course.",
+        already_assigned: alreadyAssignedIds
+      });
+    }
+
+    const processedRecords = [];
+
+    // 5A. Database Update: Upgrade self-enrolled users to assigned
+    if (upgradeIds.length > 0) {
+      const updateResult = await client.query(
+        `
+        UPDATE course_enrollments
+        SET assigned = true, updated_at = NOW()
+        WHERE course_id = $1 AND user_id = ANY($2::int[])
+        RETURNING *
+        `,
+        [courseId, upgradeIds]
+      );
+      processedRecords.push(...updateResult.rows);
+    }
+
+    // 5B. Database Insert: Insert brand new assigned users
+    for (const userId of newInsertIds) {
+      const insertResult = await client.query(
+        `
+        INSERT INTO course_enrollments (
+          user_id,
+          course_id,
+          enrolled_by,
+          assigned,
+          status,
+          enrolled_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, true, 'enrolled', NOW(), NOW())
+        RETURNING *
+        `,
+        [userId, courseId, assignerId]
+      );
+      processedRecords.push(insertResult.rows[0]);
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      message: "Course successfully assigned to users",
+      new_assignments_count: newInsertIds.length,
+      upgraded_assignments_count: upgradeIds.length,
+      skipped_count: alreadyAssignedIds.length,
+      data: {
+        processed_users: processedRecords,
+        skipped_users: alreadyAssignedIds
+      },
+    });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("assignCourseToUsers error:", error);
+    return res.status(500).json({
+      message: "Failed to assign course to users",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// get my assigned course
+export async function getMyAssignedCourses(req, res) {
+  try {
+    const userId = getAuthUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const params = [userId];
+
+    let query = `
+      SELECT
+        ce.user_id,
+        ce.course_id,
+        ce.status,
+        ce.completion_status,
+        ce.assigned,
+        ce.enrolled_at,
+        ce.completed_at,
+        c.title,
+        c.description,
+        c.department,
+        c.predefined_course_title,
+        c.content_mode,
+        c.certificate_prefix,
+        c.company_id,
+        c.ship_id,
+        c.ranks,
+        c.ship_types
+      FROM course_enrollments ce
+      JOIN courses c
+        ON c.id = ce.course_id
+      WHERE ce.user_id = $1
+        AND ce.assigned = true 
+        AND c.deleted_at IS NULL
+    `;
+
+    // Apply the same data scoping rules you use for other endpoints
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
+
+    // Order by incomplete courses first, then by the most recently assigned
+    query += `
+      ORDER BY 
+        CASE WHEN ce.completion_status = 'completed' THEN 1 ELSE 0 END, 
+        ce.enrolled_at DESC
+    `;
+
+    const result = await db.query(query, params);
+
+    return res.json({
+      message: "Assigned courses fetched successfully",
+      assigned_courses: result.rows,
+    });
+  } catch (error) {
+    console.error("getMyAssignedCourses error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch assigned courses",
+      error: error.message,
+    });
+  }
+}
+
+//get completed assigned course
+export async function getMyCompletedAssignedCourses(req, res) {
+  try {
+    const userId = getAuthUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const params = [userId];
+
+    let query = `
+      SELECT
+        ce.user_id,
+        ce.course_id,
+        ce.status,
+        ce.completion_status,
+        ce.assigned,
+        ce.enrolled_at,
+        ce.completed_at,
+        c.title,
+        c.description,
+        c.department,
+        c.predefined_course_title,
+        c.content_mode,
+        c.certificate_prefix,
+        c.company_id,
+        c.ship_id,
+        c.ranks,
+        c.ship_types
+      FROM course_enrollments ce
+      JOIN courses c
+        ON c.id = ce.course_id
+      WHERE ce.user_id = $1
+        AND ce.assigned = true 
+        AND ce.completion_status = 'completed' 
+        AND c.deleted_at IS NULL
+    `;
+
+    // Apply your standard data scoping rules
+    query += addScopeWhere(req, "c", params, { includeGlobal: true });
+
+    // Order by the most recently completed courses first
+    query += `
+      ORDER BY ce.completed_at DESC
+    `;
+
+    const result = await db.query(query, params);
+
+    return res.json({
+      message: "Completed assigned courses fetched successfully",
+      completed_assigned_courses: result.rows,
+    });
+  } catch (error) {
+    console.error("getMyCompletedAssignedCourses error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch completed assigned courses",
+      error: error.message,
+    });
+  }
+}

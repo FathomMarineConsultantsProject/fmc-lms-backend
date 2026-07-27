@@ -21,7 +21,7 @@ import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 import { router as integrationRoutes } from "./routes/integrationRoutes.js";
 import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
-
+import competancyRoutes from './routes/competancyMatrixRoutes'
 const app = express();
 
 app.set("trust proxy", 1);
@@ -93,7 +93,7 @@ app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
 app.use("/meetings", meetingRoutes);
 app.use("/api/courses", courseRoutes);
-
+app.use('/api/matrix',competancyRoutes)
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 

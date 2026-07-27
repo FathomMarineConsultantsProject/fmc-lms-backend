@@ -1,5 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { allowRoles } from "../middleware/rbac";
 import { uploadCourseFiles } from "../middleware/uploadCourseFiles.js";
 import {
   createCourse,
@@ -22,6 +23,10 @@ import {
   completeCourseByLoggedInUser,
   getMyCourseCompletionStatus,
   getMyCompletedCourses,
+  assignCourseToUsers,
+  getMyAssignedCourses,
+  getMyCompletedAssignedCourses
+
 } from "../controller/coursesController.js";
 
 const router = express.Router();
@@ -121,6 +126,21 @@ router.put(
 router.get("/:id", requireAuth, getCourseById);
 router.put("/:id", requireAuth, updateCourse);
 router.delete("/:id", requireAuth, deleteCourse);
+
+
+//assign courses
+router.post(
+    '/:courseId/assign', 
+    requireAuth, 
+    allowRoles(1, 2, 3), 
+    assignCourseToUsers
+);
+
+// GET /api/courses/my-assigned
+router.get('/my-assigned', requireAuth, getMyAssignedCourses);
+
+// GET /api/courses/my-assigned-completed
+router.get('/my-assigned-completed', requireAuth, getMyCompletedAssignedCourses);
 
 export default router;
 
