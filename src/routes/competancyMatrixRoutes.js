@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-import competancyController from '../controller/competancyController')
+import competancyController from '../controller/competancyController';
 
 import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
