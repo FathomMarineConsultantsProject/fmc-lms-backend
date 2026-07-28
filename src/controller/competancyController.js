@@ -32,7 +32,7 @@
         if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
         }
-        const query = `SELECT * FROM user_competancy_matrix where user_id=$1`;
+        const query = `SELECT * FROM user_competency_matrix where user_id=$1`;
         const result = await db.query(query,[ userId ]);
 
         if (result.rows.length === 0) {
@@ -64,7 +64,7 @@
         return res.status(400).json({ message: "Invalid user id provided" });
         }
 
-        let query = `SELECT * FROM user_competancy_matrix WHERE user_id = $1`;
+        let query = `SELECT * FROM user_competency_matrix WHERE user_id = $1`;
         let queryParams = [targetUserId];
         let paramCount = 1;
 
