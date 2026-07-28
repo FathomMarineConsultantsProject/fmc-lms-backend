@@ -21,7 +21,8 @@ import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 import { router as integrationRoutes } from "./routes/integrationRoutes.js";
 import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
-import competancyRoutes from './routes/competancyMatrixRoutes'
+import competancyRoutes from './routes/competancyMatrixRoutes.js'
+
 const app = express();
 
 app.set("trust proxy", 1);
