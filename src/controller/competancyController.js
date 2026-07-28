@@ -14,13 +14,13 @@
     }
     if (roleId === 2) {
         return {
-        company_id: req.company_id || null,
+        company_id: req.company_id || req.user?.company_id|| null,
         ship_id: req.query.ship_id || null,
         };
     } else {
         return {
-        company_id: req.user.company_id || null,
-        ship_id: req.user.ship_id || null,
+        company_id: req.user?.company_id || null,
+        ship_id: req.user?.ship_id || null,
         };
     }
     }
@@ -33,7 +33,7 @@
         return res.status(401).json({ message: "Unauthorized" });
         }
         const query = `SELECT * FROM user_competancy_matrix where user_id=$1`;
-        const result = await db.query(query, { userId });
+        const result = await db.query(query,[ userId ]);
 
         if (result.rows.length === 0) {
         return res.status(200).json({
@@ -42,7 +42,7 @@
         });
         }
         return res.status(200).json({
-        message: "Competancy matri data fetched successfully",
+        message: "Competancy matrix data fetched successfully",
         data: result.rows[0],
         });
     } catch (error) {
@@ -69,20 +69,23 @@
         let paramCount = 1;
 
         if (roleId === 2) {
-        if (!company_id) {
-            return res.status(403).json({ message: "Admin company id is missing" });
-            paramCount++;
-            query += `AND company_id = $${paramCount}`;
-            queryParams.push(company_id);
-        }
+            if (!company_id) {
+                return res.status(403).json({ message: "Admin company id is missing" });
+            }
+                paramCount++;
+                query += ` AND company_id = $${paramCount}`;
+                queryParams.push(company_id);
+            
         } else if (roleId === 3) {
         if (!shipId) {
             return res.status(403).json({ message: "subadmin ship id is missing" });
+        }   
             paramCount++;
-            query += `AND ship_id = $${paramCount}`;
+            query += ` AND ship_id = $${paramCount}`;
             queryParams.push(ship_id);
-        }
-        } else if (roleId !== 1) {
+        
+        } 
+        else if (roleId !== 1) {
         return res.status(403).json({ message: "Forbidden role." });
         }
         const result = await db.query(query, queryParams);
@@ -119,14 +122,14 @@ export async function getAllCompetancyMatrices(req,res) {
         if(roleId ===2 || (roleId===1 && company_id))
         {
             paramsCount++;
-            query+=`AND company_id= $${paramsCount}`;
+            query += ` AND company_id= $${paramsCount}`;
             queryParams.push(company_id);
 
         }
         if(roleId ===3 || (roleId===2 && ship_id))
         {
             paramsCount++;
-            query+=`AND ship_id=$${paramsCount}`
+            query+=` AND ship_id=$${paramsCount}`
             queryParams.push(ship_id);
         }
 
