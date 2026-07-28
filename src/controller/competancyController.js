@@ -1,5 +1,5 @@
-    import db from "../config.db.js";
-
+    import {db} from "../db.js";
+ 
     const getRoleId = (req) => Number(req.user?.role_id);
     const getAuthUserId = (req) => Number(req.user?.id);
 
