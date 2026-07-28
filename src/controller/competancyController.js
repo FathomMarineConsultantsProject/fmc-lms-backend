@@ -1,7 +1,7 @@
     import {db} from "../db.js";
  
     const getRoleId = (req) => Number(req.user?.role_id);
-    const getAuthUserId = (req) => Number(req.user?.id);
+    const getAuthUserId = (req) => Number(req.user?.user_id);
 
     function getFetchScope(req) {
     const roleId = getRoleId(req);
@@ -114,7 +114,7 @@ export async function getAllCompetancyMatrices(req,res) {
         const roleId = getRoleId(req);
         const {company_id, ship_id} = getFetchScope(req);
 
-        let query = `SELECT * FROM user_competancy_matrix WHERE 1=1`
+        let query = `SELECT * FROM user_competency_matrix WHERE 1=1`
         let queryParams= [];
         let paramsCount=0;
 
