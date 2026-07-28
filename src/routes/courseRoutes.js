@@ -1,6 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { allowRoles } from "../middleware/rbac";
+import { allowRoles } from "../middleware/rbac.js";
 import { uploadCourseFiles } from "../middleware/uploadCourseFiles.js";
 import {
   createCourse,
