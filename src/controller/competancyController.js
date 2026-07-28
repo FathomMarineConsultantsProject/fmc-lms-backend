@@ -58,18 +58,18 @@
     try {
         const roleId = getRoleId(req);
         const targetUserId = Number(req.params.user_id);
-        const [company_id, ship_id] = getFetchScope(req);
+        const {company_id, ship_id} = getFetchScope(req);
 
         if (!targetUserId || Number.isNaN(targetUserId)) {
         return res.status(400).json({ message: "Invalid user id provided" });
         }
 
-        let query = `SELECT FROM user_competancy_matrix WHERE user_id = $1`;
+        let query = `SELECT * FROM user_competancy_matrix WHERE user_id = $1`;
         let queryParams = [targetUserId];
         let paramCount = 1;
 
         if (roleId === 2) {
-        if (!companyId) {
+        if (!company_id) {
             return res.status(403).json({ message: "Admin company id is missing" });
             paramCount++;
             query += `AND company_id = $${paramCount}`;
@@ -85,7 +85,7 @@
         } else if (roleId !== 1) {
         return res.status(403).json({ message: "Forbidden role." });
         }
-        const result = db.query(query, queryParams);
+        const result = await db.query(query, queryParams);
 
         if (result.rows.length === 0) {
         return res.status(404).json({
@@ -106,10 +106,10 @@
 
 
 //get all competancy matrix: filtered based on the role
-export async function getALlCompetancyMatrices(req,res) {
+export async function getAllCompetancyMatrices(req,res) {
     try {
         const roleId = getRoleId(req);
-        const [company_id, ship_id] = getFetchScope(req);
+        const {company_id, ship_id} = getFetchScope(req);
 
         let query = `SELECT * FROM user_competancy_matrix WHERE 1=1`
         let queryParams= [];

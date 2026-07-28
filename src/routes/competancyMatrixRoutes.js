@@ -11,7 +11,7 @@ router.use(requireAuth);
 router.get('/my-matrix', competancyController.getMyCompetancyMatrix);
 
 // get all matrices
-router.get('/', allowRoles(1,2,3), competancyController.getALlCompetancyMatrices);
+router.get('/', allowRoles(1,2,3), competancyController.getAllCompetancyMatrices);
 
 // get user specific competancy
 router.get('/user/:user_id',
