@@ -55,6 +55,12 @@ router.get(
   getMyCompletedCourses
 );
 
+// GET /api/courses/my-assigned
+router.get('/my-assigned', requireAuth, getMyAssignedCourses);
+
+// GET /api/courses/my-assigned-completed
+router.get('/my-assigned-completed', requireAuth, getMyCompletedAssignedCourses);
+
 router.get(
   "/:courseId/contents/:contentId",
   requireAuth,
@@ -134,11 +140,6 @@ router.post(
     assignCourseToUsers
 );
 
-// GET /api/courses/my-assigned
-router.get('/my-assigned', requireAuth, getMyAssignedCourses);
-
-// GET /api/courses/my-assigned-completed
-router.get('/my-assigned-completed', requireAuth, getMyCompletedAssignedCourses);
 
 export default router;
 
