@@ -1,6 +1,5 @@
 import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { allowRoles } from "../middleware/rbac.js";
 import { uploadCourseFiles } from "../middleware/uploadCourseFiles.js";
 import {
   createCourse,
@@ -131,8 +130,7 @@ router.delete("/:id", requireAuth, deleteCourse);
 //assign courses
 router.post(
     '/:courseId/assign', 
-    requireAuth, 
-    allowRoles(1, 2, 3), 
+    requireAuth,
     assignCourseToUsers
 );
 
