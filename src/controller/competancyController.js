@@ -32,7 +32,15 @@
         if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
         }
-        const query = `SELECT * FROM user_competency_matrix where user_id=$1`;
+        const query = `
+            SELECT 
+                m.*, 
+                u.first_name || ' ' || u.last_name AS name,
+                u.rank
+            FROM user_competency_matrix m
+            JOIN users u ON m.user_id = u.id
+            WHERE m.user_id = $1
+        `;
         const result = await db.query(query,[ userId ]);
 
         if (result.rows.length === 0) {
@@ -64,7 +72,15 @@
         return res.status(400).json({ message: "Invalid user id provided" });
         }
 
-        let query = `SELECT * FROM user_competency_matrix WHERE user_id = $1`;
+        let query = `
+            SELECT 
+                m.*, 
+                u.first_name || ' ' || u.last_name AS name,
+                u.rank
+            FROM user_competency_matrix m
+            JOIN users u ON m.user_id = u.id
+            WHERE m.user_id = $1
+        `;
         let queryParams = [targetUserId];
         let paramCount = 1;
 
@@ -114,7 +130,15 @@ export async function getAllCompetancyMatrices(req,res) {
         const roleId = getRoleId(req);
         const {company_id, ship_id} = getFetchScope(req);
 
-        let query = `SELECT * FROM user_competency_matrix WHERE 1=1`
+        let query = `
+            SELECT 
+                m.*, 
+                u.first_name || ' ' || u.last_name AS name,
+                u.rank
+            FROM user_competency_matrix m
+            JOIN users u ON m.user_id = u.id
+            WHERE 1=1
+        `;
         let queryParams= [];
         let paramsCount=0;
 
