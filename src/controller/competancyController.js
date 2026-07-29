@@ -35,10 +35,10 @@
         const query = `
             SELECT 
                 m.*, 
-                u.first_name || ' ' || u.last_name AS name,
+                u.full_name AS name,
                 u.rank
             FROM user_competency_matrix m
-            JOIN users u ON m.user_id = u.id
+            JOIN users u ON m.user_id = u.user_id
             WHERE m.user_id = $1
         `;
         const result = await db.query(query,[ userId ]);
@@ -75,10 +75,10 @@
         let query = `
             SELECT 
                 m.*, 
-                u.first_name || ' ' || u.last_name AS name,
+                u.full_name AS name,
                 u.rank
             FROM user_competency_matrix m
-            JOIN users u ON m.user_id = u.id
+            JOIN users u ON m.user_id = u.user_id
             WHERE m.user_id = $1
         `;
         let queryParams = [targetUserId];
@@ -133,10 +133,10 @@ export async function getAllCompetancyMatrices(req,res) {
         let query = `
             SELECT 
                 m.*, 
-                u.first_name || ' ' || u.last_name AS name,
+                u.full_name AS name,
                 u.rank
             FROM user_competency_matrix m
-            JOIN users u ON m.user_id = u.id
+            JOIN users u ON m.user_id = u.user_id
             WHERE 1=1
         `;
         let queryParams= [];
