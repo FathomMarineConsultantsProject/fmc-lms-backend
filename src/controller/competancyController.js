@@ -131,7 +131,7 @@ export async function getAllCompetancyMatrices(req,res) {
         const { company_id: scopedCompanyId, ship_id: scopedShipId } = getFetchScope(req);
 
         const requestedShipId = req.query.ship_id;
-        const finalShipId = null;
+        let finalShipId = null;
         if (roleId === 3) {
             
             finalShipId = scopedShipId;
