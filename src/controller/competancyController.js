@@ -128,8 +128,16 @@
 export async function getAllCompetancyMatrices(req,res) {
     try {
         const roleId = getRoleId(req);
-        const {company_id, ship_id} = getFetchScope(req);
+        const { company_id: scopedCompanyId, ship_id: scopedShipId } = getFetchScope(req);
 
+        const requestedShipId = req.query.ship_id;
+        const finalShipId = null;
+        if (roleId === 3) {
+            
+            finalShipId = scopedShipId;
+        } else {
+            finalShipId = requestedShipId || null;
+        }
         let query = `
             SELECT 
                 m.*, 
@@ -143,18 +151,17 @@ export async function getAllCompetancyMatrices(req,res) {
         let paramsCount=0;
 
         //role based filtering
-        if(roleId ===2 || (roleId===1 && company_id))
+        if(roleId ===2 )
         {
             paramsCount++;
-            query += ` AND company_id= $${paramsCount}`;
-            queryParams.push(company_id);
+            query += ` AND m.company_id= $${paramsCount}`;
+            queryParams.push(scopedCompanyId);
 
         }
-        if(roleId ===3 || (roleId===2 && ship_id))
-        {
+        if (finalShipId) {
             paramsCount++;
-            query+=` AND ship_id=$${paramsCount}`
-            queryParams.push(ship_id);
+            query += ` AND m.ship_id = $${paramsCount}`;
+            queryParams.push(finalShipId);
         }
 
         if(![1,2,3].includes(roleId))
