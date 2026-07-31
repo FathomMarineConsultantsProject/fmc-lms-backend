@@ -2275,13 +2275,18 @@ export async function assignCourseToShips(req, res) {
   const client = await db.connect();
 
   try {
-    const roleId = Number(getRoleId(req));
+    const roleId = getRoleId(req);
 
-    // 1. Authorization Check: STRICTLY Roles 1 (Superadmin) and 2 (Admin)
-    // Sub-admins (3) are restricted from whole-ship assignments
+    console.log("=== DEBUG AUTHORIZATION ===");
+    console.log("Raw roleId from helper:", roleId);
+    console.log("Type of roleId:", typeof roleId);
+    console.log("Array inclusion check:", [1, 2].includes(roleId));
+    console.log("===========================");
+
     if (![1, 2].includes(roleId)) {
       return res.status(403).json({ 
-        message: "Forbidden: You do not have permission to assign courses to entire ships." 
+        message: "Forbidden: You do not have permission to assign courses to entire ships." ,
+        debug_role_received: roleId
       });
     }
 
