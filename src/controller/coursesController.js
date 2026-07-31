@@ -2275,7 +2275,7 @@ export async function assignCourseToShips(req, res) {
   const client = await db.connect();
 
   try {
-    const roleId = getRoleId(req);
+    const roleId = Number(getRoleId(req));
 
     // 1. Authorization Check: STRICTLY Roles 1 (Superadmin) and 2 (Admin)
     // Sub-admins (3) are restricted from whole-ship assignments
