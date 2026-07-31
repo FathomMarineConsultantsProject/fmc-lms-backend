@@ -24,7 +24,8 @@ import {
   getMyCompletedCourses,
   assignCourseToUsers,
   getMyAssignedCourses,
-  getMyCompletedAssignedCourses
+  getMyCompletedAssignedCourses,
+  assignCourseToShips
 
 } from "../controller/coursesController.js";
 
