@@ -140,6 +140,10 @@ router.post(
     assignCourseToUsers
 );
 
+router.post(
+    '/:courseId/assign-to-ships', 
+    assignCourseToShips
+);
 
 export default router;
 

@@ -2269,3 +2269,157 @@ export async function getMyCompletedAssignedCourses(req, res) {
     });
   }
 }
+
+// assign courses to all users across multiple ships
+export async function assignCourseToShips(req, res) {
+  const client = await db.connect();
+
+  try {
+    const roleId = getRoleId(req);
+
+    // 1. Authorization Check: STRICTLY Roles 1 (Superadmin) and 2 (Admin)
+    // Sub-admins (3) are restricted from whole-ship assignments
+    if (![1, 2].includes(roleId)) {
+      return res.status(403).json({ 
+        message: "Forbidden: You do not have permission to assign courses to entire ships." 
+      });
+    }
+
+    const courseId = Number(req.params.courseId);
+    const { shipIds } = req.body;
+    const assignerId = getAuthUserId(req);
+
+    // 2. Validation
+    if (!courseId || Number.isNaN(courseId)) {
+      return res.status(400).json({ message: "Invalid course id" });
+    }
+
+    if (!Array.isArray(shipIds) || shipIds.length === 0) {
+      return res.status(400).json({ message: "shipIds must be a non-empty array" });
+    }
+
+    const validShipIds = shipIds.map(Number).filter(id => !Number.isNaN(id));
+    
+    if (validShipIds.length === 0) {
+      return res.status(400).json({ message: "No valid ship IDs provided" });
+    }
+
+    // 3. Course Scope Check: Ensure the assigner has access to this course
+    const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
+    
+    if (!allowed) {
+      return res.status(404).json({ message: "Course not found or access denied" });
+    }
+
+    // 4. Fetch all users belonging to the requested ships
+    // Note: Adjust 'user_id' and 'users' table name to match your exact DB schema if needed
+    const usersResult = await client.query(
+      `
+      SELECT user_id 
+      FROM users 
+      WHERE ship_id = ANY($1::int[]) 
+      -- AND is_active = true -- Uncomment if you only want to assign to active crew
+      `,
+      [validShipIds]
+    );
+
+    const validUserIds = usersResult.rows.map(row => row.user_id);
+
+    if (validUserIds.length === 0) {
+      return res.status(404).json({ message: "No users found assigned to the selected ships." });
+    }
+
+    await client.query("BEGIN");
+
+    // 5. Existing Enrollment Check
+    const existingEnrollments = await client.query(
+      `
+      SELECT user_id, assigned 
+      FROM course_enrollments 
+      WHERE course_id = $1 AND user_id = ANY($2::int[])
+      `,
+      [courseId, validUserIds]
+    );
+
+    // Categorize our users
+    const existingRecords = existingEnrollments.rows;
+    
+    // Users who already have assigned = true
+    const alreadyAssignedIds = existingRecords.filter(r => r.assigned).map(r => r.user_id);
+    
+    // Users who have assigned = false (self-enrolled, need an upgrade)
+    const upgradeIds = existingRecords.filter(r => !r.assigned).map(r => r.user_id);
+    
+    // Users who have no record at all (need an insert)
+    const newInsertIds = validUserIds.filter(id => 
+      !alreadyAssignedIds.includes(id) && !upgradeIds.includes(id)
+    );
+
+    if (upgradeIds.length === 0 && newInsertIds.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ 
+        message: "All crew members on the selected ships are already assigned to this course.",
+        already_assigned_count: alreadyAssignedIds.length
+      });
+    }
+
+    const processedRecords = [];
+
+    // 6A. Database Update: Upgrade self-enrolled users to assigned
+    if (upgradeIds.length > 0) {
+      const updateResult = await client.query(
+        `
+        UPDATE course_enrollments
+        SET assigned = true, updated_at = NOW()
+        WHERE course_id = $1 AND user_id = ANY($2::int[])
+        RETURNING *
+        `,
+        [courseId, upgradeIds]
+      );
+      processedRecords.push(...updateResult.rows);
+    }
+
+    // 6B. Database Insert: Insert brand new assigned users
+    // Note: For massive arrays of users, consider unnesting arrays in PostgreSQL for a single INSERT query instead of a loop.
+    for (const userId of newInsertIds) {
+      const insertResult = await client.query(
+        `
+        INSERT INTO course_enrollments (
+          user_id,
+          course_id,
+          enrolled_by,
+          assigned,
+          status,
+          enrolled_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, true, 'enrolled', NOW(), NOW())
+        RETURNING *
+        `,
+        [userId, courseId, assignerId]
+      );
+      processedRecords.push(insertResult.rows[0]);
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      message: "Course successfully assigned to multiple ships",
+      ships_processed: validShipIds.length,
+      total_users_targeted: validUserIds.length,
+      new_assignments_count: newInsertIds.length,
+      upgraded_assignments_count: upgradeIds.length,
+      skipped_count: alreadyAssignedIds.length,
+    });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("assignCourseToShips error:", error);
+    return res.status(500).json({
+      message: "Failed to assign course to ships",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+}
