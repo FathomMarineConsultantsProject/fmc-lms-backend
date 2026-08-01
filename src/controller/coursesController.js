@@ -2277,16 +2277,11 @@ export async function assignCourseToShips(req, res) {
   try {
     const roleId = getRoleId(req);
 
-    console.log("=== DEBUG AUTHORIZATION ===");
-    console.log("Raw roleId from helper:", roleId);
-    console.log("Type of roleId:", typeof roleId);
-    console.log("Array inclusion check:", [1, 2].includes(roleId));
-    console.log("===========================");
+    
 
     if (![1, 2].includes(roleId)) {
       return res.status(403).json({ 
-        message: "Forbidden: You do not have permission to assign courses to entire ships." ,
-        debug_role_received: roleId
+        message: "Forbidden: You do not have permission to assign courses to entire ships."
       });
     }
 
