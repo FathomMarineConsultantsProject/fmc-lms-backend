@@ -143,6 +143,7 @@ router.post(
 
 router.post(
     '/:courseId/assign-to-ships', 
+    requireAuth,
     assignCourseToShips
 );
 
