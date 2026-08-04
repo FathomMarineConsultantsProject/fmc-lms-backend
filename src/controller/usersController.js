@@ -2261,3 +2261,152 @@ export const importUsersFromExcel = [
     }
   },
 ];
+
+
+// PATCH /users/bulk-ship
+export const bulkUpdateUserShip = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // 1) Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
+  if (![1, 2].includes(role)) {
+    return res.status(403).json({ error: "Forbidden. Only Superadmin and Admin can mass update ship assignments." });
+  }
+
+  const user_ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+  const ship_id_raw = req.body?.ship_id;
+
+  if (!user_ids.length) {
+    return res.status(400).json({ error: "user_ids must be a non-empty array" });
+  }
+
+  const new_ship_id = Number.parseInt(String(ship_id_raw), 10);
+  if (!Number.isInteger(new_ship_id) || new_ship_id <= 0) {
+    return res.status(400).json({ error: "ship_id must be a valid positive integer" });
+  }
+
+  // Sanitize IDs
+  const ids = user_ids
+    .map((x) => Number.parseInt(String(x), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  if (!ids.length) {
+    return res.status(400).json({ error: "user_ids must contain valid integer IDs" });
+  }
+
+  try {
+    await db.query("BEGIN");
+
+    // 2) Validate the new ship exists and grab its company_id
+    const shipRes = await db.query(
+      "SELECT ship_id, company_id FROM ships WHERE ship_id = $1", 
+      [new_ship_id]
+    );
+    
+    if (!shipRes.rows.length) {
+      await db.query("ROLLBACK");
+      return res.status(404).json({ error: "Target ship_id does not exist" });
+    }
+    const targetShip = shipRes.rows[0];
+
+    // 3) Admin Scope Check: Ship must belong to the Admin's company
+    const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
+    if (role === 2 && myCompany && String(targetShip.company_id) !== myCompany) {
+      await db.query("ROLLBACK");
+      return res.status(403).json({ error: "Target ship does not belong to your company scope" });
+    }
+
+    // 4) Fetch the users being updated and lock the rows
+    const { rows: users } = await db.query(
+      `SELECT user_id, company_id, ship_id
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (!users.length) {
+      await db.query("ROLLBACK");
+      return res.status(404).json({ error: "No users found for given user_ids" });
+    }
+
+    // 5) Admin Scope Check: Users must belong to the Admin's company
+    const violations = [];
+    for (const u of users) {
+      if (role === 2 && myCompany && String(u.company_id) !== myCompany) {
+        violations.push(u.user_id);
+      }
+    }
+    
+    if (violations.length) {
+      await db.query("ROLLBACK");
+      return res.status(403).json({
+        error: "Scope violation: some user_ids are outside your company scope",
+        violations,
+      });
+    }
+
+    // 6) Iterate and perform updates
+    const results = {
+      requested: ids.length,
+      found: users.length,
+      updated: 0,
+      skipped: 0,
+      skipped_reasons: [],
+    };
+
+    for (const u of users) {
+      // Skip if they are already on this target ship
+      if (Number(u.ship_id) === new_ship_id) {
+        results.skipped++;
+        results.skipped_reasons.push({ user_id: u.user_id, reason: "Already assigned to this ship" });
+        continue;
+      }
+
+      // Update the user's ship (and update company_id just in case a Superadmin is moving them to a different company's ship)
+      const { rowCount } = await db.query(
+        `UPDATE users
+         SET
+           ship_id = $1,
+           company_id = $2,
+           updated_at = NOW()
+         WHERE user_id = $3`,
+        [new_ship_id, targetShip.company_id, u.user_id]
+      );
+
+      if (!rowCount) {
+        results.skipped++;
+        results.skipped_reasons.push({ user_id: u.user_id, reason: "Update failed" });
+        continue;
+      }
+
+      // Automatically handle the ship history log
+      await handleShipHistoryChange({
+        user_id: u.user_id,
+        company_id: targetShip.company_id,
+        old_ship_id: u.ship_id,
+        new_ship_id: new_ship_id,
+        embarkation_date: null, // Optionally pull from req.body if you want to set dates during mass transfer
+        disembarkation_date: null,
+        embarkation_port: null,
+        disembarkation_port: null,
+        changed_by_user_id: req.user.user_id,
+        notes: "Mass ship assignment via Admin Dashboard",
+      });
+
+      results.updated++;
+    }
+
+    await db.query("COMMIT");
+    
+    return res.json({
+      message: "Bulk ship assignment completed",
+      new_ship_id,
+      ...results,
+    });
+    
+  } catch (err) {
+    await db.query("ROLLBACK");
+    console.error("bulkUpdateUserShip error:", err);
+    return res.status(500).json({ error: "Failed to bulk update user ships" });
+  }
+};
