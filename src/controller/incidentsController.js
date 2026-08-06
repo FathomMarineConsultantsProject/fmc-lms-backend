@@ -550,7 +550,7 @@ export const generateDashboard = async(req,res)=>{
         ship_id, 
         occurred_at, 
         description 
-      FROM incidents 
+      FROM incident_reports 
       WHERE incident_id = $1
     `;
 
@@ -573,7 +573,7 @@ export const generateDashboard = async(req,res)=>{
 
     //save the ai content in the JSONB column
     const updateQuery = `
-      UPDATE incidents
+      UPDATE incident_reports
       SET
         ai_dashboard_data = $1,
         updated_at = CURRENT_TIMESTAMP
