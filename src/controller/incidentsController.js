@@ -536,7 +536,7 @@ export const generateDashboard = async(req,res)=>{
       error: 'Access denied. Only Admins and Superadmins can regenerate AI analytics.' 
     })
   }
-  const {incident_id}= req.body;
+  const {incident_id}= req.params;
 
   try {
     // Fetch ALL mandatory fields from the form/database

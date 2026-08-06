@@ -125,4 +125,4 @@ router.put("/:id", updateIncident);
 router.delete("/:id", deleteIncident);
 
 //ai
-router.post('/:incident_id/generate-dashboard', generateDashboard);
+router.post('/:incident_id/generate-dashboard',requireAuth, generateDashboard);
