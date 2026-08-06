@@ -9,7 +9,8 @@ import {
   deleteIncident,
   getRequestedTrainings,          
   getRecentTrainingRequestCount,  
-  requestIncidentTraining
+  requestIncidentTraining,
+  generateDashboard
 } from "../controller/incidentsController.js";
 
 export const router = Router();
@@ -122,3 +123,6 @@ router.put("/:id", updateIncident);
  *       200: { description: Deleted }
  */
 router.delete("/:id", deleteIncident);
+
+//ai
+router.post('/:incident_id/generate-dashboard', generateDashboard);

@@ -1,6 +1,7 @@
 // src/controller/incidentsController.js
 import { db } from "../db.js";
 import validator from "validator";
+import { generateIncidentDashboard } from "./aiController.js";
 
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
@@ -475,6 +476,7 @@ export const getRecentTrainingRequestCount = async (req, res) => {
   }
 };
 
+
 export const requestIncidentTraining = async (req, res) => {
   const incidentId = req.params.id;
   const { training_type } = req.body; 
@@ -523,3 +525,73 @@ export const requestIncidentTraining = async (req, res) => {
     res.status(500).json({ error: "Failed to request training" });
   }
 };
+
+//ai
+export const generateDashboard = async(req,res)=>{
+
+  const userRole = req.user?.role;
+  if(userRole !== 'admin' && userRole!== 'superadmin')
+  {
+    return res.status(403).json({
+      error: 'Access denied. Only Admins and Superadmins can regenerate AI analytics.' 
+    })
+  }
+  const {incident_id}= req.body;
+
+  try {
+    // Fetch ALL mandatory fields from the form/database
+    const fetchQuery = `
+      SELECT 
+        title, 
+        incident_type, 
+        severity, 
+        priority, 
+        location_on_ship, 
+        ship_id, 
+        occurred_at, 
+        description 
+      FROM incidents 
+      WHERE incident_id = $1
+    `;
+
+    const fetchResult = await db.query(fetchQuery, [incident_id]);
+
+    if(fetchResult.rows.length === 0)
+    {
+      return res.status(404).json({error: 'Incident not found'})
+    }
+
+    const incidentData = fetchResult.rows[0];
+
+    //validation to check description is not empty
+    if(!incidentData.description || !incidentData.description.trim()==='')
+    {
+      return res.status(400).json({error:"Description is required to generate analysis"});
+    }
+
+    //passing object to gemini api
+    const aiDashboardData = await generateIncidentDashboard(incidentData);
+
+    //save the ai content in the JSONB column
+    const updateQuery = `
+      UPDATE incidents
+      SET
+        ai_dashboard_data = $1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE incident_id = $2
+      RETURNING ai_dashboard_data, updated_at;
+    `;
+
+    const updateResult = await db.query(updateQuery, [aiDashboardData,incident_id]);
+
+    return res.status(200).json({
+      message: 'Dashboard regenerated successfully',
+      data: updateResult.rows[0].ai_dashboard_data,
+      last_updated: updateResult.rows[0].updated_at
+    });
+  } catch (error) {
+    console.error('Error generating AI dashboard:', error);
+    return res.status(500).json({ error: 'Failed to process AI dashboard generation.' });
+  
+  }
+}
