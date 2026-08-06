@@ -1,5 +1,4 @@
-const { GoogleGenerativeAI, SchemaType } = require("@google/generative-ai");
-
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Define the exact structure the AI must return
@@ -73,7 +72,7 @@ const model = genAI.getGenerativeModel({
     }
 })
 
-async function generateIncidentDashboard(incidentData) {
+export async function generateIncidentDashboard(incidentData) {
     const prompt= `
         Analyze the following comprehensive maritime incident report. 
         Extract the key events, identify risks, and categorize the root cause.
@@ -96,5 +95,3 @@ async function generateIncidentDashboard(incidentData) {
 
     return JSON.parse(responseText);
 }
-
-module.exports = {generateIncidentDashboard};

@@ -564,9 +564,8 @@ export const generateDashboard = async(req,res)=>{
     const incidentData = fetchResult.rows[0];
 
     //validation to check description is not empty
-    if(!incidentData.description || !incidentData.description.trim()==='')
-    {
-      return res.status(400).json({error:"Description is required to generate analysis"});
+    if (!incidentData.description || incidentData.description.trim() === '') {
+      return res.status(400).json({ error: "Description is required to generate analysis" });
     }
 
     //passing object to gemini api
