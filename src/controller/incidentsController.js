@@ -529,8 +529,8 @@ export const requestIncidentTraining = async (req, res) => {
 //ai
 export const generateDashboard = async(req,res)=>{
 
-  const userRole = req.user?.role;
-  if(userRole !== 'admin' && userRole!== 'superadmin')
+  const roleId = req.user?.role_id;
+  if(roleId !== 1 && roleId!== 2)
   {
     return res.status(403).json({
       error: 'Access denied. Only Admins and Superadmins can regenerate AI analytics.' 
