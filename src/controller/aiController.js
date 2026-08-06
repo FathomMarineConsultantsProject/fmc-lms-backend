@@ -66,10 +66,10 @@ const dashboardSchema = {
 
 const model = genAI.getGenerativeModel({
     model: "gemini-1.5-flash",
-    generationCOnfig: {
+    generationConfig: {
         responseMimeType: "application/json",
         responseSchema: dashboardSchema,
-        temprature: 0.2,
+        temperature: 0.2,
     }
 })
 
