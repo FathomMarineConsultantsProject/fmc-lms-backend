@@ -1,6 +1,7 @@
 // src/controller/incidentsController.js
 import { db } from "../db.js";
 import validator from "validator";
+import { generateIncidentDashboard } from "./aiController.js";
 
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
