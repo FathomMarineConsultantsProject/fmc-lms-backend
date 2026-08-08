@@ -94,7 +94,7 @@ export const getIncidentById = async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `
+      0`
       SELECT *
       FROM incident_reports
       WHERE incident_id = $1
