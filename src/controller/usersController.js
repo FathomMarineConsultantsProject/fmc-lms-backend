@@ -5,6 +5,7 @@ import multer from "multer";
 import xlsx from "xlsx";
 import { handleShipHistoryChange } from "../utils/shipHistory.js";
 import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
+import { ids } from "googleapis/build/src/apis/ids/index.js";
 
 // ================= STATUS / PASSWORD HELPERS =================
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
@@ -2267,7 +2268,7 @@ export const importUsersFromExcel = [
 export const bulkUpdateUserShip = async (req, res) => {
   const role = Number(req.user?.role_id);
 
-  // 1) Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
+  // Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
   if (![1, 2].includes(role)) {
     return res.status(403).json({ error: "Forbidden. Only Superadmin and Admin can mass update ship assignments." });
   }
@@ -2296,26 +2297,26 @@ export const bulkUpdateUserShip = async (req, res) => {
   try {
     await db.query("BEGIN");
 
-    // 2) Validate the new ship exists and grab its company_id
+    //  Validate the new ship exists and grab its company_id
     const shipRes = await db.query(
-      "SELECT ship_id, company_id FROM ships WHERE ship_id = $1", 
+      "SELECT ship_id, company_id FROM ships WHERE ship_id = $1",
       [new_ship_id]
     );
-    
+
     if (!shipRes.rows.length) {
       await db.query("ROLLBACK");
       return res.status(404).json({ error: "Target ship_id does not exist" });
     }
     const targetShip = shipRes.rows[0];
 
-    // 3) Admin Scope Check: Ship must belong to the Admin's company
+    //  Admin Scope Check: Ship must belong to the Admin's company
     const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
     if (role === 2 && myCompany && String(targetShip.company_id) !== myCompany) {
       await db.query("ROLLBACK");
       return res.status(403).json({ error: "Target ship does not belong to your company scope" });
     }
 
-    // 4) Fetch the users being updated and lock the rows
+    //  Fetch the users being updated and lock the rows
     const { rows: users } = await db.query(
       `SELECT user_id, company_id, ship_id
        FROM users
@@ -2329,14 +2330,14 @@ export const bulkUpdateUserShip = async (req, res) => {
       return res.status(404).json({ error: "No users found for given user_ids" });
     }
 
-    // 5) Admin Scope Check: Users must belong to the Admin's company
+    // Admin Scope Check: Users must belong to the Admin's company
     const violations = [];
     for (const u of users) {
       if (role === 2 && myCompany && String(u.company_id) !== myCompany) {
         violations.push(u.user_id);
       }
     }
-    
+
     if (violations.length) {
       await db.query("ROLLBACK");
       return res.status(403).json({
@@ -2345,7 +2346,7 @@ export const bulkUpdateUserShip = async (req, res) => {
       });
     }
 
-    // 6) Iterate and perform updates
+    //  Iterate and perform updates
     const results = {
       requested: ids.length,
       found: users.length,
@@ -2397,16 +2398,147 @@ export const bulkUpdateUserShip = async (req, res) => {
     }
 
     await db.query("COMMIT");
-    
+
     return res.json({
       message: "Bulk ship assignment completed",
       new_ship_id,
       ...results,
     });
-    
+
   } catch (err) {
     await db.query("ROLLBACK");
     console.error("bulkUpdateUserShip error:", err);
     return res.status(500).json({ error: "Failed to bulk update user ships" });
   }
 };
+
+// PATCH /users/bulk-embarkation-dates
+export const bulkUpdateUserDates = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
+  if (![1, 2].includes(role)) {
+    return res.status(403).json({ error: "Forbidden. Only Superadmin and Admin can mass update embarkation dates." });
+  }
+
+  const user_ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+
+  // Extract ONLY the dates
+  const {
+    embarkation_date,
+    disembarkation_date
+  } = req.body;
+
+  if (!user_ids.length) {
+    return res.status(400).json({ error: "user_ids must be a non-empty array" });
+  }
+
+  // Ensure at least one date is being updated
+  if (!embarkation_date && !disembarkation_date) {
+    return res.status(400).json({ error: "At least one embarkation or disembarkation date must be provided to update." });
+  }
+
+  // Sanitize IDs
+  const ids = user_ids
+    .map((x) => Number.parseInt(String(x), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  if (!ids.length) {
+    return res.status(400).json({ error: "user_ids must contain valid integer IDs" });
+  }
+
+  try {
+    await db.query("BEGIN");
+
+    // Fetch the users being updated and lock the rows
+    const { rows: users } = await db.query(
+      `SELECT user_id, company_id, ship_id
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (!users.length) {
+      await db.query("ROLLBACK");
+      return res.status(404).json({ error: "No users found for given user_ids" });
+    }
+
+    // Admin Scope Check: Users must belong to the Admin's company
+    const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
+    const violations = [];
+
+    for (const u of users) {
+      if (role === 2 && myCompany && String(u.company_id) !== myCompany) {
+        violations.push(u.user_id);
+      }
+    }
+
+    if (violations.length) {
+      await db.query("ROLLBACK");
+      return res.status(403).json({
+        error: "Scope violation: some user_ids are outside your company scope",
+        violations,
+      });
+    }
+
+    // Iterate and perform updates
+    const results = {
+      requested: ids.length,
+      found: users.length,
+      updated: 0,
+      skipped: 0,
+      skipped_reasons: [],
+    };
+
+    for (const u of users) {
+      // Update the user's dates using COALESCE so we only overwrite the provided date
+      const { rowCount } = await db.query(
+        `UPDATE users
+         SET
+           embarkation_date = COALESCE($1, embarkation_date),
+           disembarkation_date = COALESCE($2, disembarkation_date),
+           updated_at = NOW()
+         WHERE user_id = $3`,
+        [
+          embarkation_date || null,
+          disembarkation_date || null,
+          u.user_id
+        ]
+      );
+
+      if (!rowCount) {
+        results.skipped++;
+        results.skipped_reasons.push({ user_id: u.user_id, reason: "Update failed" });
+        continue;
+      }
+
+      // Automatically handle the ship history log
+      await handleShipHistoryChange({
+        user_id: u.user_id,
+        company_id: u.company_id,
+        old_ship_id: u.ship_id,
+        new_ship_id: u.ship_id, // Ship ID is not changing, just the dates
+        embarkation_date: embarkation_date || null,
+        disembarkation_date: disembarkation_date || null,
+        changed_by_user_id: req.user.user_id,
+        notes: "Mass embarkation/disembarkation date update via Admin Dashboard",
+      });
+
+      results.updated++;
+    }
+
+    await db.query("COMMIT");
+
+    return res.json({
+      message: "Bulk embarkation date update completed",
+      ...results,
+    });
+
+  } catch (err) {
+    await db.query("ROLLBACK");
+    console.error("bulkUpdateUserEmbarkationDates error:", err);
+    return res.status(500).json({ error: "Failed to bulk update user embarkation dates" });
+  }
+};
+
