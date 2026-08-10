@@ -14,7 +14,8 @@ import {
   getUsersByShipId,
   syncUserStatusByDates,
   searchUsers,
-  bulkUpdateUserShip
+  bulkUpdateUserShip,
+  bulkUpdateUserDates
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -154,7 +155,7 @@ router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
 router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);
 
 router.patch("/bulk-ship",requireAuth, bulkUpdateUserShip);
-
+router.patch("/bulk-embarkation-dates",requireAuth, bulkUpdateUserDates);
 router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
 
 router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
