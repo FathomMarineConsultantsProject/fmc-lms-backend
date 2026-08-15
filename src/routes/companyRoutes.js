@@ -198,5 +198,5 @@ router.put("/:id", updateCompany);
  */
 router.delete("/:id", deleteCompany);
 
-router.patch("/edit/:id", requireAuth, editCompany);
+router.patch("/edit/:id", editCompany);
 
