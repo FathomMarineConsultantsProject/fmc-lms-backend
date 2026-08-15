@@ -525,7 +525,7 @@ export const getCompanyOptions = async (req, res) => {
     const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
 
     if (!myCompanyId || !isUuid(myCompanyId)) {
-      return res.json({ rows: [] });
+0      return res.json({ rows: [] });
     }
 
     const { rows } = await db.query(
@@ -542,5 +542,103 @@ export const getCompanyOptions = async (req, res) => {
   } catch (err) {
     console.error("Error getting company options:", err);
     return res.status(500).json({ error: "Failed to fetch company options" });
+  }
+};
+
+// -------------------- PATCH /companies/edit/:id --------------------
+export const editCompany = async (req, res) => {
+  const id = String(req.params.id || "").trim();
+
+  // ✅ UUID validation
+  if (!isUuid(id)) return res.status(400).json({ error: "company_id must be a valid UUID" });
+  if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
+  if (!ensureCompanyScope(req, res, id)) return;
+
+  const {
+    company_name, code, email_domain, is_active, metadata_json,
+    ships_count, role, regional_address, ism_address, type,
+    contact_person_name, phone_no, email, username, password,
+  } = req.body;
+
+  try {
+    //  Fetch the existing admin username first
+    const existingAdminRes = await db.query(
+      `SELECT username FROM users WHERE company_id = $1 AND role_id = 2 LIMIT 1`,
+      [id]
+    );
+    const existingUsername = existingAdminRes.rows[0]?.username || null;
+
+    let newUsername = username ?? null;
+
+    //  Only generate unique name if it actually changed
+    if (username && username !== existingUsername) {
+      newUsername = await makeUniqueUsername(username);
+    } else if (username === existingUsername) {
+      newUsername = existingUsername;
+    }
+
+    const newPasswordHash = password ? hashPassword(password) : null;
+    const newPasswordEnc = password ? encryptPassword(password) : null;
+
+    const { rowCount } = await db.query(
+      `UPDATE company
+       SET
+         company_name        = COALESCE($1, company_name),
+         code                = COALESCE($2, code),
+         email_domain        = COALESCE($3, email_domain),
+         is_active           = COALESCE($4, is_active),
+         metadata_json       = COALESCE($5, metadata_json),
+         ships_count         = COALESCE($6, ships_count),
+         role                = COALESCE($7, role),
+         regional_address    = COALESCE($8, regional_address),
+         ism_address         = COALESCE($9, ism_address),
+         type                = COALESCE($10, type),
+         contact_person_name = COALESCE($11, contact_person_name),
+         phone_no            = COALESCE($12, phone_no),
+         email               = COALESCE($13, email),
+         username            = COALESCE($14, username),
+         password_hash       = COALESCE($15, password_hash),
+         updated_at          = NOW()
+       WHERE company_id = $16`,
+      [
+        company_name ?? null, code ?? null, email_domain ?? null, is_active ?? null,
+        metadata_json ?? null, ships_count ?? null, role ?? null,
+        regional_address ?? null, ism_address ?? null, type ?? null,
+        contact_person_name ?? null, phone_no ?? null, email ?? null,
+        newUsername, newPasswordHash, id,
+      ]
+    );
+
+    if (!rowCount) return res.status(404).json({ error: "Company not found" });
+
+    // Sync company admin user
+    if (newUsername || newPasswordHash || newPasswordEnc || email || company_name) {
+      await db.query(
+        `UPDATE users
+         SET
+           username = COALESCE($1, username),
+           password_hash = COALESCE($2, password_hash),
+           password_enc = COALESCE($3, password_enc),
+           email = COALESCE($4, email),
+           full_name = COALESCE($5, full_name),
+           status = 'Onboard',
+           ship_id = NULL, -- 🚨 FIX 3: Strips accidental ship_ids to fix the PIL admin bug
+           updated_at = NOW()
+         WHERE company_id = $6 AND role_id = 2`, -- 🚨 FIX 4: Removed AND ship_id IS NULL
+        [
+          newUsername,
+          newPasswordHash,
+          newPasswordEnc,
+          email ?? null,
+          company_name ? `${company_name} Admin` : null,
+          id,
+        ]
+      );
+    }
+
+    return res.json({ message: "Company updated", username: newUsername ?? undefined });
+  } catch (err) {
+    console.error("Error updating company:", err);
+    return res.status(500).json({ error: "Failed to update company" });
   }
 };

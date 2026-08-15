@@ -960,7 +960,7 @@ export const createUser = async (req, res) => {
 };
 
 // PUT /users/:id
-// Generates creds ONLY if status becomes Onboard and user doesn't have creds yet.
+// Generate0s creds ONLY if status becomes Onboard and user doesn't have creds yet.
 export const updateUser = async (req, res) => {
   const role = Number(req.user.role_id);
   const id = parseInt(req.params.id, 10);

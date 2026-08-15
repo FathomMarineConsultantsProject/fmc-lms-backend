@@ -7,7 +7,8 @@ import {
   createCompany,
   updateCompany,
   deleteCompany,
-  getCompanyOptions
+  getCompanyOptions,
+  editCompany
 } from "../controller/companyController.js";
 
 export const router = Router();
@@ -197,4 +198,5 @@ router.put("/:id", updateCompany);
  */
 router.delete("/:id", deleteCompany);
 
+router.patch("/edit/:id", requireAuth, updateCompany);
 
