@@ -549,7 +549,7 @@ export const getCompanyOptions = async (req, res) => {
 export const editCompany = async (req, res) => {
   const id = String(req.params.id || "").trim();
 
-  // ✅ UUID validation
+  //  UUID validation
   if (!isUuid(id)) return res.status(400).json({ error: "company_id must be a valid UUID" });
   if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
   if (!ensureCompanyScope(req, res, id)) return;
@@ -622,9 +622,9 @@ export const editCompany = async (req, res) => {
            email = COALESCE($4, email),
            full_name = COALESCE($5, full_name),
            status = 'Onboard',
-           ship_id = NULL, -- 🚨 FIX 3: Strips accidental ship_ids to fix the PIL admin bug
+           ship_id = NULL,
            updated_at = NOW()
-         WHERE company_id = $6 AND role_id = 2`, -- 🚨 FIX 4: Removed AND ship_id IS NULL
+         WHERE company_id = $6 AND role_id = 2`,
         [
           newUsername,
           newPasswordHash,
