@@ -525,7 +525,7 @@ export const getCompanyOptions = async (req, res) => {
     const myCompanyId = req.user?.company_id ? String(req.user.company_id) : null;
 
     if (!myCompanyId || !isUuid(myCompanyId)) {
-0      return res.json({ rows: [] });
+      return res.json({ rows: [] });
     }
 
     const { rows } = await db.query(
