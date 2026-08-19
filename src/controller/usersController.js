@@ -382,7 +382,7 @@ export const getAllUsers = async (req, res) => {
     }
 
     // pagination (min 10 max 100)
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 500 });
 
     // filters
     const q = String(req.query.q ?? "").trim();
