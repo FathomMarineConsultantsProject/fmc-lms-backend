@@ -21,7 +21,7 @@ const normalizeRank = (r) =>
     .replace(/\s+/g, " ");
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
-const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
+const getPagination = (req, defaults = { page: 1, limit: 500 }) => {
   const pageRaw = parseInt(String(req.query.page ?? defaults.page), 10);
   const limitRaw = parseInt(String(req.query.limit ?? defaults.limit), 10);
 
@@ -30,8 +30,8 @@ const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
   // ✅ enforce min 50, max 100 always
   const limit = clamp(
     Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
-    50,
-    100
+    10,
+    500
   );
 
   const offset = (page - 1) * limit;
@@ -699,7 +699,7 @@ export const getUsersByShipId = async (req, res) => {
     const sort = String(req.query.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
     const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
 
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 100 });
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 500 });
 
     const where = [
       `u.ship_id = $1`,
@@ -1358,7 +1358,7 @@ export const searchUsers = async (req, res) => {
     const limitRaw = parseInt(String(body.limit ?? "500"), 10);
     const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
     const limit = Math.min(
-      100,
+      500,
       Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
     );
     const offset = (page - 1) * limit;
