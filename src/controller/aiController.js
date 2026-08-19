@@ -11,6 +11,7 @@ const dashboardSchema = {
             items: { type: SchemaType.STRING }
         },
         danger_gauge: {
+     
             type: SchemaType.OBJECT,
             properties: {
                 score: { type: SchemaType.INTEGER },

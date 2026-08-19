@@ -11,6 +11,7 @@ import { router as userRoutes } from "./routes/userRoutes.js";
 import { router as authRoutes } from "./routes/authRoutes.js";
 import { router as incidentRoutes } from "./routes/incidentRoutes.js";
 import { router as certificateRoutes } from "./routes/certificateRoutes.js";
+import {router as chatRoutes} from "./routes/chatRoutes.js"
 import assessmentRoutes from "./routes/assessmentRoutes.js";
 import { router as activityRoutes } from "./routes/activityRoutes.js";
 import mailTestRoutes from "./routes/mailTestRoutes.js";
@@ -97,6 +98,9 @@ app.use("/api/courses", courseRoutes);
 app.use('/api/matrix',competancyRoutes)
 //meeting integrations
 app.use("/integrations", integrationRoutes);
+
+//chat 
+app.use("/chat", chatRoutes);
 
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
