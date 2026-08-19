@@ -1355,7 +1355,7 @@ export const searchUsers = async (req, res) => {
 
     // pagination (min10 max100)
     const pageRaw = parseInt(String(body.page ?? "1"), 10);
-    const limitRaw = parseInt(String(body.limit ?? "50"), 10);
+    const limitRaw = parseInt(String(body.limit ?? "500"), 10);
     const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
     const limit = Math.min(
       100,
