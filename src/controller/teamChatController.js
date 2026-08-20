@@ -207,3 +207,39 @@ export const sendMessage = async (req, res) => {
       return res.status(500).json({ error: "Failed to create chat" });
     }
   };
+
+  // -------------------- GET /chat/users/search --------------------
+// Searches for users to start a new chat with. 
+// Superadmins (Role 1) search globally. Everyone else is locked to their company.
+export const searchUsersForChat = async (req, res) => {
+  const myUserId = req.user?.user_id;
+  const myRoleId = Number(req.user?.role_id);
+  const myCompanyId = req.user?.company_id;
+  const q = req.query.q || '';
+
+  if (!q || q.length < 2) return res.json([]);
+
+  try {
+      let queryStr = `
+          SELECT user_id, full_name, rank, company_id 
+          FROM users 
+          WHERE (full_name ILIKE $1 OR seafarer_id ILIKE $1) AND user_id != $2
+      `;
+      const params = [`%${q}%`, myUserId];
+
+      // 🚨 COMPANY BOUNDARY ENFORCEMENT 🚨
+      // If the user is NOT a Superadmin (Role 1), restrict search to their own company
+      if (myRoleId !== 1) {
+          queryStr += ` AND company_id = $3`;
+          params.push(myCompanyId);
+      }
+
+      queryStr += ` LIMIT 10`;
+
+      const { rows } = await db.query(queryStr, params);
+      return res.json(rows);
+  } catch (err) {
+      console.error("Error searching chat users:", err);
+      return res.status(500).json({ error: "Failed to search users" });
+  }
+};
