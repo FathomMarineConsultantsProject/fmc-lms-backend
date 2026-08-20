@@ -5,7 +5,7 @@ import {
   getMessages,
   sendMessage,
   findOrCreateDirectChat,
-  searc
+  searchUsersForChat
 } from 
 "../controller/teamChatController.js";
 
