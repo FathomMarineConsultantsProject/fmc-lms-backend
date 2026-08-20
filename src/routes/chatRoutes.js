@@ -5,7 +5,9 @@ import {
   getMessages,
   sendMessage,
   findOrCreateDirectChat,
-} from "../controller/teamChatController.js";
+  searc
+} from 
+"../controller/teamChatController.js";
 
 export const router = Router();
 
@@ -16,3 +18,4 @@ router.get("/conversations", getMyConversations);
 router.get("/messages/:conversationId", getMessages);
 router.post("/message", sendMessage);
 router.post("/direct", findOrCreateDirectChat);
+router.get("/users/search", searchUsersForChat);
