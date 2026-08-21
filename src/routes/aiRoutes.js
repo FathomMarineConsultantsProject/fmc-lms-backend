@@ -6,6 +6,6 @@ const router = Router();
 
 router.use(requireAuth);
 
-router.post('/chat', handleChatbotQuery);
+router.post('/chat', handleChatBotQuery);
 
 export default router;
