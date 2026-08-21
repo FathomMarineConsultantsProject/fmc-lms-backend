@@ -96,3 +96,32 @@ export async function generateIncidentDashboard(incidentData) {
 
     return JSON.parse(responseText);
 }
+
+
+//chatbot
+export const handleChatBotQuery = async(req,res)=>{
+    const {message} = req.body;
+
+    if(!message)
+    {
+        return res.status(400).json({error:"Message is required"});
+    }
+    try {
+        const model = genAI.getGenerativeModel({ 
+            model: "gemini-1.5-flash",
+            
+            systemInstruction: `You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS). 
+            Your sole purpose is to answer questions related to maritime operations, ships, crew management, marine safety, navigation, and how to use this LMS platform. Keep the answer short and precise.
+            If a user asks you a question about programming, cooking, history, general knowledge, or ANYTHING unrelated to maritime operations or the LMS, you must politely refuse. 
+            Reply with: "I am a specialized Maritime LMS assistant. I can only answer questions related to marine operations and shipping."`
+        });
+
+        const result = await model.generateContent(message);
+        const reply = result.response.text();
+
+        return res.json({reply});
+    } catch (error) {
+        console.error("Gemini API Error:", error);
+        return res.status(500).json({ error: "Failed to generate AI response." });
+    }
+}

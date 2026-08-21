@@ -23,6 +23,7 @@ import { router as integrationRoutes } from "./routes/integrationRoutes.js";
 import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
 import competancyRoutes from './routes/competancyMatrixRoutes.js'
+import aiAssistant from './routes/aiRoutes.js'
 
 const app = express();
 
@@ -95,13 +96,14 @@ app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
 app.use("/meetings", meetingRoutes);
 app.use("/api/courses", courseRoutes);
-app.use('/api/matrix',competancyRoutes)
+app.use('/api/matrix',competancyRoutes);
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 
 //chat 
 app.use("/chat", chatRoutes);
-
+//chatbot
+app.use("/ai", aiAssistant);
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
 app.use("/api/users", userExportRoutes);

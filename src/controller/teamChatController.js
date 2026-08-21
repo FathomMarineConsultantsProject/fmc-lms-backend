@@ -2,7 +2,7 @@ import { db } from "../db.js";
 import { pusher } from "../config/pusher.js";
 
 // -------------------- GET /chat/conversations --------------------
-// Gets all conversations (the "Inbox" view) for the logged-in user
+
 export const getMyConversations = async (req, res) => {
   const myUserId = req.user?.user_id;
 
@@ -34,20 +34,20 @@ export const getMyConversations = async (req, res) => {
 };
 
 // -------------------- GET /chat/messages/:conversationId --------------------
-// Loads the message history for a specific chat room
+
 export const getMessages = async (req, res) => {
   const myUserId = req.user?.user_id;
   const { conversationId } = req.params;
 
   try {
-    // 1. Verify the user is actually a participant in this room
+    //  Verify the user is actually a participant in this room
     const checkRes = await db.query(
       "SELECT 1 FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2",
       [conversationId, myUserId]
     );
     if (checkRes.rows.length === 0) return res.status(403).json({ error: "Access denied" });
 
-    // 2. Fetch the messages
+    //  Fetch the messages
     const { rows } = await db.query(
       `SELECT m.*, u.full_name AS sender_name 
        FROM messages m
@@ -57,7 +57,7 @@ export const getMessages = async (req, res) => {
       [conversationId]
     );
 
-    // 3. Update last_read_at so unread badges clear out
+    //  Update last_read_at so unread badges clear out
     await db.query(
       "UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id = $1 AND user_id = $2",
       [conversationId, myUserId]
@@ -120,7 +120,7 @@ export const sendMessage = async (req, res) => {
         await pusher.trigger(`user-${p.user_id}`, "unread-update", {
           conversation_id,
           sender_name: newMessage.sender_name,
-          content: content.substring(0, 40) + "..." // Send a tiny preview for the UI toast
+          content: content.substring(0, 40) + "..." 
         });
       }
   
@@ -141,7 +141,7 @@ export const sendMessage = async (req, res) => {
     if (!target_user_id) return res.status(400).json({ error: "target_user_id is required" });
   
     try {
-      // 🚨 1. COMPANY BOUNDARY CHECK
+     
       // Fetch both users to verify their roles and companies
       const usersRes = await db.query(
         "SELECT user_id, company_id, role_id FROM users WHERE user_id = $1 OR user_id = $2",
@@ -163,7 +163,7 @@ export const sendMessage = async (req, res) => {
         });
       }
   
-      // 2. Check if chat already exists
+      //  Check if chat already exists
       const existingChat = await db.query(
         `SELECT c.id 
          FROM conversations c
@@ -180,7 +180,7 @@ export const sendMessage = async (req, res) => {
         return res.json({ conversation_id: existingChat.rows[0].id, is_new: false });
       }
   
-      // 3. Create the chat
+      //  Create the chat
       await db.query("BEGIN");
       
       // Assign the chat to the non-superadmin's company so it stays organized
@@ -209,8 +209,6 @@ export const sendMessage = async (req, res) => {
   };
 
   // -------------------- GET /chat/users/search --------------------
-// Searches for users to start a new chat with. 
-// Superadmins (Role 1) search globally. Everyone else is locked to their company.
 export const searchUsersForChat = async (req, res) => {
   const myUserId = req.user?.user_id;
   const myRoleId = Number(req.user?.role_id);
@@ -227,8 +225,8 @@ export const searchUsersForChat = async (req, res) => {
       `;
       const params = [`%${q}%`, myUserId];
 
-      // 🚨 COMPANY BOUNDARY ENFORCEMENT 🚨
-      // If the user is NOT a Superadmin (Role 1), restrict search to their own company
+    
+      
       if (myRoleId !== 1) {
           queryStr += ` AND company_id = $3`;
           params.push(myCompanyId);
