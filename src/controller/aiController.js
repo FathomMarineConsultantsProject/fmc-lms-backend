@@ -65,7 +65,7 @@ const dashboardSchema = {
 };
 
 const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     generationConfig: {
         responseMimeType: "application/json",
         responseSchema: dashboardSchema,
@@ -108,7 +108,7 @@ export const handleChatBotQuery = async(req,res)=>{
     }
     try {
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-flash-latest",
+            model: "gemini-1.5-flash",
             
             systemInstruction: `You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS). 
             Your sole purpose is to answer questions related to maritime operations, ships, crew management, marine safety, navigation, and how to use this LMS platform. Keep the answer short and precise.
