@@ -65,7 +65,7 @@ const dashboardSchema = {
 };
 
 const model = genAI.getGenerativeModel({
-    model: "gemini-flash-latest",
+    model: "gemini-1.5-flash",
     generationConfig: {
         responseMimeType: "application/json",
         responseSchema: dashboardSchema,
@@ -122,6 +122,6 @@ export const handleChatBotQuery = async(req,res)=>{
         return res.json({reply});
     } catch (error) {
         console.error("Gemini API Error:", error);
-        return res.status(500).json({ error: "Failed to generate AI response." });
+        return res.status(500).json({ error: "AI server is busy.Please try after some time" });
     }
 }
