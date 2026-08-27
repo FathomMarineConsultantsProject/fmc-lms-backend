@@ -1819,7 +1819,7 @@ export const assignAssessmentBulk = async (req, res) => {
 
   try {
     const { assessmentId } = req.params;
-    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body; // <-- Changed to ship_ids array
+    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body; 
     
     const currentUserId = getUserId(req);
     const roleId = getRoleId(req);
@@ -1854,6 +1854,8 @@ export const assignAssessmentBulk = async (req, res) => {
       SELECT user_id, company_id, ship_id 
       FROM users 
       WHERE 1=1
+      AND role_id NOT IN (1, 2)     -- <-- EXCLUDE SUPERADMINS & ADMINS
+      AND company_id IS NOT NULL    -- <-- DB CRASH PREVENTION
     `;
 
     if (targetCompanyId) {
@@ -1861,7 +1863,7 @@ export const assignAssessmentBulk = async (req, res) => {
       userQuery += ` AND company_id = $${userParams.length}`;
     }
 
-    // <-- NEW MULTIPLE SHIPS LOGIC -->
+    // <--  MULTIPLE SHIPS LOGIC -->
     if (Array.isArray(ship_ids) && ship_ids.length > 0) {
       userParams.push(ship_ids);
       // ANY() allows Postgres to check if the user's ship_id is inside our array!
