@@ -1819,12 +1819,12 @@ export const assignAssessmentBulk = async (req, res) => {
 
   try {
     const { assessmentId } = req.params;
-    const { company_id: bodyCompanyId, ship_id: bodyShipId, due_date } = req.body;
+    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body; // <-- Changed to ship_ids array
     
     const currentUserId = getUserId(req);
     const roleId = getRoleId(req);
 
-    // 1. STRICT ROLE CHECK: Sub-admins (3) and Users (4) cannot assign assessments
+    // 1. STRICT ROLE CHECK: Sub-admins (3) and Users (4) cannot assign
     if (roleId === 3 || roleId === 4) {
       return res.status(403).json({
         success: false,
@@ -1834,18 +1834,17 @@ export const assignAssessmentBulk = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // 2. Verify the Assigner has access to this assessment
+    // 2. Verify Assigner access
     const allowed = await checkAssessmentScope(req, assessmentId, client, { includeGlobal: true });
     if (!allowed) {
       throw new Error("Assessment not found or you do not have permission to access it");
     }
 
-    // 3. DETERMINE TARGET SCOPE BASED ON ROLE
+    // 3. DETERMINE TARGET SCOPE
     let targetCompanyId = bodyCompanyId || null;
-    let targetShipId = bodyShipId || null;
-
+    
     if (roleId === 2) {
-      // Admins are STRICTLY locked to their own company, ignoring any company_id they try to pass
+      // Admins are STRICTLY locked to their own company
       targetCompanyId = req.user.company_id; 
     }
 
@@ -1854,7 +1853,7 @@ export const assignAssessmentBulk = async (req, res) => {
     let userQuery = `
       SELECT user_id, company_id, ship_id 
       FROM users 
-      WHERE 1=1
+      WHERE is_active = true
     `;
 
     if (targetCompanyId) {
@@ -1862,9 +1861,11 @@ export const assignAssessmentBulk = async (req, res) => {
       userQuery += ` AND company_id = $${userParams.length}`;
     }
 
-    if (targetShipId) {
-      userParams.push(targetShipId);
-      userQuery += ` AND ship_id = $${userParams.length}`;
+    // <-- NEW MULTIPLE SHIPS LOGIC -->
+    if (Array.isArray(ship_ids) && ship_ids.length > 0) {
+      userParams.push(ship_ids);
+      // ANY() allows Postgres to check if the user's ship_id is inside our array!
+      userQuery += ` AND ship_id = ANY($${userParams.length}::int[])`; 
     }
 
     // 5. Fetch Target Users
@@ -1881,7 +1882,6 @@ export const assignAssessmentBulk = async (req, res) => {
     let paramIndex = 1;
 
     for (const crew of crewMembers) {
-      // Push: assessmentId, userId, assignedBy, companyId, shipId
       params.push(assessmentId, crew.user_id, currentUserId, crew.company_id, crew.ship_id);
       
       if (due_date) {
