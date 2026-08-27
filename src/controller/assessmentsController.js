@@ -1812,6 +1812,124 @@ export const createAssessmentFromExcel = async (req, res) => {
   }
 };
 
+// ================= BULK ASSIGN ASSESSMENT =================
+
+export const assignAssessmentBulk = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { assessmentId } = req.params;
+    const { company_id: bodyCompanyId, ship_id: bodyShipId, due_date } = req.body;
+    
+    const currentUserId = getUserId(req);
+    const roleId = getRoleId(req);
+
+    // 1. STRICT ROLE CHECK: Sub-admins (3) and Users (4) cannot assign assessments
+    if (roleId === 3 || roleId === 4) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to assign assessments.",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    // 2. Verify the Assigner has access to this assessment
+    const allowed = await checkAssessmentScope(req, assessmentId, client, { includeGlobal: true });
+    if (!allowed) {
+      throw new Error("Assessment not found or you do not have permission to access it");
+    }
+
+    // 3. DETERMINE TARGET SCOPE BASED ON ROLE
+    let targetCompanyId = bodyCompanyId || null;
+    let targetShipId = bodyShipId || null;
+
+    if (roleId === 2) {
+      // Admins are STRICTLY locked to their own company, ignoring any company_id they try to pass
+      targetCompanyId = req.user.company_id; 
+    }
+
+    // 4. BUILD THE USER QUERY
+    const userParams = [];
+    let userQuery = `
+      SELECT user_id, company_id, ship_id 
+      FROM users 
+      WHERE is_active = true
+    `;
+
+    if (targetCompanyId) {
+      userParams.push(targetCompanyId);
+      userQuery += ` AND company_id = $${userParams.length}`;
+    }
+
+    if (targetShipId) {
+      userParams.push(targetShipId);
+      userQuery += ` AND ship_id = $${userParams.length}`;
+    }
+
+    // 5. Fetch Target Users
+    const crewResult = await client.query(userQuery, userParams);
+    const crewMembers = crewResult.rows;
+
+    if (crewMembers.length === 0) {
+      throw new Error("No active users found matching this criteria.");
+    }
+
+    // 6. PREPARE BULK INSERT
+    const values = [];
+    const params = [];
+    let paramIndex = 1;
+
+    for (const crew of crewMembers) {
+      // Push: assessmentId, userId, assignedBy, companyId, shipId
+      params.push(assessmentId, crew.user_id, currentUserId, crew.company_id, crew.ship_id);
+      
+      if (due_date) {
+          params.push(due_date);
+          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
+      } else {
+          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
+      }
+    }
+
+    // 7. EXECUTE BULK INSERT
+    const insertQuery = `
+      INSERT INTO assessment_assignments (
+        assessment_id, user_id, assigned_by, company_id, ship_id ${due_date ? ', due_date' : ''}
+      )
+      VALUES ${values.join(",")}
+      ON CONFLICT (assessment_id, user_id) DO NOTHING
+      RETURNING assignment_id;
+    `;
+
+    const insertResult = await client.query(insertQuery, params);
+    const newlyAssignedCount = insertResult.rowCount;
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      message: `Assessment successfully assigned to ${newlyAssignedCount} user(s).`,
+      meta: {
+        total_users_in_target: crewMembers.length,
+        new_assignments: newlyAssignedCount,
+        skipped_duplicates: crewMembers.length - newlyAssignedCount
+      }
+    });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Bulk assign assessment error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to assign assessment",
+    });
+  } finally {
+    client.release();
+  }
+};
+
 // ======================== UPLOAD ASSESSMENT FROM EXCEL =================
 
 // export const uploadAssessmentExcel = async (req, res) => {
