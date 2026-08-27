@@ -53,7 +53,7 @@ router.post(
 // );
 
 router.get("/", getAssessments);
-
+router.get("/assigned", getAssignedAssessments);
 router.post("/:assessmentId/start", startAssessment);
 router.post("/:assessmentId/submit", submitAssessment);
 router.get("/:assessmentId/analytics", allowRoles(1, 2, 3), getAssessmentAnalytics);
@@ -83,5 +83,5 @@ router.post("/:assessmentId/assign-bulk", assignAssessmentBulk);
 router.delete("/:assessmentId", allowRoles(1, 2, 3), deleteAssessment);
 router.delete("/questions/:questionId", allowRoles(1, 2, 3), deleteQuestion);
 router.delete("/options/:optionId", allowRoles(1, 2, 3), deleteOption);
-router.get("/assigned", getAssignedAssessments);
+
 export default router;
