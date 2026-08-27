@@ -1854,7 +1854,7 @@ export const assignAssessmentBulk = async (req, res) => {
     let userQuery = `
       SELECT user_id, company_id, ship_id 
       FROM users 
-      WHERE is_active = true
+      WHERE 1=1
     `;
 
     if (targetCompanyId) {
