@@ -1932,6 +1932,66 @@ export const assignAssessmentBulk = async (req, res) => {
   }
 };
 
+// ================= GET ASSIGNED ASSESSMENTS FOR USER =================
+
+export const getAssignedAssessments = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const currentUserId = getUserId(req);
+
+    // SQL Query: Fetches assignments and joins with the user's latest attempt status
+    const query = `
+      WITH LatestAttempts AS (
+          SELECT DISTINCT ON (assessment_id) 
+              assessment_id, is_passed, status, score_obtained, created_at
+          FROM assessment_attempts
+          WHERE user_id = $1
+          ORDER BY assessment_id, created_at DESC
+      )
+      SELECT 
+          a.assessment_id, 
+          a.title, 
+          a.description, 
+          a.assessment_type,
+          a.category,
+          a.difficulty_level,
+          a.passing_percentage,
+          a.duration_minutes,
+          (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.assessment_id AND aq.is_deleted = false) as question_count,
+          aa.due_date,
+          aa.created_at as assigned_at,
+          COALESCE(la.is_passed, false) as is_completed,
+          la.status as attempt_status,
+          la.score_obtained
+      FROM assessment_assignments aa
+      JOIN assessments a ON aa.assessment_id = a.assessment_id
+      LEFT JOIN LatestAttempts la ON a.assessment_id = la.assessment_id
+      WHERE aa.user_id = $1 
+        AND a.is_deleted = false 
+        AND a.is_published = true
+      ORDER BY aa.due_date ASC NULLS LAST, aa.created_at DESC;
+    `;
+
+    const result = await client.query(query, [currentUserId]);
+
+    return res.status(200).json({
+      success: true,
+      count: result.rowCount,
+      data: result.rows,
+    });
+
+  } catch (error) {
+    console.error("Get assigned assessments error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch assigned assessments",
+    });
+  } finally {
+    client.release();
+  }
+};
+
 // ======================== UPLOAD ASSESSMENT FROM EXCEL =================
 
 // export const uploadAssessmentExcel = async (req, res) => {

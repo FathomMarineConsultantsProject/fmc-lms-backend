@@ -22,7 +22,8 @@ import {
   getUserResultsByRole,
   getAnalyticsByRole,
   getAssessmentQuestions,
-  assignAssessmentBulk
+  assignAssessmentBulk,
+  getAssessmentById,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -82,5 +83,5 @@ router.post("/:assessmentId/assign-bulk", assignAssessmentBulk);
 router.delete("/:assessmentId", allowRoles(1, 2, 3), deleteAssessment);
 router.delete("/questions/:questionId", allowRoles(1, 2, 3), deleteQuestion);
 router.delete("/options/:optionId", allowRoles(1, 2, 3), deleteOption);
-
+router.get("/:assessmentId", getAssessmentById);
 export default router;
