@@ -8,7 +8,7 @@ import {
     createEquipment, 
     updateEquipmentStatus, 
     updateEquipmentDetails 
-} from '../controllers/immersiveController.js';
+} from '../controller/immersiveController.js';
 
 import { allowRoles } from '../middleware/rbac';
 export const router = express.Router();
