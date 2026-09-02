@@ -1,4 +1,11 @@
 import { db } from "../db.js";
+
+// --- HELPER FUNCTION FOR ACCESS CONTROL ---
+const checkAdminAccess = (req) => {
+    const roleId = Number(req.user?.role_id);
+    return roleId === 1 || roleId === 2;
+};
+
 // ==========================================
 // SCENARIOS CONTROLLERS
 // ==========================================
@@ -18,12 +25,16 @@ export const getAllScenarios = async (req, res) => {
 };
 
 export const createScenario = async (req, res) => {
+   
+    if (!checkAdminAccess(req)) {
+        return res.status(403).json({ error: 'Forbidden: Super Admin or Admin access required.' });
+    }
+
     const { 
         title, description, difficulty, duration_minutes, 
         roles_count, weather, time_of_day, learning_objectives 
     } = req.body;
     
-    // Safely extract the user_id from the token payload (req.user)
     const created_by = req.user?.user_id || req.user?.id || null; 
 
     try {
@@ -33,15 +44,11 @@ export const createScenario = async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
             RETURNING *`,
             [
-                title, 
-                description, 
-                difficulty || 'medium', 
+                title, description, difficulty || 'medium', 
                 parseInt(duration_minutes, 10) || 0, 
                 parseInt(roles_count, 10) || 1, 
-                weather, 
-                time_of_day, 
-                JSON.stringify(learning_objectives || []), 
-                created_by
+                weather, time_of_day, 
+                JSON.stringify(learning_objectives || []), created_by
             ]
         );
         res.status(201).json({ message: 'Scenario created', scenario: result.rows[0] });
@@ -52,33 +59,25 @@ export const createScenario = async (req, res) => {
 };
 
 export const updateScenario = async (req, res) => {
+    
+    if (!checkAdminAccess(req)) {
+        return res.status(403).json({ error: 'Forbidden: Super Admin or Admin access required.' });
+    }
+
     const { id } = req.params;
     const { title, description, difficulty, duration_minutes, roles_count, weather, time_of_day, learning_objectives } = req.body;
 
     try {
         const result = await db.query(
             `UPDATE immersive_scenarios 
-             SET title = COALESCE($1, title),
-                 description = COALESCE($2, description),
-                 difficulty = COALESCE($3, difficulty),
-                 duration_minutes = COALESCE($4, duration_minutes),
-                 roles_count = COALESCE($5, roles_count),
-                 weather = COALESCE($6, weather),
-                 time_of_day = COALESCE($7, time_of_day),
-                 learning_objectives = COALESCE($8, learning_objectives),
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $9 AND deleted_at IS NULL
-             RETURNING *`,
+             SET title = COALESCE($1, title), description = COALESCE($2, description), difficulty = COALESCE($3, difficulty), duration_minutes = COALESCE($4, duration_minutes), roles_count = COALESCE($5, roles_count), weather = COALESCE($6, weather), time_of_day = COALESCE($7, time_of_day), learning_objectives = COALESCE($8, learning_objectives), updated_at = CURRENT_TIMESTAMP
+             WHERE id = $9 AND deleted_at IS NULL RETURNING *`,
             [
-                title, 
-                description, 
-                difficulty, 
+                title, description, difficulty, 
                 duration_minutes ? parseInt(duration_minutes, 10) : null, 
                 roles_count ? parseInt(roles_count, 10) : null, 
-                weather, 
-                time_of_day, 
-                learning_objectives ? JSON.stringify(learning_objectives) : null, 
-                id
+                weather, time_of_day, 
+                learning_objectives ? JSON.stringify(learning_objectives) : null, id
             ]
         );
 
@@ -112,6 +111,11 @@ export const getAllEquipment = async (req, res) => {
 };
 
 export const createEquipment = async (req, res) => {
+    
+    if (!checkAdminAccess(req)) {
+        return res.status(403).json({ error: 'Forbidden: Super Admin or Admin access required.' });
+    }
+
     const { title, model, type, location, status, specs } = req.body;
 
     try {
@@ -120,14 +124,7 @@ export const createEquipment = async (req, res) => {
             (title, model, type, location, status, specs) 
             VALUES ($1, $2, $3, $4, $5, $6) 
             RETURNING *`,
-            [
-                title, 
-                model, 
-                type, 
-                location, 
-                status || 'available', 
-                JSON.stringify(specs || [])
-            ]
+            [title, model, type, location, status || 'available', JSON.stringify(specs || [])]
         );
         res.status(201).json({ message: 'Equipment added', equipment: result.rows[0] });
     } catch (error) {
@@ -137,10 +134,14 @@ export const createEquipment = async (req, res) => {
 };
 
 export const updateEquipmentStatus = async (req, res) => {
+    
+    if (!checkAdminAccess(req)) {
+        return res.status(403).json({ error: 'Forbidden: Super Admin or Admin access required.' });
+    }
+
     const { id } = req.params;
     const { status } = req.body; 
 
-    // Validate the ENUM
     if (!['available', 'booked', 'maintenance'].includes(status)) {
         return res.status(400).json({ error: 'Invalid status provided.' });
     }
@@ -166,28 +167,21 @@ export const updateEquipmentStatus = async (req, res) => {
 };
 
 export const updateEquipmentDetails = async (req, res) => {
+    
+    if (!checkAdminAccess(req)) {
+        return res.status(403).json({ error: 'Forbidden: Super Admin or Admin access required.' });
+    }
+
     const { id } = req.params;
     const { title, model, type, location, specs } = req.body;
 
     try {
         const result = await db.query(
             `UPDATE immersive_equipment 
-             SET title = COALESCE($1, title),
-                 model = COALESCE($2, model),
-                 type = COALESCE($3, type),
-                 location = COALESCE($4, location),
-                 specs = COALESCE($5, specs),
-                 updated_at = CURRENT_TIMESTAMP 
+             SET title = COALESCE($1, title), model = COALESCE($2, model), type = COALESCE($3, type), location = COALESCE($4, location), specs = COALESCE($5, specs), updated_at = CURRENT_TIMESTAMP 
              WHERE id = $6 AND deleted_at IS NULL
              RETURNING *`,
-            [
-                title, 
-                model, 
-                type, 
-                location, 
-                specs ? JSON.stringify(specs) : null, 
-                id
-            ]
+            [title, model, type, location, specs ? JSON.stringify(specs) : null, id]
         );
 
         if (result.rows.length === 0) {
@@ -200,4 +194,3 @@ export const updateEquipmentDetails = async (req, res) => {
         res.status(500).json({ error: 'Failed to update equipment details' });
     }
 };
-
