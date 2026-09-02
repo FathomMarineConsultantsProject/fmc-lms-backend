@@ -10,7 +10,7 @@ import {
     updateEquipmentDetails 
 } from '../controller/immersiveController.js';
 
-import { allowRoles } from '../middleware/rbac';
+import { allowRoles } from '../middleware/rbac.js';
 export const router = express.Router();
 // ==========================================
 // SCENARIOS ROUTES
