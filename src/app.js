@@ -24,7 +24,7 @@ import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
 import competancyRoutes from './routes/competancyMatrixRoutes.js'
 import aiAssistant from './routes/aiRoutes.js'
-
+import {router as immersive}
 const app = express();
 
 app.set("trust proxy", 1);

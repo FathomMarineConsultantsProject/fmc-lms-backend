@@ -23,3 +23,4 @@ export const canManageShips = (roleId) => [1, 2].includes(Number(roleId)); // su
 export const canManageUsers = (roleId) => [1, 2, 3].includes(Number(roleId));
 export const canCreateIncident = (roleId) => [1, 2, 3, 4].includes(Number(roleId));
 export const canEditIncident = (roleId) => [1, 2, 3].includes(Number(roleId)); // crew cannot edit/delete
+export const canManageImmersive = (roleId) => [1, 2].includes(Number(roleId)); // super admin/admin can manage VR and Equipment
