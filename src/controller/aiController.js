@@ -128,6 +128,7 @@ export const handleChatBotQuery = async(req,res)=>{
 
 
 // Generate Course Description API
+
 export const generateCourseDescription = async (req, res) => {
     const { title } = req.body;
 
@@ -136,38 +137,51 @@ export const generateCourseDescription = async (req, res) => {
     }
 
     try {
-        // We use gemini-1.5-flash as it is the fastest and best suited for text generation tasks
+        // 1. Define the exact JSON structure we want
+        const descriptionSchema = {
+            type: SchemaType.OBJECT,
+            properties: {
+                short_description: { 
+                    type: SchemaType.STRING,
+                    description: "A 2-3 sentence engaging description of the course based on the title."
+                },
+                key_highlights: {
+                    type: SchemaType.ARRAY,
+                    items: { type: SchemaType.STRING },
+                    description: "4 bullet points highlighting the main features of the course."
+                },
+                what_you_will_learn: {
+                    type: SchemaType.ARRAY,
+                    items: {
+                        type: SchemaType.OBJECT,
+                        properties: {
+                            title: { type: SchemaType.STRING },
+                            details: { type: SchemaType.STRING }
+                        },
+                        required: ["title", "details"]
+                    }
+                }
+            },
+            required: ["short_description", "key_highlights", "what_you_will_learn"]
+        };
+
+        //  Initialize the model with the schema
         const model = genAI.getGenerativeModel({
             model: "gemini-3.6-flash", 
-            systemInstruction: `You are an expert maritime curriculum designer. 
-            Given a course title, generate a highly professional course description. 
-            You MUST return the response strictly in the following format, with exactly these headers. Do not use Markdown styling like bold (**), italics, or hashes (##).
-
-Description:
-[Write a 2-3 sentence engaging description of the course based on the title]
-
-Key Highlights:
-- [Highlight 1]
-- [Highlight 2]
-- [Highlight 3]
-- [Highlight 4]
-
-What you will learn:
-- [Objective 1 Title]
-  [Objective 1 Description]
-- [Objective 2 Title]
-  [Objective 2 Description]
-- [Objective 3 Title]
-  [Objective 3 Description]
-- [Objective 4 Title]
-  [Objective 4 Description]`
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: descriptionSchema,
+                temperature: 0.3,
+            },
+            systemInstruction: "You are an expert maritime curriculum designer. Given a course title, generate a highly professional course description, key highlights, and learning objectives."
         });
 
         const prompt = `Generate a course description for the maritime course titled: "${title}"`;
         const result = await model.generateContent(prompt);
-        const description = result.response.text();
+        const parsedData = JSON.parse(result.response.text());
 
-        return res.json({ description });
+        //  Return the perfectly structured JSON!
+        return res.json(parsedData);
 
     } catch (error) {
         console.error("Gemini API Error (generateCourseDescription):", error);
