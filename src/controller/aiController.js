@@ -138,7 +138,7 @@ export const generateCourseDescription = async (req, res) => {
     try {
         // We use gemini-1.5-flash as it is the fastest and best suited for text generation tasks
         const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-flash", 
+            model: "gemini-3.6-flash", 
             systemInstruction: `You are an expert maritime curriculum designer. 
             Given a course title, generate a highly professional course description. 
             You MUST return the response strictly in the following format, with exactly these headers. Do not use Markdown styling like bold (**), italics, or hashes (##).
@@ -220,7 +220,7 @@ export const generateTableOfContents = async (req, res) => {
 
         // 2. Initialize Gemini 1.5 Flash with the schema
         const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-flash",
+            model: "gemini-3.6-flash",
             generationConfig: {
                 responseMimeType: "application/json",
                 responseSchema: tocSchema,
