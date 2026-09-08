@@ -61,15 +61,15 @@
     }
     }
 
-    // get specific user competancy matrix
-    export async function getUserCompetancyMatrixById(req, res) {
+   // get specific user competancy matrix
+export async function getUserCompetancyMatrixById(req, res) {
     try {
         const roleId = getRoleId(req);
         const targetUserId = Number(req.params.user_id);
         const {company_id, ship_id} = getFetchScope(req);
 
         if (!targetUserId || Number.isNaN(targetUserId)) {
-        return res.status(400).json({ message: "Invalid user id provided" });
+            return res.status(400).json({ message: "Invalid user id provided" });
         }
 
         let query = `
@@ -88,38 +88,40 @@
             if (!company_id) {
                 return res.status(403).json({ message: "Admin company id is missing" });
             }
-                paramCount++;
-                query += ` AND company_id = $${paramCount}`;
-                queryParams.push(company_id);
+            paramCount++;
+
+            query += ` AND m.company_id = $${paramCount}`;
+            queryParams.push(company_id);
             
         } else if (roleId === 3) {
-        if (!ship_id) {
-            return res.status(403).json({ message: "subadmin ship id is missing" });
-        }   
+            if (!ship_id) {
+                return res.status(403).json({ message: "subadmin ship id is missing" });
+            }   
             paramCount++;
-            query += ` AND ship_id = $${paramCount}`;
+            
+            query += ` AND m.ship_id = $${paramCount}`;
             queryParams.push(ship_id);
         
-        } 
-        else if (roleId !== 1) {
-        return res.status(403).json({ message: "Forbidden role." });
+        } else if (roleId !== 1) {
+            return res.status(403).json({ message: "Forbidden role." });
         }
+        
         const result = await db.query(query, queryParams);
 
         if (result.rows.length === 0) {
-        return res.status(404).json({
-            message: "Matrix not found or permission denied to view this user.",
-            data: null
-        });
+            return res.status(404).json({
+                message: "Matrix not found or permission denied to view this user.",
+                data: null
+            });
         }
 
         return res.status(200).json({
-        message: "User competency matrix fetched successfully",
-        data: result.rows[0]
+            message: "User competency matrix fetched successfully",
+            data: result.rows[0]
         });
     } catch (error) {
         console.error("getUserCompetencyMatrixById error:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 }
 
