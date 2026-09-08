@@ -220,7 +220,7 @@ export async function getExecutiveDashboard(req, res) {
         const stats = overviewResult.rows[0] || { total_seafarers: 0, ready: 0, conditionally_ready: 0, not_ready: 0 };
         const total = parseInt(stats.total_seafarers, 10) || 0;
 
-        // 2. NEW: Fetch Competency Gap Analysis (Instead of History Trend)
+        // 2. Fetch Competency Gap Analysis (All 12 Departments)
         let competencyGaps = [];
         if (roleId <= 3) {
             const gapsQuery = `
@@ -228,7 +228,14 @@ export async function getExecutiveDashboard(req, res) {
                     COALESCE(ROUND(AVG(navigation_total_completed::numeric / NULLIF(navigation_total_assigned, 0)) * 100, 1), 0) AS navigation,
                     COALESCE(ROUND(AVG(deck_total_completed::numeric / NULLIF(deck_total_assigned, 0)) * 100, 1), 0) AS deck,
                     COALESCE(ROUND(AVG(engine_total_completed::numeric / NULLIF(engine_total_assigned, 0)) * 100, 1), 0) AS engine,
+                    COALESCE(ROUND(AVG(galley_total_completed::numeric / NULLIF(galley_total_assigned, 0)) * 100, 1), 0) AS galley,
+                    COALESCE(ROUND(AVG(shore_total_completed::numeric / NULLIF(shore_total_assigned, 0)) * 100, 1), 0) AS shore,
                     COALESCE(ROUND(AVG(safety_total_completed::numeric / NULLIF(safety_total_assigned, 0)) * 100, 1), 0) AS safety,
+                    COALESCE(ROUND(AVG(environment_total_completed::numeric / NULLIF(environment_total_assigned, 0)) * 100, 1), 0) AS environment,
+                    COALESCE(ROUND(AVG(human_total_completed::numeric / NULLIF(human_total_assigned, 0)) * 100, 1), 0) AS human,
+                    COALESCE(ROUND(AVG(cyber_security_total_completed::numeric / NULLIF(cyber_security_total_assigned, 0)) * 100, 1), 0) AS cyber_security,
+                    COALESCE(ROUND(AVG(general_induction_total_completed::numeric / NULLIF(general_induction_total_assigned, 0)) * 100, 1), 0) AS general_induction,
+                    COALESCE(ROUND(AVG(catering_galley_total_completed::numeric / NULLIF(catering_galley_total_assigned, 0)) * 100, 1), 0) AS catering_galley,
                     COALESCE(ROUND(AVG(cargo_total_completed::numeric / NULLIF(cargo_total_assigned, 0)) * 100, 1), 0) AS cargo
                 FROM user_competency_matrix m
                 JOIN users u ON m.user_id = u.user_id
@@ -238,12 +245,19 @@ export async function getExecutiveDashboard(req, res) {
             const gapsResult = await db.query(gapsQuery, [company_id, ship_id]);
             const gaps = gapsResult.rows[0] || {};
             
-            // Format for easy frontend charting (Array of objects)
+            // Format for easy frontend charting
             competencyGaps = [
                 { domain: "Navigation", score: parseFloat(gaps.navigation) || 0 },
                 { domain: "Deck", score: parseFloat(gaps.deck) || 0 },
                 { domain: "Engine", score: parseFloat(gaps.engine) || 0 },
+                { domain: "Galley", score: parseFloat(gaps.galley) || 0 },
+                { domain: "Shore", score: parseFloat(gaps.shore) || 0 },
                 { domain: "Safety", score: parseFloat(gaps.safety) || 0 },
+                { domain: "Environment", score: parseFloat(gaps.environment) || 0 },
+                { domain: "Human Res.", score: parseFloat(gaps.human) || 0 },
+                { domain: "Cyber Security", score: parseFloat(gaps.cyber_security) || 0 },
+                { domain: "Gen. Induction", score: parseFloat(gaps.general_induction) || 0 },
+                { domain: "Catering", score: parseFloat(gaps.catering_galley) || 0 },
                 { domain: "Cargo", score: parseFloat(gaps.cargo) || 0 }
             ];
         }
@@ -255,7 +269,7 @@ export async function getExecutiveDashboard(req, res) {
                 ready: { count: parseInt(stats.ready, 10), percentage: total > 0 ? Math.round((parseInt(stats.ready, 10) / total) * 100) : 0 },
                 conditionally_ready: { count: parseInt(stats.conditionally_ready, 10) },
                 not_ready: { count: parseInt(stats.not_ready, 10) },
-                competency_gaps: competencyGaps // Replaced 'trend' with this
+                competency_gaps: competencyGaps
             }
         });
     } catch (error) {
