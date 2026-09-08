@@ -351,3 +351,67 @@ export async function getUserClearanceStatus(req, res) {
         return res.status(500).json({ message: "Server error", error: error.message });
     }
 }
+
+// ==============================================================================
+//  4. FILTERED SEAFARERS LIST (For clicking "View seafarers ->" on dashboard)
+// ==============================================================================
+export async function getSeafarersByStatus(req, res) {
+    try {
+        const { company_id, ship_id } = getFetchScope(req);
+        const { status } = req.query; // 'ready', 'conditionally_ready', 'not_ready'
+
+        const query = `
+            WITH calculated_users AS (
+                SELECT 
+                    u.user_id,
+                    u.full_name AS name,
+                    u.rank,
+                    s.ship_name AS vessel,
+                    COALESCE(m.readiness_score, 0) AS compliance_score,
+                    EXISTS (
+                        SELECT 1 FROM certificates c 
+                        WHERE c.user_id = u.user_id 
+                        AND (c.expiry_date < CURRENT_DATE OR c.status = 'Expired' OR c.status = 'Failed')
+                    ) AS has_hard_stop
+                FROM users u
+                LEFT JOIN ships s ON u.ship_id = s.ship_id
+                LEFT JOIN user_competency_matrix m ON u.user_id = m.user_id
+                WHERE (u.company_id = $1 OR $1 IS NULL)
+                  AND (u.ship_id = $2 OR $2 IS NULL)
+            )
+            SELECT 
+                user_id,
+                name,
+                rank,
+                vessel,
+                compliance_score,
+                CASE 
+                    WHEN has_hard_stop OR compliance_score < 50 THEN 'not_ready'
+                    WHEN compliance_score BETWEEN 50 AND 79 THEN 'conditionally_ready'
+                    ELSE 'ready'
+                END AS calculated_status
+            FROM calculated_users
+            WHERE 
+                ($3::text IS NULL) OR 
+                (
+                    CASE 
+                        WHEN has_hard_stop OR compliance_score < 50 THEN 'not_ready'
+                        WHEN compliance_score BETWEEN 50 AND 79 THEN 'conditionally_ready'
+                        ELSE 'ready'
+                    END = $3
+                )
+            ORDER BY compliance_score ASC;
+        `;
+
+        const result = await db.query(query, [company_id, ship_id, status || null]);
+
+        return res.status(200).json({
+            message: "Filtered seafarer list fetched successfully",
+            count: result.rows.length,
+            data: result.rows
+        });
+    } catch (error) {
+        console.error("getSeafarersByStatus error:", error);
+        return res.status(500).json({ message: "Server error", error: error.message });
+    }
+}
