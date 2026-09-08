@@ -192,8 +192,7 @@ export async function getExecutiveDashboard(req, res) {
         const { company_id, ship_id } = getFetchScope(req);
         const roleId = getRoleId(req);
 
-        // UPDATE: Cleaned up the math using the new readiness_score column
-        // UPDATE: Adjusted the EXISTS block to match the real 'certificates' table schema
+        // 1. Fetch Top-Level Overview Stats
         const overviewQuery = `
             WITH user_scores AS (
                 SELECT 
@@ -221,20 +220,32 @@ export async function getExecutiveDashboard(req, res) {
         const stats = overviewResult.rows[0] || { total_seafarers: 0, ready: 0, conditionally_ready: 0, not_ready: 0 };
         const total = parseInt(stats.total_seafarers, 10) || 0;
 
-        let trendData = [];
-        if (roleId <= 2) {
-            const trendQuery = `
+        // 2. NEW: Fetch Competency Gap Analysis (Instead of History Trend)
+        let competencyGaps = [];
+        if (roleId <= 3) {
+            const gapsQuery = `
                 SELECT 
-                    to_char(month_date, 'Mon') AS month,
-                    COALESCE(avg_readiness, 0) AS readiness,
-                    COALESCE(avg_completion, 0) AS training_completion
-                FROM fleet_readiness_history
-                WHERE (company_id = $1 OR $1 IS NULL)
-                ORDER BY month_date ASC
-                LIMIT 7;
+                    COALESCE(ROUND(AVG(navigation_total_completed::numeric / NULLIF(navigation_total_assigned, 0)) * 100, 1), 0) AS navigation,
+                    COALESCE(ROUND(AVG(deck_total_completed::numeric / NULLIF(deck_total_assigned, 0)) * 100, 1), 0) AS deck,
+                    COALESCE(ROUND(AVG(engine_total_completed::numeric / NULLIF(engine_total_assigned, 0)) * 100, 1), 0) AS engine,
+                    COALESCE(ROUND(AVG(safety_total_completed::numeric / NULLIF(safety_total_assigned, 0)) * 100, 1), 0) AS safety,
+                    COALESCE(ROUND(AVG(cargo_total_completed::numeric / NULLIF(cargo_total_assigned, 0)) * 100, 1), 0) AS cargo
+                FROM user_competency_matrix m
+                JOIN users u ON m.user_id = u.user_id
+                WHERE (u.company_id = $1 OR $1 IS NULL)
+                  AND (u.ship_id = $2 OR $2 IS NULL);
             `;
-            const trendResult = await db.query(trendQuery, [company_id]);
-            trendData = trendResult.rows;
+            const gapsResult = await db.query(gapsQuery, [company_id, ship_id]);
+            const gaps = gapsResult.rows[0] || {};
+            
+            // Format for easy frontend charting (Array of objects)
+            competencyGaps = [
+                { domain: "Navigation", score: parseFloat(gaps.navigation) || 0 },
+                { domain: "Deck", score: parseFloat(gaps.deck) || 0 },
+                { domain: "Engine", score: parseFloat(gaps.engine) || 0 },
+                { domain: "Safety", score: parseFloat(gaps.safety) || 0 },
+                { domain: "Cargo", score: parseFloat(gaps.cargo) || 0 }
+            ];
         }
 
         return res.status(200).json({
@@ -244,7 +255,7 @@ export async function getExecutiveDashboard(req, res) {
                 ready: { count: parseInt(stats.ready, 10), percentage: total > 0 ? Math.round((parseInt(stats.ready, 10) / total) * 100) : 0 },
                 conditionally_ready: { count: parseInt(stats.conditionally_ready, 10) },
                 not_ready: { count: parseInt(stats.not_ready, 10) },
-                trend: trendData
+                competency_gaps: competencyGaps // Replaced 'trend' with this
             }
         });
     } catch (error) {
