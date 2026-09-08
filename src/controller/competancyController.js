@@ -93,7 +93,7 @@
                 queryParams.push(company_id);
             
         } else if (roleId === 3) {
-        if (!shipId) {
+        if (!ship_id) {
             return res.status(403).json({ message: "subadmin ship id is missing" });
         }   
             paramCount++;
@@ -177,6 +177,177 @@ export async function getAllCompetancyMatrices(req,res) {
     });
     } catch (error) {
         console.error("getAllCompetencyMatrices error:", error);
+        return res.status(500).json({ message: "Server error", error: error.message });
+    }
+}
+
+
+
+
+// ==============================================================================
+//  1. EXECUTIVE DASHBOARD 
+// ==============================================================================
+export async function getExecutiveDashboard(req, res) {
+    try {
+        const { company_id, ship_id } = getFetchScope(req);
+        const roleId = getRoleId(req);
+
+        // UPDATE: Cleaned up the math using the new readiness_score column
+        // UPDATE: Adjusted the EXISTS block to match the real 'certificates' table schema
+        const overviewQuery = `
+            WITH user_scores AS (
+                SELECT 
+                    u.user_id,
+                    COALESCE(m.readiness_score, 0) AS compliance_score,
+                    EXISTS (
+                        SELECT 1 FROM certificates c 
+                        WHERE c.user_id = u.user_id 
+                        AND (c.expiry_date < CURRENT_DATE OR c.status = 'Expired' OR c.status = 'Failed')
+                    ) AS has_hard_stop
+                FROM users u
+                LEFT JOIN user_competency_matrix m ON u.user_id = m.user_id
+                WHERE (u.company_id = $1 OR $1 IS NULL)
+                  AND (u.ship_id = $2 OR $2 IS NULL)
+            )
+            SELECT 
+                COUNT(*) AS total_seafarers,
+                COUNT(*) FILTER (WHERE NOT has_hard_stop AND compliance_score >= 80) AS ready,
+                COUNT(*) FILTER (WHERE NOT has_hard_stop AND compliance_score BETWEEN 50 AND 79) AS conditionally_ready,
+                COUNT(*) FILTER (WHERE has_hard_stop OR compliance_score < 50) AS not_ready
+            FROM user_scores;
+        `;
+
+        const overviewResult = await db.query(overviewQuery, [company_id, ship_id]);
+        const stats = overviewResult.rows[0] || { total_seafarers: 0, ready: 0, conditionally_ready: 0, not_ready: 0 };
+        const total = parseInt(stats.total_seafarers, 10) || 0;
+
+        let trendData = [];
+        if (roleId <= 2) {
+            const trendQuery = `
+                SELECT 
+                    to_char(month_date, 'Mon') AS month,
+                    COALESCE(avg_readiness, 0) AS readiness,
+                    COALESCE(avg_completion, 0) AS training_completion
+                FROM fleet_readiness_history
+                WHERE (company_id = $1 OR $1 IS NULL)
+                ORDER BY month_date ASC
+                LIMIT 7;
+            `;
+            const trendResult = await db.query(trendQuery, [company_id]);
+            trendData = trendResult.rows;
+        }
+
+        return res.status(200).json({
+            message: "Executive Dashboard data fetched successfully",
+            data: {
+                total_seafarers: total,
+                ready: { count: parseInt(stats.ready, 10), percentage: total > 0 ? Math.round((parseInt(stats.ready, 10) / total) * 100) : 0 },
+                conditionally_ready: { count: parseInt(stats.conditionally_ready, 10) },
+                not_ready: { count: parseInt(stats.not_ready, 10) },
+                trend: trendData
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ message: "Server error", error: error.message });
+    }
+}
+
+// ==============================================================================
+//  2. VESSEL READINESS BREAKDOWN
+// ==============================================================================
+export async function getVesselReadinessBreakdown(req, res) {
+    try {
+        const { company_id, ship_id } = getFetchScope(req);
+        const roleId = getRoleId(req);
+
+        if (roleId > 3) {
+            return res.status(403).json({ message: "Insufficient permissions to view fleet breakdown." });
+        }
+
+        // UPDATE: Replaced the bulky CASE statement with a simple AVG(m.readiness_score)
+        const query = `
+            SELECT 
+                s.ship_id,
+                s.ship_name AS vessel,
+                COALESCE(s.fleet_name, 'General Fleet') AS fleet,
+                COUNT(u.user_id)::int AS crew,
+                COALESCE(ROUND(AVG(m.readiness_score), 1), 0) AS readiness
+            FROM ships s
+            LEFT JOIN users u ON s.ship_id = u.ship_id
+            LEFT JOIN user_competency_matrix m ON u.user_id = m.user_id
+            WHERE (s.company_id = $1 OR $1 IS NULL)
+              AND (s.ship_id = $2 OR $2 IS NULL)
+            GROUP BY s.ship_id, s.ship_name, s.fleet_name
+            ORDER BY readiness DESC;
+        `;
+
+        const result = await db.query(query, [company_id, ship_id]);
+        return res.status(200).json({ data: result.rows });
+    } catch (error) {
+        return res.status(500).json({ message: "Server error", error: error.message });
+    }
+}
+
+// ==============================================================================
+//  3. USER CLEARANCE STATUS 
+// ==============================================================================
+export async function getUserClearanceStatus(req, res) {
+    try {
+        const requestedUserId = Number(req.params.user_id);
+        const { company_id, ship_id } = getFetchScope(req);
+        const roleId = getRoleId(req);
+        const authUserId = Number(req.user?.user_id);
+
+        if (roleId === 4 && requestedUserId !== authUserId) {
+            return res.status(403).json({ message: "Access denied. You can only view your own clearance status." });
+        }
+
+        const userQuery = `
+            SELECT u.user_id, u.full_name, u.rank, s.ship_name, u.company_id, u.ship_id
+            FROM users u
+            LEFT JOIN ships s ON u.ship_id = s.ship_id
+            WHERE u.user_id = $1;
+        `;
+        const userRes = await db.query(userQuery, [requestedUserId]);
+        if (userRes.rows.length === 0) return res.status(404).json({ message: "Seafarer not found" });
+        
+        const user = userRes.rows[0];
+
+        if (company_id !== null && user.company_id !== company_id) {
+            return res.status(403).json({ message: "Access denied. User belongs to a different company." });
+        }
+        if (ship_id !== null && user.ship_id !== ship_id) {
+            return res.status(403).json({ message: "Access denied. User belongs to a different ship." });
+        }
+
+        // UPDATE: Fetch the pre-calculated readiness_score directly
+        const matrixQuery = `SELECT * FROM user_competency_matrix WHERE user_id = $1;`;
+        const matrixRes = await db.query(matrixQuery, [requestedUserId]);
+        const matrix = matrixRes.rows[0] || {};
+        
+        const complianceScore = parseFloat(matrix.readiness_score) || 0;
+
+        // Fetch Certificates for Hard Stop check
+        const certsQuery = `SELECT * FROM certificates WHERE user_id = $1;`;
+        const certsRes = await db.query(certsQuery, [requestedUserId]);
+        const hasFailedCert = certsRes.rows.some(c => new Date(c.expiry_date) < new Date() || c.status === 'Expired' || c.status === 'Failed');
+
+        let clearanceStatus = "Ready";
+        if (hasFailedCert || complianceScore < 50) clearanceStatus = "Not Ready";
+        else if (complianceScore < 80) clearanceStatus = "Conditionally Ready";
+
+        return res.status(200).json({
+            data: {
+                user_id: user.user_id,
+                name: user.full_name,
+                rank: user.rank,
+                vessel: user.ship_name,
+                clearance_status: clearanceStatus,
+                compliance_score: complianceScore,
+                hard_stop_applied: hasFailedCert
+            }
+        });
+    } catch (error) {
         return res.status(500).json({ message: "Server error", error: error.message });
     }
 }
