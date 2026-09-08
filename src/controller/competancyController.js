@@ -289,12 +289,10 @@ export async function getVesselReadinessBreakdown(req, res) {
             return res.status(403).json({ message: "Insufficient permissions to view fleet breakdown." });
         }
 
-        // UPDATE: Replaced the bulky CASE statement with a simple AVG(m.readiness_score)
         const query = `
             SELECT 
                 s.ship_id,
                 s.ship_name AS vessel,
-                COALESCE(s.fleet_name, 'General Fleet') AS fleet,
                 COUNT(u.user_id)::int AS crew,
                 COALESCE(ROUND(AVG(m.readiness_score), 1), 0) AS readiness
             FROM ships s
@@ -302,7 +300,7 @@ export async function getVesselReadinessBreakdown(req, res) {
             LEFT JOIN user_competency_matrix m ON u.user_id = m.user_id
             WHERE (s.company_id = $1 OR $1 IS NULL)
               AND (s.ship_id = $2 OR $2 IS NULL)
-            GROUP BY s.ship_id, s.ship_name, s.fleet_name
+            GROUP BY s.ship_id, s.ship_name
             ORDER BY readiness DESC;
         `;
 
