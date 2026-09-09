@@ -934,3 +934,625 @@ export const getUnityCourseProgress = async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch Unity course progress' });
   }
 };
+
+
+
+
+
+
+
+/**
+ * =============================================================================
+ * GET /activity/unified
+ * =============================================================================
+ *
+ * Returns one unified activity timeline from:
+ *
+ * 1. activity_logs
+ *    - Existing application/activity records
+ *
+ * 2. unity_course_sync_logs
+ *    - Unity course/activity records
+ *    - Unity data is extracted from raw_response.results[]
+ *
+ *
+ * Supported query parameters:
+ *
+ * ?user_id=2386
+ * ?company_id=xxx
+ * ?ship_id=12
+ * ?source=activity
+ * ?source=unity
+ * ?limit=100
+ * ?offset=0
+ *
+ * Example:
+ * GET /activity/unified?user_id=2386
+ */
+export const getUnifiedActivity = async (req, res) => {
+  try {
+    const {
+      user_id,
+      company_id,
+      ship_id,
+      source,
+      from,
+      to,
+      limit = 100,
+      offset = 0,
+    } = req.query;
+
+    const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
+    const off = Math.max(Number(offset) || 0, 0);
+
+    // =========================================================================
+    //  BUILD ROLE-BASED USER SCOPE
+    // =========================================================================
+
+    const userFilters = [];
+    const userValues = [];
+
+    const addFilter = (filters, values, sql, value) => {
+      if (value === undefined || value === null || value === '') {
+        return;
+      }
+
+      values.push(value);
+      filters.push(sql.replace('?', `$${values.length}`));
+    };
+
+    const roleId = Number(req.user?.role_id);
+    const loginCompanyId = req.user?.company_id;
+    const loginShipId = req.user?.ship_id;
+    const loginUserId = req.user?.user_id;
+
+    /*
+     * Super Admin
+     */
+    if (roleId === 1) {
+      addFilter(
+        userFilters,
+        userValues,
+        'u.company_id = ?',
+        company_id ? String(company_id) : null
+      );
+
+      addFilter(
+        userFilters,
+        userValues,
+        'u.ship_id = ?',
+        ship_id ? Number(ship_id) : null
+      );
+
+      addFilter(
+        userFilters,
+        userValues,
+        'u.user_id = ?',
+        user_id ? Number(user_id) : null
+      );
+    }
+
+    /*
+     * Company Admin
+     */
+    else if (roleId === 2) {
+      if (!loginCompanyId) {
+        userFilters.push('1 = 0');
+      } else {
+        addFilter(
+          userFilters,
+          userValues,
+          'u.company_id = ?',
+          String(loginCompanyId)
+        );
+
+        addFilter(
+          userFilters,
+          userValues,
+          'u.ship_id = ?',
+          ship_id ? Number(ship_id) : null
+        );
+
+        addFilter(
+          userFilters,
+          userValues,
+          'u.user_id = ?',
+          user_id ? Number(user_id) : null
+        );
+      }
+    }
+
+    /*
+     * Ship/Sub Admin
+     */
+    else if (roleId === 3) {
+      if (!loginShipId) {
+        userFilters.push('1 = 0');
+      } else {
+        addFilter(
+          userFilters,
+          userValues,
+          'u.ship_id = ?',
+          Number(loginShipId)
+        );
+
+        addFilter(
+          userFilters,
+          userValues,
+          'u.user_id = ?',
+          user_id ? Number(user_id) : null
+        );
+      }
+    }
+
+    /*
+     * Crew
+     */
+    else if (roleId === 4) {
+      if (!loginUserId) {
+        userFilters.push('1 = 0');
+      } else {
+        addFilter(
+          userFilters,
+          userValues,
+          'u.user_id = ?',
+          Number(loginUserId)
+        );
+      }
+    }
+
+    /*
+     * Unknown role
+     */
+    else {
+      userFilters.push('1 = 0');
+    }
+
+    const userWhere =
+      userFilters.length > 0
+        ? `WHERE ${userFilters.join(' AND ')}`
+        : '';
+
+    // =========================================================================
+    //  SOURCE FILTER
+    // =========================================================================
+
+    const includeActivity =
+      !source || source.toLowerCase() === 'activity';
+
+    const includeUnity =
+      !source || source.toLowerCase() === 'unity';
+
+    if (!includeActivity && !includeUnity) {
+      return res.status(400).json({
+        error: 'Invalid source. Use activity or unity.',
+      });
+    }
+
+    // =========================================================================
+    //  FETCH OLD ACTIVITY LOGS
+    // =========================================================================
+
+    let activityRows = [];
+
+    if (includeActivity) {
+      const activityValues = [...userValues];
+      const activityFilters = [...userFilters];
+
+      /*
+       * Date filtering
+       */
+      if (from) {
+        addFilter(
+          activityFilters,
+          activityValues,
+          'al.occurred_at >= ?',
+          from
+        );
+      }
+
+      if (to) {
+        addFilter(
+          activityFilters,
+          activityValues,
+          'al.occurred_at <= ?',
+          to
+        );
+      }
+
+      /*
+       * activity_logs uses user_id directly.
+       *
+       * Join users so role-based filtering can be applied.
+       */
+      const activityWhere =
+        activityFilters.length
+          ? `WHERE ${activityFilters.join(' AND ')}`
+          : '';
+
+      const activitySql = `
+        SELECT
+          al.activity_id,
+          al.user_id,
+          al.username,
+          al.company_id,
+          al.ship_id,
+          al.activity_type,
+          al.training_type,
+          al.payload_json,
+          al.occurred_at,
+          al.created_at,
+
+          u.seafarer_id,
+          u.full_name,
+          u.rank,
+
+          c.company_name,
+          s.ship_name
+
+        FROM activity_logs al
+
+        JOIN users u
+          ON u.user_id = al.user_id
+
+        LEFT JOIN company c
+          ON c.company_id = u.company_id
+
+        LEFT JOIN ships s
+          ON s.ship_id = u.ship_id
+
+        ${activityWhere}
+
+        ORDER BY al.occurred_at DESC
+      `;
+
+      const result = await db.query(
+        activitySql,
+        activityValues
+      );
+
+      activityRows = result.rows;
+    }
+
+    // =========================================================================
+    //  FETCH UNITY HISTORY
+    // =========================================================================
+    
+    let unityRows = [];
+
+    if (includeUnity) {
+      const unityValues = [...userValues];
+      const unityFilters = [...userFilters];
+
+      /*
+       * Date filters.
+       *
+       * Unity timestamp is inside:
+       * result.progress.last_activity_at
+       */
+      if (from) {
+        addFilter(
+          unityFilters,
+          unityValues,
+          `(r.result->'progress'->>'last_activity_at')::timestamptz >= ?`,
+          from
+        );
+      }
+
+      if (to) {
+        addFilter(
+          unityFilters,
+          unityValues,
+          `(r.result->'progress'->>'last_activity_at')::timestamptz <= ?`,
+          to
+        );
+      }
+
+      const unityWhere =
+        unityFilters.length
+          ? `WHERE ${unityFilters.join(' AND ')}`
+          : '';
+
+      const unitySql = `
+        SELECT
+          ucs.*,
+
+          r.result AS unity_result,
+
+          u.user_id,
+          u.username,
+          u.seafarer_id,
+          u.full_name,
+          u.rank,
+          u.company_id,
+          u.ship_id,
+
+          c.company_name,
+          s.ship_name
+
+        FROM unity_course_sync_logs ucs
+
+        CROSS JOIN LATERAL jsonb_array_elements(
+          COALESCE(
+            ucs.raw_response->'results',
+            '[]'::jsonb
+          )
+        ) AS r(result)
+
+        JOIN users u
+          ON u.user_id = NULLIF(
+            r.result->>'user_id',
+            ''
+          )::integer
+
+        LEFT JOIN company c
+          ON c.company_id = u.company_id
+
+        LEFT JOIN ships s
+          ON s.ship_id = u.ship_id
+
+        ${unityWhere}
+      `;
+
+      const result = await db.query(
+        unitySql,
+        unityValues
+      );
+
+      unityRows = result.rows;
+    }
+
+    // =========================================================================
+    //  NORMALIZE OLD ACTIVITY LOGS
+    // =========================================================================
+
+    const activities = activityRows.map((row) => ({
+      id: `activity_${row.activity_id}`,
+
+      source: 'activity',
+
+      user_id: row.user_id,
+      username: row.username,
+      seafarer_id: row.seafarer_id,
+
+      full_name: row.full_name,
+      rank: row.rank,
+
+      company_id: row.company_id,
+      company_name: row.company_name,
+
+      ship_id: row.ship_id,
+      ship_name: row.ship_name,
+
+      activity_type: row.activity_type,
+      training_type: row.training_type,
+
+      title:
+        row.training_type ||
+        row.activity_type ||
+        'Activity',
+
+      timestamp: row.occurred_at,
+
+      course: null,
+
+      progress_percentage: null,
+      is_completed: null,
+
+      started_at: null,
+      completed_at: null,
+
+      payload: row.payload_json,
+
+      created_at: row.created_at,
+    }));
+
+    // =========================================================================
+    //  NORMALIZE UNITY LOGS
+    // =========================================================================
+
+    const unityActivities = unityRows.map((row) => {
+      const result = row.unity_result || {};
+      const progress = result.progress || {};
+
+      /*
+       * Most useful timestamp for timeline:
+       *
+       * last_activity_at
+       *
+       * Fallback:
+       * started_at
+       */
+      const timestamp =
+        progress.last_activity_at ||
+        progress.completed_at ||
+        progress.started_at ||
+        null;
+
+      /*
+       * progress_percentage comes as a string from PostgreSQL JSONB.
+       */
+      const progressPercentage =
+        progress.progress_percentage !== undefined &&
+        progress.progress_percentage !== null
+          ? Number(progress.progress_percentage)
+          : null;
+
+      /*
+       * Build an event ID.
+       *
+       * We do NOT use progress_id as the event ID because
+       * progress_id represents the current progress row and
+       * can be reused across multiple Unity submissions.
+       *
+       * Use the sync log's database ID when available.
+       */
+      const syncLogId =
+        row.id ??
+        row.sync_log_id ??
+        row.unity_course_sync_log_id ??
+        null;
+
+      const resultIndex =
+        result.index !== undefined
+          ? result.index
+          : 0;
+
+      const eventId =
+        syncLogId !== null
+          ? `unity_${syncLogId}_${resultIndex}`
+          : `unity_${resultIndex}_${timestamp || 'unknown'}`;
+
+      return {
+        id: eventId,
+
+        source: 'unity',
+
+        user_id:
+          row.user_id ??
+          result.user_id ??
+          null,
+
+        username:
+          row.username ??
+          result.username ??
+          null,
+
+        seafarer_id:
+          row.seafarer_id ??
+          result.seafarer_id ??
+          null,
+
+        full_name: row.full_name,
+        rank: row.rank,
+
+        company_id: row.company_id,
+        company_name: row.company_name,
+
+        ship_id: row.ship_id,
+        ship_name: row.ship_name,
+
+        activity_type: 'unity_course_progress',
+
+        training_type:
+          result.unity_course_code ??
+          null,
+
+        title:
+          result.course_name ??
+          result.unity_course_code ??
+          'Unity Course Activity',
+
+        timestamp,
+
+        course: {
+          unity_course_id:
+            result.unity_course_id ??
+            progress.unity_course_id ??
+            null,
+
+          unity_course_code:
+            result.unity_course_code ??
+            null,
+
+          course_name:
+            result.course_name ??
+            null,
+        },
+
+        progress_percentage: Number.isFinite(progressPercentage)
+          ? progressPercentage
+          : null,
+
+        is_completed:
+          progress.is_completed !== undefined
+            ? Boolean(progress.is_completed)
+            : null,
+
+        started_at:
+          progress.started_at ??
+          null,
+
+        completed_at:
+          progress.completed_at ??
+          null,
+
+        payload: null,
+
+        /*
+         * Keep the original Unity response available.
+         * This is useful if frontend later needs more fields.
+         */
+        unity_data: result,
+
+        sync_status: row.status ?? null,
+
+        created_at:
+          row.created_at ??
+          null,
+      };
+    });
+
+    // =========================================================================
+    //  MERGE BOTH SOURCES
+    // =========================================================================
+
+    let unified = [
+      ...activities,
+      ...unityActivities,
+    ];
+
+    // =========================================================================
+    //  SORT BY TIMESTAMP
+    // =========================================================================
+
+    unified.sort((a, b) => {
+      const timeA = a.timestamp
+        ? new Date(a.timestamp).getTime()
+        : 0;
+
+      const timeB = b.timestamp
+        ? new Date(b.timestamp).getTime()
+        : 0;
+
+      return timeB - timeA;
+    });
+
+    // =========================================================================
+    //  PAGINATION
+    // =========================================================================
+
+    const total = unified.length;
+
+    unified = unified.slice(
+      off,
+      off + lim
+    );
+
+    // =========================================================================
+    //  RESPONSE
+    // =========================================================================
+
+    return res.json({
+      data: unified,
+
+      pagination: {
+        total,
+        limit: lim,
+        offset: off,
+        returned: unified.length,
+      },
+    });
+
+  } catch (err) {
+    console.error(
+      'Error getUnifiedActivity:',
+      err
+    );
+
+    return res.status(500).json({
+      error: 'Failed to fetch unified activity',
+      message: err.message,
+    });
+  }
+};

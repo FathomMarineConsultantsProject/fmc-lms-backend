@@ -10,6 +10,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   trackUnityCourseProgress,
   getUnityCourseProgress,
+  getUnifiedActivity
 } from '../controller/unityCourseController.js';
 
 const router = express.Router();
@@ -79,4 +80,9 @@ router.post('/progress/track', trackUnityCourseProgress);
  */
 router.get('/progress', requireAuth, getUnityCourseProgress);
 
+router.get(
+  '/activity/unified',
+  requireAuth,
+  getUnifiedActivity
+);
 export default router;
