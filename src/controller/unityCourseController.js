@@ -978,12 +978,7 @@ export const getUnifiedActivity = async (req, res) => {
       source,
       from,
       to,
-      limit = 100,
-      offset = 0,
     } = req.query;
-
-    const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
-    const off = Math.max(Number(offset) || 0, 0);
 
     // =========================================================================
     //  BUILD ROLE-BASED USER SCOPE
@@ -1217,7 +1212,7 @@ export const getUnifiedActivity = async (req, res) => {
     // =========================================================================
     //  FETCH UNITY HISTORY
     // =========================================================================
-    
+
     let unityRows = [];
 
     if (includeUnity) {
@@ -1361,6 +1356,7 @@ export const getUnifiedActivity = async (req, res) => {
        * last_activity_at
        *
        * Fallback:
+       * completed_at
        * started_at
        */
       const timestamp =
@@ -1497,7 +1493,7 @@ export const getUnifiedActivity = async (req, res) => {
     //  MERGE BOTH SOURCES
     // =========================================================================
 
-    let unified = [
+    const unified = [
       ...activities,
       ...unityActivities,
     ];
@@ -1519,27 +1515,13 @@ export const getUnifiedActivity = async (req, res) => {
     });
 
     // =========================================================================
-    //  PAGINATION
-    // =========================================================================
-
-    const total = unified.length;
-
-    unified = unified.slice(
-      off,
-      off + lim
-    );
-
-    // =========================================================================
-    //  RESPONSE
+    //  RESPONSE — NO PAGINATION
     // =========================================================================
 
     return res.json({
       data: unified,
-
       pagination: {
-        total,
-        limit: lim,
-        offset: off,
+        total: unified.length,
         returned: unified.length,
       },
     });
