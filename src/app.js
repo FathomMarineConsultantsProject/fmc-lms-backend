@@ -24,7 +24,7 @@ import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
 import competancyRoutes from './routes/competancyMatrixRoutes.js'
 import aiAssistant from './routes/aiRoutes.js'
-import trainingDashboardRoutes from "./routes/trainingDashboardRoutes.js";
+import trainingDashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 const app = express();
 
