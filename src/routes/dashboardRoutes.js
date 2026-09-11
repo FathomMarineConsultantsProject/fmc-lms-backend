@@ -5,7 +5,7 @@ import {
   getTrainingDashboard,
   getShipTrainingDashboard,
   getSeafarerTrainingDashboard,
-} from "../controller/dashboardController"
+} from "../controller/dashboardController.js"
 
 import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
