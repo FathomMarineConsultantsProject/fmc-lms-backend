@@ -2547,302 +2547,556 @@ export const searchUsers = async (req, res) => {
   try {
     const role = Number(req.user.role_id);
 
-    // incoming filters from body
+    // ============================================================
+    // INCOMING FILTERS
+    // ============================================================
     const body = req.body || {};
+
     const q = String(body.q ?? "").trim();
     const rank = String(body.rank ?? "").trim();
     const status = String(body.status ?? "").trim();
-    const role_id_q = body.role_id != null ? Number(body.role_id) : null;
 
-    // sorting
-    const sort = String(body.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
+    const role_id_q =
+      body.role_id != null ? Number(body.role_id) : null;
+
+    // ============================================================
+    // SORTING
+    // ============================================================
+    const sort =
+      String(body.sort ?? "rank").trim().toLowerCase();
+
     const order =
-      String(body.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+      String(body.order ?? "asc").trim().toLowerCase() === "desc"
+        ? "DESC"
+        : "ASC";
 
-    // pagination (min10 max100)
+    // ============================================================
+    // PAGINATION
+    // ============================================================
     const pageRaw = parseInt(String(body.page ?? "1"), 10);
     const limitRaw = parseInt(String(body.limit ?? "500"), 10);
-    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+
+    const page =
+      Number.isFinite(pageRaw) && pageRaw > 0
+        ? pageRaw
+        : 1;
+
     const limit = Math.min(
       500,
-      Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
+      Math.max(
+        50,
+        Number.isFinite(limitRaw) ? limitRaw : 50
+      )
     );
+
     const offset = (page - 1) * limit;
 
-    // company/ship from body (may be ignored depending on role scope)
+    // ============================================================
+    // COMPANY / SHIP FILTERS
+    // ============================================================
     const requestedCompanyId =
-      body.company_id != null && String(body.company_id).trim() !== ""
+      body.company_id != null &&
+      String(body.company_id).trim() !== ""
         ? String(body.company_id).trim()
         : null;
 
     const requestedShipId =
-      body.ship_id != null && String(body.ship_id).trim() !== ""
+      body.ship_id != null &&
+      String(body.ship_id).trim() !== ""
         ? Number.parseInt(String(body.ship_id), 10)
         : null;
 
-    // VALIDATION (only validate when provided)
-    // company_id must be UUID (only meaningful for role 1, but validate anyway if sent)
-    if (requestedCompanyId && !isUuid(requestedCompanyId)) {
-      return res.status(400).json({ error: "company_id must be a valid UUID" });
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    // company_id must be UUID
+    if (
+      requestedCompanyId &&
+      !isUuid(requestedCompanyId)
+    ) {
+      return res.status(400).json({
+        error: "company_id must be a valid UUID",
+      });
     }
 
-    // ship_id must be a valid integer when provided
-    if (body.ship_id != null && String(body.ship_id).trim() !== "") {
-      if (!Number.isInteger(requestedShipId) || requestedShipId <= 0) {
-        return res.status(400).json({ error: "ship_id must be a positive integer" });
+    // ship_id must be positive integer
+    if (
+      body.ship_id != null &&
+      String(body.ship_id).trim() !== ""
+    ) {
+      if (
+        !Number.isInteger(requestedShipId) ||
+        requestedShipId <= 0
+      ) {
+        return res.status(400).json({
+          error: "ship_id must be a positive integer",
+        });
       }
     }
 
-    // role_id filter must be valid integer if provided
-    if (body.role_id != null && !Number.isFinite(role_id_q)) {
-      return res.status(400).json({ error: "role_id must be a number" });
+    // role_id validation
+    if (
+      body.role_id != null &&
+      !Number.isFinite(role_id_q)
+    ) {
+      return res.status(400).json({
+        error: "role_id must be a number",
+      });
     }
 
-    // status validation (optional but nice)
+    // status validation
     if (status) {
-      const s = String(status).trim().toLowerCase();
-      if (s !== "onboard" && s !== "offboard") {
-        return res
-          .status(400)
-          .json({ error: 'status must be either "Onboard" or "Offboard"' });
+      const s = status.toLowerCase();
+
+      if (
+        s !== "onboard" &&
+        s !== "offboard"
+      ) {
+        return res.status(400).json({
+          error:
+            'status must be either "Onboard" or "Offboard"',
+        });
       }
     }
 
-    // ---------------- WHERE builder ----------------
+    // ============================================================
+    // WHERE BUILDER
+    // ============================================================
     const where = [];
     const params = [];
+
     let p = 1;
 
-    // role scope enforcement
+    // ============================================================
+    // ROLE SCOPE
+    // ============================================================
+
+    // ROLE 1 = SUPERADMIN
     if (role === 1) {
-      // superadmin: optional company filter
+      // Optional company filter
       if (requestedCompanyId) {
-        where.push(`u.company_id = $${p++}`);
+        where.push(
+          `u.company_id = $${p++}`
+        );
+
         params.push(requestedCompanyId);
       }
-      // optional ship filter
+
+      // Optional ship filter
       if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
+        where.push(
+          `u.ship_id = $${p++}`
+        );
+
         params.push(requestedShipId);
       }
-    } else if (role === 2) {
-      // admin: forced company_id from token
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
-
-      // optional ship filter (must still be inside company)
-      if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
-        params.push(requestedShipId);
-      }
-    } else if (role === 3) {
-      // subadmin: forced company + ship
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
-
-      where.push(`u.ship_id = $${p++}`);
-      params.push(req.user.ship_id);
-    } else {
-      return res.status(403).json({ error: "Forbidden" });
     }
-    // Only return Subadmins & Crew
-    where.push(`u.role_id IN (3, 4)`);
 
-    // q search
+    // ROLE 2 = ADMIN
+    else if (role === 2) {
+      // Forced company scope
+      where.push(
+        `u.company_id = $${p++}`
+      );
+
+      params.push(req.user.company_id);
+
+      // Optional ship filter
+      if (Number.isFinite(requestedShipId)) {
+        where.push(
+          `u.ship_id = $${p++}`
+        );
+
+        params.push(requestedShipId);
+      }
+    }
+
+    // ROLE 3 = SUBADMIN
+    else if (role === 3) {
+      // Forced company scope
+      where.push(
+        `u.company_id = $${p++}`
+      );
+
+      params.push(req.user.company_id);
+
+      // Forced ship scope
+      where.push(
+        `u.ship_id = $${p++}`
+      );
+
+      params.push(req.user.ship_id);
+    }
+
+    // Everything else
+    else {
+      return res.status(403).json({
+        error: "Forbidden",
+      });
+    }
+
+    // Only Subadmins & Crew
+    where.push(
+      `u.role_id IN (3, 4)`
+    );
+
+    // ============================================================
+    // SEARCH QUERY
+    // ============================================================
     if (q) {
-      where.push(`(
-        u.full_name ILIKE $${p}
-        OR u.seafarer_id ILIKE $${p}
-        OR u.username ILIKE $${p}
-      )`);
+      where.push(`
+        (
+          u.full_name ILIKE $${p}
+          OR u.seafarer_id ILIKE $${p}
+          OR u.username ILIKE $${p}
+        )
+      `);
+
       params.push(`%${q}%`);
+
       p++;
     }
 
-    // rank filter
+    // ============================================================
+    // RANK FILTER
+    // ============================================================
     if (rank) {
-      where.push(`u.rank ILIKE $${p++}`);
+      where.push(
+        `u.rank ILIKE $${p++}`
+      );
+
       params.push(`%${rank}%`);
     }
 
-    // status filter
+    // ============================================================
+    // STATUS FILTER
+    // ============================================================
     if (status) {
-      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${p++})`);
+      where.push(
+        `LOWER(COALESCE(u.status, '')) = LOWER($${p++})`
+      );
+
       params.push(status);
     }
 
-    // role_id filter
+    // ============================================================
+    // ROLE FILTER
+    // ============================================================
     if (Number.isFinite(role_id_q)) {
-      where.push(`u.role_id = $${p++}`);
+      where.push(
+        `u.role_id = $${p++}`
+      );
+
       params.push(role_id_q);
     }
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const whereSql =
+      where.length > 0
+        ? `WHERE ${where.join(" AND ")}`
+        : "";
 
-    // whitelist sort column (avoid SQL injection)
+    // ============================================================
+    // SORT COLUMN
+    // ============================================================
     const sortColumn =
-      sort === "name" ? "u.full_name" :
-        sort === "created_at" ? "u.created_at" :
-          "u.user_id";
+      sort === "name"
+        ? "u.full_name"
+        : sort === "created_at"
+          ? "u.created_at"
+          : "u.user_id";
 
-    // total count
+    // ============================================================
+    // TOTAL COUNT
+    // ============================================================
     const totalRes = await db.query(
-      `SELECT COUNT(*)::int AS total FROM users u ${whereSql}`,
+      `
+      SELECT COUNT(*)::int AS total
+      FROM users u
+      ${whereSql}
+      `,
       params
     );
-    const total = totalRes.rows[0]?.total ?? 0;
 
-    // data query
-    const dataParams = [...params, limit, offset];
+    const total =
+      totalRes.rows[0]?.total ?? 0;
+
+    // ============================================================
+    // FETCH USERS
+    // ============================================================
+    const dataParams = [
+      ...params,
+      limit,
+      offset,
+    ];
+
     const { rows } = await db.query(
-      `SELECT
-         u.user_id,
-         u.seafarer_id,
-         u.full_name,
-         u.rank,
-         u.trip,
-         u.embarkation_date,
-         u.disembarkation_date,
-         u.status,
-         u.username,
-         u.ship_id,
-         u.company_id,
-         u.created_at,
-         u.updated_at,
-         u.role_id,
-         u.sex,
-         u.date_of_birth,
-         u.place_of_birth,
-         u.nationality,
-         u.embarkation_port,
-         u.disembarkation_port
-       FROM users u
-       ${whereSql}
-       ORDER BY ${sortColumn} ${order}
-       LIMIT $${p} OFFSET $${p + 1}`,
+      `
+      SELECT
+        u.user_id,
+        u.seafarer_id,
+        u.full_name,
+        u.rank,
+        u.trip,
+        u.embarkation_date,
+        u.disembarkation_date,
+        u.status,
+        u.username,
+        u.ship_id,
+        u.company_id,
+        u.created_at,
+        u.updated_at,
+        u.role_id,
+        u.sex,
+        u.date_of_birth,
+        u.place_of_birth,
+        u.nationality,
+        u.embarkation_port,
+        u.disembarkation_port
+      FROM users u
+      ${whereSql}
+      ORDER BY ${sortColumn} ${order}
+      LIMIT $${p}
+      OFFSET $${p + 1}
+      `,
       dataParams
     );
 
-// Green "View Logs" if the user has at least one activity
-// from either:
-//   1. activity_logs
-//   2. successful Unity course sync result
+    // ============================================================
+    // ACTIVITY CHECK
+    // ============================================================
+    //
+    // Business rule:
+    //
+    // GREEN if the user has at least ONE activity from:
+    //
+    //   1. activity_logs
+    //   OR
+    //   2. successful Unity course sync
+    //
+    // There is NO 9-month restriction here.
+    //
+    // ============================================================
 
-let activityMap = new Map(); // user_id -> last_activity_at ISO
+    const activityMap = new Map();
 
-if (rows.length) {
-  const ids = rows
-    .map((u) => Number(u.user_id))
-    .filter((n) => Number.isInteger(n));
+    if (rows.length > 0) {
+      const ids = rows
+        .map((u) => Number(u.user_id))
+        .filter((id) => Number.isInteger(id));
 
-  if (ids.length) {
-    const actRes = await db.query(
-      `
-      WITH old_activity AS (
-        SELECT
-          user_id,
-          MAX(occurred_at) AS last_activity_at
-        FROM activity_logs
-        WHERE user_id = ANY($1::int[])
-        GROUP BY user_id
-      ),
+      if (ids.length > 0) {
+        const activityResult = await db.query(
+          `
+          WITH old_activity AS (
 
-      unity_activity AS (
-        SELECT
-          (r.result->>'user_id')::int AS user_id,
-          MAX(
-            COALESCE(
-              (r.result->'progress'->>'last_activity_at')::timestamptz,
-              (r.result->'progress'->>'completed_at')::timestamptz,
-              (r.result->'progress'->>'started_at')::timestamptz
-            )
-          ) AS last_activity_at
-        FROM unity_course_sync_logs ucs
-        CROSS JOIN LATERAL jsonb_array_elements(
-          COALESCE(
-            ucs.raw_response->'results',
-            '[]'::jsonb
+            SELECT
+              al.user_id,
+              MAX(al.occurred_at) AS last_activity_at
+
+            FROM activity_logs al
+
+            WHERE al.user_id = ANY($1::int[])
+
+            GROUP BY al.user_id
+          ),
+
+          unity_activity AS (
+
+            SELECT
+              (result->>'user_id')::int AS user_id,
+
+              MAX(
+                COALESCE(
+                  NULLIF(
+                    result->'progress'->>'last_activity_at',
+                    ''
+                  )::timestamptz,
+
+                  NULLIF(
+                    result->'progress'->>'completed_at',
+                    ''
+                  )::timestamptz,
+
+                  NULLIF(
+                    result->'progress'->>'started_at',
+                    ''
+                  )::timestamptz
+                )
+              ) AS last_activity_at
+
+            FROM unity_course_sync_logs ucs
+
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(
+                  ucs.raw_response->'results'
+                ) = 'array'
+                THEN ucs.raw_response->'results'
+
+                ELSE '[]'::jsonb
+              END
+            ) AS r(result)
+
+            WHERE
+              ucs.success_records > 0
+
+              AND result->>'success' = 'true'
+
+              AND (result->>'user_id') ~ '^[0-9]+$'
+
+              AND (result->>'user_id')::int =
+                  ANY($1::int[])
+
+            GROUP BY
+              (result->>'user_id')::int
           )
-        ) AS r(result)
-        WHERE ucs.success_records > 0
-          AND r.result->>'success' = 'true'
-          AND (r.result->>'user_id')::int = ANY($1::int[])
-        GROUP BY (r.result->>'user_id')::int
-      )
 
-      SELECT
-        u.user_id,
-        GREATEST(
-          old_activity.last_activity_at,
-          unity_activity.last_activity_at
-        ) AS last_activity_at
-      FROM users u
-      LEFT JOIN old_activity
-        ON old_activity.user_id = u.user_id
-      LEFT JOIN unity_activity
-        ON unity_activity.user_id = u.user_id
-      WHERE u.user_id = ANY($1::int[])
-        AND (
-          old_activity.user_id IS NOT NULL
-          OR unity_activity.user_id IS NOT NULL
-        )
-      `,
-      [ids]
-    );
+          SELECT
+            COALESCE(
+              old_activity.user_id,
+              unity_activity.user_id
+            ) AS user_id,
 
-    for (const r of actRes.rows) {
-      activityMap.set(
-        Number(r.user_id),
-        r.last_activity_at
-          ? new Date(r.last_activity_at).toISOString()
-          : null
-      );
+            CASE
+
+              WHEN old_activity.last_activity_at IS NULL
+                THEN unity_activity.last_activity_at
+
+              WHEN unity_activity.last_activity_at IS NULL
+                THEN old_activity.last_activity_at
+
+              WHEN old_activity.last_activity_at >=
+                   unity_activity.last_activity_at
+                THEN old_activity.last_activity_at
+
+              ELSE unity_activity.last_activity_at
+
+            END AS last_activity_at
+
+          FROM old_activity
+
+          FULL OUTER JOIN unity_activity
+
+            ON old_activity.user_id =
+               unity_activity.user_id
+          `,
+          [ids]
+        );
+
+        // ========================================================
+        // BUILD USER ACTIVITY MAP
+        // ========================================================
+
+        for (const activity of activityResult.rows) {
+          const userId =
+            Number(activity.user_id);
+
+          const lastActivity =
+            activity.last_activity_at
+              ? new Date(
+                  activity.last_activity_at
+                ).toISOString()
+              : null;
+
+          activityMap.set(
+            userId,
+            lastActivity
+          );
+        }
+      }
     }
-  }
-}
 
-    // custom rank ordering when sort=rank
+    // ============================================================
+    // CUSTOM RANK ORDERING
+    // ============================================================
     if (sort === "rank") {
       rows.sort((a, b) => {
         const ra = rankSortValue(a.rank);
         const rb = rankSortValue(b.rank);
-        if (ra !== rb) return ra - rb;
-        return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
-          sensitivity: "base",
-        });
+
+        if (ra !== rb) {
+          return ra - rb;
+        }
+
+        return String(
+          a.full_name || ""
+        ).localeCompare(
+          String(b.full_name || ""),
+          undefined,
+          {
+            sensitivity: "base",
+          }
+        );
       });
     }
 
+    // ============================================================
+    // RESPONSE
+    // ============================================================
     return res.json({
       page,
       limit,
       total,
       count: rows.length,
-      recent_activity_minutes: recent_activity_minutes,
+
       users: rows.map((u) => {
-        const last = activityMap.get(Number(u.user_id)) || null;
+        const last =
+          activityMap.get(
+            Number(u.user_id)
+          ) || null;
+
         return {
           ...u,
+
+          // TRUE if:
+          // activity_logs exists
+          // OR
+          // successful Unity activity exists
           has_recent_activity: !!last,
+
           last_activity_at: last,
         };
       }),
+
       applied_filters: {
-        company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
+        company_id:
+          role === 1
+            ? requestedCompanyId || null
+            : String(req.user.company_id),
+
         ship_id:
-          role === 3 ? Number(req.user.ship_id) :
-            Number.isFinite(requestedShipId) ? requestedShipId :
-              null,
+          role === 3
+            ? Number(req.user.ship_id)
+            : Number.isFinite(requestedShipId)
+              ? requestedShipId
+              : null,
+
         q: q || null,
+
         rank: rank || null,
+
         status: status || null,
-        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
+
+        role_id:
+          Number.isFinite(role_id_q)
+            ? role_id_q
+            : null,
+
         sort,
+
         order: order.toLowerCase(),
       },
     });
+
   } catch (err) {
-    console.error("searchUsers error:", err);
-    return res.status(500).json({ error: "Failed to search users" });
+    console.error(
+      "searchUsers error:",
+      err
+    );
+
+    return res.status(500).json({
+      error: "Failed to search users",
+    });
   }
 };
