@@ -24,7 +24,7 @@ import courseRoutes from "./routes/courseRoutes.js";
 import unityCourseRoutes from './routes/unityCourseRoutes.js';
 import competancyRoutes from './routes/competancyMatrixRoutes.js'
 import aiAssistant from './routes/aiRoutes.js'
-import trainingDashboardRoutes from "./routes/dashboardRoutes.js";
+import dashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 const app = express();
 
@@ -99,7 +99,7 @@ app.use("/meetings", meetingRoutes);
 app.use("/api/courses", courseRoutes);
 app.use('/api/matrix',competancyRoutes);
 app.use("/api/immersive", immersiveRoutes);
-app.use("/api/training", trainingDashboardRoutes);
+app.use("/api/training", dashboardRoutes);
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 
