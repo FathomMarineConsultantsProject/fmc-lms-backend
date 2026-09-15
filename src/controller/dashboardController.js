@@ -394,86 +394,52 @@ function buildDashboardFilters(query, startIndex = 1) {
 
 export async function getTrainingDashboard(req, res) {
   try {
-
-    /*
-     * ----------------------------------------------------------
-     * COMPANY SCOPE
-     * ----------------------------------------------------------
-     *
-     * Super Admin does NOT belong to a company.
-     *
-     * Therefore:
-     *
-     * companyId absent
-     *     -> ALL COMPANIES
-     *
-     * companyId present
-     *     -> SELECTED COMPANY
-     */
-
     const { companyId } = req.query;
 
-
-    /* ----------------------------------------------------------
+    /* ==========================================================
        BASE CONDITIONS
-       ---------------------------------------------------------- */
+       ========================================================== */
 
     const baseConditions = [
       `ce.assigned = true`,
-
       `c.deleted_at IS NULL`,
-
-      /*
-       * Ignore test vessels.
-       */
       `COALESCE(s.is_test_ship, false) = false`,
     ];
 
-
     const baseParams = [];
-
     let filterStartIndex = 1;
 
-
-    /* ----------------------------------------------------------
-       OPTIONAL COMPANY FILTER
-       ---------------------------------------------------------- */
+    /* ==========================================================
+       COMPANY FILTER
+       ========================================================== */
 
     if (companyId) {
-
       baseConditions.push(
         `u.company_id = $${filterStartIndex}`
       );
 
       baseParams.push(companyId);
-
       filterStartIndex++;
     }
 
-
-    /* ----------------------------------------------------------
-       OTHER DASHBOARD FILTERS
-       ---------------------------------------------------------- */
+    /* ==========================================================
+       OTHER FILTERS
+       ========================================================== */
 
     const filters = buildDashboardFilters(
       req.query,
       filterStartIndex
     );
 
-
-    /* ----------------------------------------------------------
+    /* ==========================================================
        BASE TRAINING DATA
-       ---------------------------------------------------------- */
-
-    /*
-     * One row represents:
-     *
-     *      ONE USER
-     *          +
-     *      ONE ASSIGNED COURSE
-     *
-     * This is the reporting grain.
-     */
+       
+       Reporting grain:
+       
+       ONE USER
+           +
+       ONE ASSIGNED COURSE
+       ========================================================== */
 
     const query = `
       SELECT
@@ -483,290 +449,285 @@ export async function getTrainingDashboard(req, res) {
            ====================================================== */
 
         ce.id AS enrollment_id,
-
         ce.user_id,
-
         ce.course_id,
-
         ce.status AS enrollment_status,
-
         ce.completion_status,
-
         ce.enrolled_at,
-
         ce.completed_at,
-
         ce.certificate_issued,
-
 
         /* ======================================================
            USER
            ====================================================== */
 
         u.full_name,
-
         u.seafarer_id,
-
         u.rank,
-
         u.status AS user_status,
-
         u.ship_id,
-
         u.company_id,
-
         u.embarkation_date,
-
         u.disembarkation_date,
 
+        /* ======================================================
+           COMPANY
+           ====================================================== */
+
+        comp.company_name,
 
         /* ======================================================
            SHIP
            ====================================================== */
 
         s.ship_name,
-
         s.ship_type,
-
 
         /* ======================================================
            COURSE
            ====================================================== */
 
         c.title AS course_title,
-
         c.department AS course_department
 
-
       FROM course_enrollments ce
-
 
       INNER JOIN users u
         ON u.user_id = ce.user_id
 
+      LEFT JOIN company comp
+        ON comp.company_id = u.company_id
 
       LEFT JOIN ships s
         ON s.ship_id = u.ship_id
 
-
       INNER JOIN courses c
         ON c.id = ce.course_id
-
 
       WHERE ${baseConditions.join("\nAND ")}
 
         ${filters.sql}
 
-
       ORDER BY
+        comp.company_name,
         s.ship_name,
         u.rank,
         u.full_name,
         ce.enrolled_at DESC
     `;
 
-
-    const result = await db.query(
-      query,
-      [
-        ...baseParams,
-        ...filters.params,
-      ]
-    );
-
+    const result = await db.query(query, [
+      ...baseParams,
+      ...filters.params,
+    ]);
 
     const rows = result.rows;
 
-
-    /* ========================================================
+    /* ==========================================================
        OVERALL SUMMARY
-       ======================================================== */
+       ========================================================== */
 
-    const trainingAssigned =
-      rows.length;
-
+    const trainingAssigned = rows.length;
 
     const trainingCompleted =
       rows.filter(isCompleted).length;
 
-
     const trainingInProgress =
       rows.filter(isInProgress).length;
-
 
     const trainingNotStarted =
       rows.filter(isNotStarted).length;
 
-
     const trainingPending =
       rows.filter(isPending).length;
 
-
-    /*
-     * No deadline source currently exists.
-     */
     const trainingOverdue = null;
-
 
     const completionPercentage =
       trainingAssigned > 0
         ? Number(
             (
-              (trainingCompleted /
-                trainingAssigned) *
+              (trainingCompleted / trainingAssigned) *
               100
             ).toFixed(2)
           )
         : 0;
 
-
-    /* ========================================================
+    /* ==========================================================
        ACTIVE LEARNERS
-       ======================================================== */
+       ========================================================== */
 
-    const activeLearnerIds =
-      new Set();
-
+    const activeLearnerIds = new Set();
 
     for (const row of rows) {
-
-      const status =
-        String(row.user_status || "")
-          .trim()
-          .toLowerCase();
-
+      const status = String(
+        row.user_status || ""
+      )
+        .trim()
+        .toLowerCase();
 
       if (
         status === "active" ||
         status === "enabled" ||
         status === "1"
       ) {
-        activeLearnerIds.add(
-          row.user_id
-        );
+        activeLearnerIds.add(row.user_id);
       }
     }
 
-
-    /*
-     * Fallback:
-     *
-     * If the actual user status values don't match the
-     * recognized active values, count unique assigned learners.
-     */
-    const allLearnerIds =
-      new Set(
-        rows.map(
-          (row) => row.user_id
-        )
-      );
-
+    const allLearnerIds = new Set(
+      rows.map((row) => row.user_id)
+    );
 
     const activeLearners =
       activeLearnerIds.size > 0
         ? activeLearnerIds.size
         : allLearnerIds.size;
 
+    /* ==========================================================
+       BY COMPANY
+       ========================================================== */
 
-    /* ========================================================
-       BY SHIP
-       ======================================================== */
-
-    const shipMap =
-      new Map();
-
+    const companyMap = new Map();
 
     for (const row of rows) {
+      const key = row.company_id ?? "unassigned";
 
-      const key =
-        row.ship_id ?? "unassigned";
+      if (!companyMap.has(key)) {
+        companyMap.set(key, {
+          company_id: row.company_id,
+          company_name:
+            row.company_name ||
+            "Unassigned Company",
 
-
-      if (!shipMap.has(key)) {
-
-        shipMap.set(
-          key,
-          {
-            ship_id:
-              row.ship_id,
-
-            ship_name:
-              row.ship_name ||
-              "Unassigned Vessel",
-
-            active_seafarers:
-              new Set(),
-
-            training_assigned:
-              0,
-
-            training_completed:
-              0,
-
-            training_in_progress:
-              0,
-
-            training_pending:
-              0,
-
-            training_not_started:
-              0,
-
-            last_training_activity_date:
-              null,
-          }
-        );
+          assigned: 0,
+          completed: 0,
+          in_progress: 0,
+          not_started: 0,
+          pending: 0,
+        });
       }
 
+      const company = companyMap.get(key);
 
-      const ship =
-        shipMap.get(key);
+      company.assigned++;
 
+      if (isCompleted(row)) {
+        company.completed++;
+      }
+
+      if (isInProgress(row)) {
+        company.in_progress++;
+      }
+
+      if (isNotStarted(row)) {
+        company.not_started++;
+      }
+
+      if (isPending(row)) {
+        company.pending++;
+      }
+    }
+
+    const byCompany = Array.from(
+      companyMap.values()
+    )
+      .map((company) => ({
+        company_id: company.company_id,
+
+        company_name: company.company_name,
+
+        assigned: company.assigned,
+
+        completed: company.completed,
+
+        in_progress: company.in_progress,
+
+        not_started: company.not_started,
+
+        pending: company.pending,
+
+        completion_percentage:
+          company.assigned > 0
+            ? Number(
+                (
+                  (company.completed /
+                    company.assigned) *
+                  100
+                ).toFixed(2)
+              )
+            : 0,
+      }))
+      .sort(
+        (a, b) =>
+          a.completion_percentage -
+          b.completion_percentage
+      );
+
+    /* ==========================================================
+       BY SHIP
+       ========================================================== */
+
+    const shipMap = new Map();
+
+    for (const row of rows) {
+      const key = row.ship_id ?? "unassigned";
+
+      if (!shipMap.has(key)) {
+        shipMap.set(key, {
+          ship_id: row.ship_id,
+
+          ship_name:
+            row.ship_name ||
+            "Unassigned Vessel",
+
+          ship_type: row.ship_type || null,
+
+          active_seafarers: new Set(),
+
+          training_assigned: 0,
+
+          training_completed: 0,
+
+          training_in_progress: 0,
+
+          training_pending: 0,
+
+          training_not_started: 0,
+
+          last_training_activity_date: null,
+        });
+      }
+
+      const ship = shipMap.get(key);
 
       ship.training_assigned++;
 
-
-      /*
-       * Unique crew.
-       */
       ship.active_seafarers.add(
         row.user_id
       );
-
 
       if (isCompleted(row)) {
         ship.training_completed++;
       }
 
-
       if (isInProgress(row)) {
         ship.training_in_progress++;
       }
-
 
       if (isNotStarted(row)) {
         ship.training_not_started++;
       }
 
-
       if (isPending(row)) {
         ship.training_pending++;
       }
 
-
-      /*
-       * Last training activity.
-       *
-       * completed_at is preferred.
-       * enrolled_at is fallback.
-       */
       const activityDate =
         row.completed_at ||
         row.enrolled_at;
 
-
       if (activityDate) {
-
         if (
           !ship.last_training_activity_date ||
           new Date(activityDate) >
@@ -774,24 +735,21 @@ export async function getTrainingDashboard(req, res) {
               ship.last_training_activity_date
             )
         ) {
-
           ship.last_training_activity_date =
             activityDate;
         }
       }
     }
 
+    const byShip = Array.from(
+      shipMap.values()
+    )
+      .map((ship) => ({
+        ship_id: ship.ship_id,
 
-    const byShip =
-      Array.from(
-        shipMap.values()
-      ).map((ship) => ({
+        ship_name: ship.ship_name,
 
-        ship_id:
-          ship.ship_id,
-
-        ship_name:
-          ship.ship_name,
+        ship_type: ship.ship_type,
 
         active_seafarers:
           ship.active_seafarers.size,
@@ -811,8 +769,7 @@ export async function getTrainingDashboard(req, res) {
         training_not_started:
           ship.training_not_started,
 
-        training_overdue:
-          null,
+        training_overdue: null,
 
         completion_percentage:
           ship.training_assigned > 0
@@ -827,92 +784,72 @@ export async function getTrainingDashboard(req, res) {
 
         last_training_activity_date:
           ship.last_training_activity_date,
-      }));
+      }))
+      .sort(
+        (a, b) =>
+          a.completion_percentage -
+          b.completion_percentage
+      );
 
-
-    /* ========================================================
+    /* ==========================================================
        BY RANK
-       ======================================================== */
+       ========================================================== */
 
-    const rankMap =
-      new Map();
-
+    const rankMap = new Map();
 
     for (const row of rows) {
-
       const rank =
         row.rank || "Unknown";
 
-
       if (!rankMap.has(rank)) {
-
-        rankMap.set(
+        rankMap.set(rank, {
           rank,
-          {
-            rank,
 
-            personnel:
-              new Set(),
+          personnel: new Set(),
 
-            training_assigned:
-              0,
+          training_assigned: 0,
 
-            training_completed:
-              0,
+          training_completed: 0,
 
-            training_pending:
-              0,
+          training_pending: 0,
 
-            training_in_progress:
-              0,
+          training_in_progress: 0,
 
-            training_not_started:
-              0,
-          }
-        );
+          training_not_started: 0,
+        });
       }
-
 
       const rankData =
         rankMap.get(rank);
-
 
       rankData.personnel.add(
         row.user_id
       );
 
-
       rankData.training_assigned++;
-
 
       if (isCompleted(row)) {
         rankData.training_completed++;
       }
 
-
       if (isInProgress(row)) {
         rankData.training_in_progress++;
       }
 
-
       if (isNotStarted(row)) {
         rankData.training_not_started++;
       }
-
 
       if (isPending(row)) {
         rankData.training_pending++;
       }
     }
 
-
-    const byRank =
-      Array.from(
-        rankMap.values()
-      ).map((rankData) => ({
-
-        rank:
-          rankData.rank,
+    const byRank = Array.from(
+      rankMap.values()
+    )
+      .map((rankData) => ({
+        rank: rankData.rank,
 
         personnel:
           rankData.personnel.size,
@@ -932,8 +869,7 @@ export async function getTrainingDashboard(req, res) {
         training_not_started:
           rankData.training_not_started,
 
-        training_overdue:
-          null,
+        training_overdue: null,
 
         completion_percentage:
           rankData.training_assigned > 0
@@ -945,144 +881,22 @@ export async function getTrainingDashboard(req, res) {
                 ).toFixed(2)
               )
             : 0,
-      }));
+      }))
+      .sort(
+        (a, b) =>
+          a.completion_percentage -
+          b.completion_percentage
+      );
 
-
-    /* ========================================================
-       BY COURSE
-       ======================================================== */
-
-    const courseMap =
-      new Map();
-
-
-    for (const row of rows) {
-
-      const courseId =
-        row.course_id;
-
-
-      if (!courseMap.has(courseId)) {
-
-        courseMap.set(
-          courseId,
-          {
-            course_id:
-              courseId,
-
-            course_title:
-              row.course_title,
-
-            department:
-              row.course_department,
-
-            assigned:
-              0,
-
-            completed:
-              0,
-
-            pending:
-              0,
-
-            in_progress:
-              0,
-
-            not_started:
-              0,
-          }
-        );
-      }
-
-
-      const course =
-        courseMap.get(courseId);
-
-
-      course.assigned++;
-
-
-      if (isCompleted(row)) {
-        course.completed++;
-      }
-
-
-      if (isInProgress(row)) {
-        course.in_progress++;
-      }
-
-
-      if (isNotStarted(row)) {
-        course.not_started++;
-      }
-
-
-      if (isPending(row)) {
-        course.pending++;
-      }
-    }
-
-
-    const byCourse =
-      Array.from(
-        courseMap.values()
-      ).map((course) => ({
-
-        course_id:
-          course.course_id,
-
-        course_title:
-          course.course_title,
-
-        department:
-          course.department,
-
-        assigned:
-          course.assigned,
-
-        completed:
-          course.completed,
-
-        pending:
-          course.pending,
-
-        in_progress:
-          course.in_progress,
-
-        not_started:
-          course.not_started,
-
-        overdue:
-          null,
-
-        completion_percentage:
-          course.assigned > 0
-            ? Number(
-                (
-                  (course.completed /
-                    course.assigned) *
-                  100
-                ).toFixed(2)
-              )
-            : 0,
-      }));
-
-
-    /* ========================================================
+    /* ==========================================================
        RESPONSE
-       ======================================================== */
+       ========================================================== */
 
     return res.status(200).json({
-
       success: true,
 
       data: {
-
-        /*
-         * Tell frontend what scope is currently active.
-         */
         scope: {
-
           company_id:
             companyId || null,
 
@@ -1090,13 +904,11 @@ export async function getTrainingDashboard(req, res) {
             !companyId,
         },
 
-
-        /* ----------------------------------------------------
-           TOP KPIs
-           ---------------------------------------------------- */
+        /* ======================================================
+           KPI
+           ====================================================== */
 
         summary: {
-
           completion_percentage:
             completionPercentage,
 
@@ -1122,10 +934,12 @@ export async function getTrainingDashboard(req, res) {
             trainingOverdue,
         },
 
+        /* ======================================================
+           DASHBOARD BREAKDOWNS
+           ====================================================== */
 
-        /* ----------------------------------------------------
-           BREAKDOWNS
-           ---------------------------------------------------- */
+        by_company:
+          byCompany,
 
         by_ship:
           byShip,
@@ -1133,47 +947,33 @@ export async function getTrainingDashboard(req, res) {
         by_rank:
           byRank,
 
-        by_course:
-          byCourse,
-
-
-        /* ----------------------------------------------------
+        /* ======================================================
            CAPABILITIES
-           ---------------------------------------------------- */
+           ====================================================== */
 
         capabilities: {
+          completed: true,
 
-          completed:
-            true,
+          pending: true,
 
-          pending:
-            true,
+          in_progress: true,
 
-          in_progress:
-            true,
+          not_started: true,
 
-          not_started:
-            true,
+          overdue: false,
 
-          overdue:
-            false,
-
-          fleet:
-            false,
+          fleet: false,
         },
       },
     });
 
   } catch (error) {
-
     console.error(
       "getTrainingDashboard error:",
       error
     );
 
-
     return res.status(500).json({
-
       success: false,
 
       message:
@@ -2065,3 +1865,5 @@ export async function getSeafarerTrainingDashboard(
     });
   }
 }
+
+
