@@ -22,8 +22,6 @@ function isCompleted(row) {
 
 /**
  * In Progress
- *
- * Recognized enrollment status values.
  */
 function isInProgress(row) {
   if (isCompleted(row)) {
@@ -45,8 +43,6 @@ function isInProgress(row) {
 
 /**
  * Not Started
- *
- * Recognized enrollment status values.
  */
 function isNotStarted(row) {
   if (isCompleted(row) || isInProgress(row)) {
@@ -69,15 +65,6 @@ function isNotStarted(row) {
 
 /**
  * Pending
- *
- * Pending is a mutually exclusive bucket:
- *
- * - not completed
- * - not in progress
- * - not explicitly not-started
- *
- * This prevents the same enrollment from being counted
- * simultaneously as pending + in-progress + not-started.
  */
 function isPending(row) {
   return (
@@ -91,11 +78,85 @@ function isPending(row) {
 /**
  * Overdue
  *
- * Currently unavailable because the supplied LMS schema
+ * Currently unavailable because the LMS schema
  * does not contain a due_date/deadline field.
  */
 function isOverdue() {
   return false;
+}
+
+
+/* ============================================================
+   ACCESS CONTROL / COMPANY SCOPE
+   ============================================================ */
+
+/**
+ * Determines the company scope for the authenticated user.
+ *
+ * ROLE 1 = Super Admin
+ * --------------------------------
+ * - Has no company_id.
+ * - Can access all companies.
+ * - Can optionally filter by ?companyId=<UUID>.
+ *
+ * ROLE 2 = Admin
+ * --------------------------------
+ * - Must have company_id.
+ * - Can ONLY access their own company.
+ * - Any companyId supplied through query params is ignored.
+ */
+function getCompanyScope(req) {
+  const roleId = Number(req.user?.role_id);
+  const userCompanyId = req.user?.company_id;
+  const requestedCompanyId = req.query?.companyId;
+
+  /* ----------------------------------------------------------
+     SUPER ADMIN
+     ---------------------------------------------------------- */
+
+  if (roleId === 1) {
+    return {
+      roleId,
+      companyId: requestedCompanyId || null,
+      companyScoped: Boolean(requestedCompanyId),
+      allCompanies: !requestedCompanyId,
+    };
+  }
+
+
+  /* ----------------------------------------------------------
+     ADMIN
+     ---------------------------------------------------------- */
+
+  if (roleId === 2) {
+    if (!userCompanyId) {
+      return {
+        error: true,
+        status: 403,
+        message:
+          "Admin is not associated with a company",
+      };
+    }
+
+    return {
+      roleId,
+      companyId: userCompanyId,
+      companyScoped: true,
+      allCompanies: false,
+    };
+  }
+
+
+  /* ----------------------------------------------------------
+     OTHER ROLES
+     ---------------------------------------------------------- */
+
+  return {
+    error: true,
+    status: 403,
+    message:
+      "You are not authorized to access this dashboard",
+  };
 }
 
 
@@ -111,13 +172,16 @@ function isOverdue() {
  *
  * Example:
  *
- *   buildDashboardFilters(query, 1)
+ * buildDashboardFilters(query, 1)
  *   shipId -> $1
  *
- *   buildDashboardFilters(query, 2)
+ * buildDashboardFilters(query, 2)
  *   shipId -> $2
  */
-function buildDashboardFilters(query, startIndex = 1) {
+function buildDashboardFilters(
+  query,
+  startIndex = 1
+) {
   const {
     shipId,
     rank,
@@ -211,7 +275,8 @@ function buildDashboardFilters(query, startIndex = 1) {
 
   if (assignedTo) {
     conditions.push(`
-      ce.enrolled_at < ($${index}::date + INTERVAL '1 day')
+      ce.enrolled_at <
+      ($${index}::date + INTERVAL '1 day')
     `);
 
     params.push(assignedTo);
@@ -262,8 +327,12 @@ function buildDashboardFilters(query, startIndex = 1) {
       case "COMPLETED":
 
         conditions.push(`
-          LOWER(COALESCE(ce.completion_status, ''))
-          = 'completed'
+          LOWER(
+            COALESCE(
+              ce.completion_status,
+              ''
+            )
+          ) = 'completed'
         `);
 
         break;
@@ -276,10 +345,19 @@ function buildDashboardFilters(query, startIndex = 1) {
       case "IN_PROGRESS":
 
         conditions.push(`
-          LOWER(COALESCE(ce.completion_status, ''))
-          <> 'completed'
+          LOWER(
+            COALESCE(
+              ce.completion_status,
+              ''
+            )
+          ) <> 'completed'
 
-          AND LOWER(COALESCE(ce.status, '')) IN (
+          AND LOWER(
+            COALESCE(
+              ce.status,
+              ''
+            )
+          ) IN (
             'started',
             'in_progress',
             'in progress',
@@ -297,10 +375,19 @@ function buildDashboardFilters(query, startIndex = 1) {
       case "NOT_STARTED":
 
         conditions.push(`
-          LOWER(COALESCE(ce.completion_status, ''))
-          <> 'completed'
+          LOWER(
+            COALESCE(
+              ce.completion_status,
+              ''
+            )
+          ) <> 'completed'
 
-          AND LOWER(COALESCE(ce.status, '')) IN (
+          AND LOWER(
+            COALESCE(
+              ce.status,
+              ''
+            )
+          ) IN (
             'enrolled',
             'assigned',
             'pending',
@@ -319,10 +406,19 @@ function buildDashboardFilters(query, startIndex = 1) {
       case "PENDING":
 
         conditions.push(`
-          LOWER(COALESCE(ce.completion_status, ''))
-          <> 'completed'
+          LOWER(
+            COALESCE(
+              ce.completion_status,
+              ''
+            )
+          ) <> 'completed'
 
-          AND LOWER(COALESCE(ce.status, '')) NOT IN (
+          AND LOWER(
+            COALESCE(
+              ce.status,
+              ''
+            )
+          ) NOT IN (
             'started',
             'in_progress',
             'in progress',
@@ -345,9 +441,7 @@ function buildDashboardFilters(query, startIndex = 1) {
       case "OVERDUE":
 
         /*
-         * No deadline field currently exists.
-         *
-         * Therefore overdue cannot be calculated yet.
+         * No due_date/deadline field currently exists.
          */
         conditions.push(`FALSE`);
 
@@ -374,44 +468,71 @@ function buildDashboardFilters(query, startIndex = 1) {
 /* ============================================================
    API 1
    GET /api/training/dashboard
- *
- * DEFAULT:
- *   All companies combined.
- *
- * FILTER:
- *   ?companyId=<UUID>
- *
- * Examples:
- *
- *   GET /api/training/dashboard
- *
- *   GET /api/training/dashboard?companyId=<UUID>
- *
- *   GET /api/training/dashboard?companyId=<UUID>&shipId=5
- *
- *   GET /api/training/dashboard?rank=Captain
- * ============================================================ */
+   ============================================================ */
 
-export async function getTrainingDashboard(req, res) {
+/**
+ * Main Training Dashboard
+ *
+ * Super Admin:
+ *   GET /dashboard
+ *   -> All companies
+ *
+ *   GET /dashboard?companyId=<UUID>
+ *   -> Selected company
+ *
+ * Admin:
+ *   GET /dashboard
+ *   -> Own company only
+ *
+ *   GET /dashboard?companyId=<OTHER_UUID>
+ *   -> Still own company
+ */
+export async function getTrainingDashboard(
+  req,
+  res
+) {
   try {
-    const { companyId } = req.query;
 
-    /* ==========================================================
+    /* ========================================================
+       ACCESS / COMPANY SCOPE
+       ======================================================== */
+
+    const scope = getCompanyScope(req);
+
+    if (scope.error) {
+      return res.status(scope.status).json({
+        success: false,
+        message: scope.message,
+      });
+    }
+
+    const {
+      companyId,
+      allCompanies,
+    } = scope;
+
+
+    /* ========================================================
        BASE CONDITIONS
-       ========================================================== */
+       ======================================================== */
 
     const baseConditions = [
       `ce.assigned = true`,
       `c.deleted_at IS NULL`,
-      `COALESCE(s.is_test_ship, false) = false`,
+      `COALESCE(
+        s.is_test_ship,
+        false
+      ) = false`,
     ];
 
     const baseParams = [];
+
     let filterStartIndex = 1;
 
-    /* ==========================================================
+
+    /* ========================================================
        COMPANY FILTER
-       ========================================================== */
+       ======================================================== */
 
     if (companyId) {
       baseConditions.push(
@@ -419,94 +540,125 @@ export async function getTrainingDashboard(req, res) {
       );
 
       baseParams.push(companyId);
+
       filterStartIndex++;
     }
 
-    /* ==========================================================
+
+    /* ========================================================
        OTHER FILTERS
-       ========================================================== */
+       ======================================================== */
 
-    const filters = buildDashboardFilters(
-      req.query,
-      filterStartIndex
-    );
+    const filters =
+      buildDashboardFilters(
+        req.query,
+        filterStartIndex
+      );
 
-    /* ==========================================================
+
+    /* ========================================================
        BASE TRAINING DATA
        
        Reporting grain:
-       
+
        ONE USER
-           +
+       +
        ONE ASSIGNED COURSE
-       ========================================================== */
+       ======================================================== */
 
     const query = `
       SELECT
 
-        /* ======================================================
+        /* ====================================================
            ENROLLMENT
-           ====================================================== */
+           ==================================================== */
 
         ce.id AS enrollment_id,
+
         ce.user_id,
+
         ce.course_id,
+
         ce.status AS enrollment_status,
+
         ce.completion_status,
+
         ce.enrolled_at,
+
         ce.completed_at,
+
         ce.certificate_issued,
 
-        /* ======================================================
+
+        /* ====================================================
            USER
-           ====================================================== */
+           ==================================================== */
 
         u.full_name,
+
         u.seafarer_id,
+
         u.rank,
+
         u.status AS user_status,
+
         u.ship_id,
+
         u.company_id,
+
         u.embarkation_date,
+
         u.disembarkation_date,
 
-        /* ======================================================
+
+        /* ====================================================
            COMPANY
-           ====================================================== */
+           ==================================================== */
 
         comp.company_name,
 
-        /* ======================================================
+
+        /* ====================================================
            SHIP
-           ====================================================== */
+           ==================================================== */
 
         s.ship_name,
+
         s.ship_type,
 
-        /* ======================================================
+
+        /* ====================================================
            COURSE
-           ====================================================== */
+           ==================================================== */
 
         c.title AS course_title,
+
         c.department AS course_department
 
+
       FROM course_enrollments ce
+
 
       INNER JOIN users u
         ON u.user_id = ce.user_id
 
+
       LEFT JOIN company comp
         ON comp.company_id = u.company_id
+
 
       LEFT JOIN ships s
         ON s.ship_id = u.ship_id
 
+
       INNER JOIN courses c
         ON c.id = ce.course_id
+
 
       WHERE ${baseConditions.join("\nAND ")}
 
         ${filters.sql}
+
 
       ORDER BY
         comp.company_name,
@@ -516,399 +668,579 @@ export async function getTrainingDashboard(req, res) {
         ce.enrolled_at DESC
     `;
 
-    const result = await db.query(query, [
-      ...baseParams,
-      ...filters.params,
-    ]);
+
+    const result = await db.query(
+      query,
+      [
+        ...baseParams,
+        ...filters.params,
+      ]
+    );
+
 
     const rows = result.rows;
 
-    /* ==========================================================
-       OVERALL SUMMARY
-       ========================================================== */
 
-    const trainingAssigned = rows.length;
+    /* ========================================================
+       OVERALL SUMMARY
+       ======================================================== */
+
+    const trainingAssigned =
+      rows.length;
+
 
     const trainingCompleted =
-      rows.filter(isCompleted).length;
+      rows.filter(
+        isCompleted
+      ).length;
+
 
     const trainingInProgress =
-      rows.filter(isInProgress).length;
+      rows.filter(
+        isInProgress
+      ).length;
+
 
     const trainingNotStarted =
-      rows.filter(isNotStarted).length;
+      rows.filter(
+        isNotStarted
+      ).length;
+
 
     const trainingPending =
-      rows.filter(isPending).length;
+      rows.filter(
+        isPending
+      ).length;
 
-    const trainingOverdue = null;
+
+    const trainingOverdue =
+      isOverdue()
+        ? rows.filter(
+            isOverdue
+          ).length
+        : null;
+
 
     const completionPercentage =
       trainingAssigned > 0
         ? Number(
-          (
-            (trainingCompleted / trainingAssigned) *
-            100
-          ).toFixed(2)
-        )
+            (
+              (
+                trainingCompleted /
+                trainingAssigned
+              ) * 100
+            ).toFixed(2)
+          )
         : 0;
 
-    /* ==========================================================
-       ACTIVE LEARNERS
-       ========================================================== */
 
-    const activeLearnerIds = new Set();
+    /* ========================================================
+       ACTIVE LEARNERS
+       ======================================================== */
+
+    const activeLearnerIds =
+      new Set();
+
 
     for (const row of rows) {
-      const status = String(
-        row.user_status || ""
-      )
-        .trim()
-        .toLowerCase();
+
+      const status =
+        String(
+          row.user_status || ""
+        )
+          .trim()
+          .toLowerCase();
+
 
       if (
         status === "active" ||
         status === "enabled" ||
         status === "1"
       ) {
-        activeLearnerIds.add(row.user_id);
+        activeLearnerIds.add(
+          row.user_id
+        );
       }
     }
 
-    const allLearnerIds = new Set(
-      rows.map((row) => row.user_id)
-    );
+
+    const allLearnerIds =
+      new Set(
+        rows.map(
+          (row) =>
+            row.user_id
+        )
+      );
+
 
     const activeLearners =
       activeLearnerIds.size > 0
         ? activeLearnerIds.size
         : allLearnerIds.size;
 
-    /* ==========================================================
-       BY COMPANY
-       ========================================================== */
 
-    const companyMap = new Map();
+    /* ========================================================
+       BY COMPANY
+       ======================================================== */
+
+    const companyMap =
+      new Map();
+
 
     for (const row of rows) {
-      const key = row.company_id ?? "unassigned";
+
+      const key =
+        row.company_id ??
+        "unassigned";
+
 
       if (!companyMap.has(key)) {
-        companyMap.set(key, {
-          company_id: row.company_id,
-          company_name:
-            row.company_name ||
-            "Unassigned Company",
 
-          assigned: 0,
-          completed: 0,
-          in_progress: 0,
-          not_started: 0,
-          pending: 0,
-        });
+        companyMap.set(
+          key,
+          {
+            company_id:
+              row.company_id,
+
+            company_name:
+              row.company_name ||
+              "Unassigned Company",
+
+            assigned: 0,
+
+            completed: 0,
+
+            in_progress: 0,
+
+            not_started: 0,
+
+            pending: 0,
+          }
+        );
       }
 
-      const company = companyMap.get(key);
+
+      const company =
+        companyMap.get(key);
+
 
       company.assigned++;
 
-      if (isCompleted(row)) {
+
+      if (
+        isCompleted(row)
+      ) {
         company.completed++;
       }
 
-      if (isInProgress(row)) {
+
+      if (
+        isInProgress(row)
+      ) {
         company.in_progress++;
       }
 
-      if (isNotStarted(row)) {
+
+      if (
+        isNotStarted(row)
+      ) {
         company.not_started++;
       }
 
-      if (isPending(row)) {
+
+      if (
+        isPending(row)
+      ) {
         company.pending++;
       }
     }
 
-    const byCompany = Array.from(
-      companyMap.values()
-    )
-      .map((company) => ({
-        company_id: company.company_id,
 
-        company_name: company.company_name,
+    const byCompany =
+      Array.from(
+        companyMap.values()
+      )
+        .map(
+          (company) => ({
+            company_id:
+              company.company_id,
 
-        assigned: company.assigned,
+            company_name:
+              company.company_name,
 
-        completed: company.completed,
+            assigned:
+              company.assigned,
 
-        in_progress: company.in_progress,
+            completed:
+              company.completed,
 
-        not_started: company.not_started,
+            in_progress:
+              company.in_progress,
 
-        pending: company.pending,
+            not_started:
+              company.not_started,
 
-        completion_percentage:
-          company.assigned > 0
-            ? Number(
-              (
-                (company.completed /
-                  company.assigned) *
-                100
-              ).toFixed(2)
-            )
-            : 0,
-      }))
-      .sort(
-        (a, b) =>
-          a.completion_percentage -
-          b.completion_percentage
-      );
+            pending:
+              company.pending,
 
-    /* ==========================================================
+            completion_percentage:
+              company.assigned > 0
+                ? Number(
+                    (
+                      (
+                        company.completed /
+                        company.assigned
+                      ) * 100
+                    ).toFixed(2)
+                  )
+                : 0,
+          })
+        )
+        .sort(
+          (a, b) =>
+            a.completion_percentage -
+            b.completion_percentage
+        );
+
+
+    /* ========================================================
        BY SHIP
-       ========================================================== */
+       ======================================================== */
 
-    const shipMap = new Map();
+    const shipMap =
+      new Map();
+
 
     for (const row of rows) {
-      const key = row.ship_id ?? "unassigned";
+
+      const key =
+        row.ship_id ??
+        "unassigned";
+
 
       if (!shipMap.has(key)) {
-        shipMap.set(key, {
-          ship_id: row.ship_id,
 
-          ship_name:
-            row.ship_name ||
-            "Unassigned Vessel",
+        shipMap.set(
+          key,
+          {
+            ship_id:
+              row.ship_id,
 
-          ship_type: row.ship_type || null,
+            ship_name:
+              row.ship_name ||
+              "Unassigned Vessel",
 
-          active_seafarers: new Set(),
+            ship_type:
+              row.ship_type ||
+              null,
 
-          training_assigned: 0,
+            active_seafarers:
+              new Set(),
 
-          training_completed: 0,
+            training_assigned:
+              0,
 
-          training_in_progress: 0,
+            training_completed:
+              0,
 
-          training_pending: 0,
+            training_in_progress:
+              0,
 
-          training_not_started: 0,
+            training_pending:
+              0,
 
-          last_training_activity_date: null,
-        });
+            training_not_started:
+              0,
+
+            last_training_activity_date:
+              null,
+          }
+        );
       }
 
-      const ship = shipMap.get(key);
+
+      const ship =
+        shipMap.get(key);
+
 
       ship.training_assigned++;
+
 
       ship.active_seafarers.add(
         row.user_id
       );
 
-      if (isCompleted(row)) {
+
+      if (
+        isCompleted(row)
+      ) {
         ship.training_completed++;
       }
 
-      if (isInProgress(row)) {
+
+      if (
+        isInProgress(row)
+      ) {
         ship.training_in_progress++;
       }
 
-      if (isNotStarted(row)) {
+
+      if (
+        isNotStarted(row)
+      ) {
         ship.training_not_started++;
       }
 
-      if (isPending(row)) {
+
+      if (
+        isPending(row)
+      ) {
         ship.training_pending++;
       }
+
 
       const activityDate =
         row.completed_at ||
         row.enrolled_at;
 
+
       if (activityDate) {
+
         if (
           !ship.last_training_activity_date ||
           new Date(activityDate) >
-          new Date(
-            ship.last_training_activity_date
-          )
+            new Date(
+              ship.last_training_activity_date
+            )
         ) {
+
           ship.last_training_activity_date =
             activityDate;
         }
       }
     }
 
-    const byShip = Array.from(
-      shipMap.values()
-    )
-      .map((ship) => ({
-        ship_id: ship.ship_id,
 
-        ship_name: ship.ship_name,
+    const byShip =
+      Array.from(
+        shipMap.values()
+      )
+        .map(
+          (ship) => ({
+            ship_id:
+              ship.ship_id,
 
-        ship_type: ship.ship_type,
+            ship_name:
+              ship.ship_name,
 
-        active_seafarers:
-          ship.active_seafarers.size,
+            ship_type:
+              ship.ship_type,
 
-        training_assigned:
-          ship.training_assigned,
+            active_seafarers:
+              ship.active_seafarers.size,
 
-        training_completed:
-          ship.training_completed,
+            training_assigned:
+              ship.training_assigned,
 
-        training_in_progress:
-          ship.training_in_progress,
+            training_completed:
+              ship.training_completed,
 
-        training_pending:
-          ship.training_pending,
+            training_in_progress:
+              ship.training_in_progress,
 
-        training_not_started:
-          ship.training_not_started,
+            training_pending:
+              ship.training_pending,
 
-        training_overdue: null,
+            training_not_started:
+              ship.training_not_started,
 
-        completion_percentage:
-          ship.training_assigned > 0
-            ? Number(
-              (
-                (ship.training_completed /
-                  ship.training_assigned) *
-                100
-              ).toFixed(2)
-            )
-            : 0,
+            training_overdue:
+              null,
 
-        last_training_activity_date:
-          ship.last_training_activity_date,
-      }))
-      .sort(
-        (a, b) =>
-          a.completion_percentage -
-          b.completion_percentage
-      );
+            completion_percentage:
+              ship.training_assigned > 0
+                ? Number(
+                    (
+                      (
+                        ship.training_completed /
+                        ship.training_assigned
+                      ) * 100
+                    ).toFixed(2)
+                  )
+                : 0,
 
-    /* ==========================================================
+            last_training_activity_date:
+              ship.last_training_activity_date,
+          })
+        )
+        .sort(
+          (a, b) =>
+            a.completion_percentage -
+            b.completion_percentage
+        );
+
+
+    /* ========================================================
        BY RANK
-       ========================================================== */
+       ======================================================== */
 
-    const rankMap = new Map();
+    const rankMap =
+      new Map();
+
 
     for (const row of rows) {
+
       const rank =
-        row.rank || "Unknown";
+        row.rank ||
+        "Unknown";
+
 
       if (!rankMap.has(rank)) {
-        rankMap.set(rank, {
+
+        rankMap.set(
           rank,
+          {
+            rank,
 
-          personnel: new Set(),
+            personnel:
+              new Set(),
 
-          training_assigned: 0,
+            training_assigned:
+              0,
 
-          training_completed: 0,
+            training_completed:
+              0,
 
-          training_pending: 0,
+            training_pending:
+              0,
 
-          training_in_progress: 0,
+            training_in_progress:
+              0,
 
-          training_not_started: 0,
-        });
+            training_not_started:
+              0,
+          }
+        );
       }
+
 
       const rankData =
         rankMap.get(rank);
+
 
       rankData.personnel.add(
         row.user_id
       );
 
+
       rankData.training_assigned++;
 
-      if (isCompleted(row)) {
+
+      if (
+        isCompleted(row)
+      ) {
         rankData.training_completed++;
       }
 
-      if (isInProgress(row)) {
+
+      if (
+        isInProgress(row)
+      ) {
         rankData.training_in_progress++;
       }
 
-      if (isNotStarted(row)) {
+
+      if (
+        isNotStarted(row)
+      ) {
         rankData.training_not_started++;
       }
 
-      if (isPending(row)) {
+
+      if (
+        isPending(row)
+      ) {
         rankData.training_pending++;
       }
     }
 
-    const byRank = Array.from(
-      rankMap.values()
-    )
-      .map((rankData) => ({
-        rank: rankData.rank,
 
-        personnel:
-          rankData.personnel.size,
+    const byRank =
+      Array.from(
+        rankMap.values()
+      )
+        .map(
+          (rankData) => ({
+            rank:
+              rankData.rank,
 
-        training_assigned:
-          rankData.training_assigned,
+            personnel:
+              rankData.personnel.size,
 
-        training_completed:
-          rankData.training_completed,
+            training_assigned:
+              rankData.training_assigned,
 
-        training_pending:
-          rankData.training_pending,
+            training_completed:
+              rankData.training_completed,
 
-        training_in_progress:
-          rankData.training_in_progress,
+            training_pending:
+              rankData.training_pending,
 
-        training_not_started:
-          rankData.training_not_started,
+            training_in_progress:
+              rankData.training_in_progress,
 
-        training_overdue: null,
+            training_not_started:
+              rankData.training_not_started,
 
-        completion_percentage:
-          rankData.training_assigned > 0
-            ? Number(
-              (
-                (rankData.training_completed /
-                  rankData.training_assigned) *
-                100
-              ).toFixed(2)
-            )
-            : 0,
-      }))
-      .sort(
-        (a, b) =>
-          a.completion_percentage -
-          b.completion_percentage
-      );
+            training_overdue:
+              null,
 
-    /* ==========================================================
+            completion_percentage:
+              rankData.training_assigned > 0
+                ? Number(
+                    (
+                      (
+                        rankData.training_completed /
+                        rankData.training_assigned
+                      ) * 100
+                    ).toFixed(2)
+                  )
+                : 0,
+          })
+        )
+        .sort(
+          (a, b) =>
+            a.completion_percentage -
+            b.completion_percentage
+        );
+
+
+    /* ========================================================
        RESPONSE
-       ========================================================== */
+       ======================================================== */
 
     return res.status(200).json({
+
       success: true,
 
       data: {
+
         scope: {
+
           company_id:
             companyId || null,
 
           all_companies:
-            !companyId,
+            allCompanies,
         },
 
-        /* ======================================================
+
+        /* ==================================================
            KPI
-           ====================================================== */
+           ================================================== */
 
         summary: {
+
           completion_percentage:
             completionPercentage,
 
@@ -934,9 +1266,10 @@ export async function getTrainingDashboard(req, res) {
             trainingOverdue,
         },
 
-        /* ======================================================
+
+        /* ==================================================
            DASHBOARD BREAKDOWNS
-           ====================================================== */
+           ================================================== */
 
         by_company:
           byCompany,
@@ -947,33 +1280,44 @@ export async function getTrainingDashboard(req, res) {
         by_rank:
           byRank,
 
-        /* ======================================================
+
+        /* ==================================================
            CAPABILITIES
-           ====================================================== */
+           ================================================== */
 
         capabilities: {
-          completed: true,
 
-          pending: true,
+          completed:
+            true,
 
-          in_progress: true,
+          pending:
+            true,
 
-          not_started: true,
+          in_progress:
+            true,
 
-          overdue: false,
+          not_started:
+            true,
 
-          fleet: false,
+          overdue:
+            false,
+
+          fleet:
+            false,
         },
       },
     });
 
   } catch (error) {
+
     console.error(
       "getTrainingDashboard error:",
       error
     );
 
+
     return res.status(500).json({
+
       success: false,
 
       message:
@@ -992,31 +1336,18 @@ export async function getTrainingDashboard(req, res) {
 /* ============================================================
    API 2
    GET /api/training/dashboard/ships/:shipId
- *
- * Shows:
- *
- *   Company
- *      ↓
- *   Ship
- *      ↓
- *   Crew
- *      ↓
- *   Training
- *
- * Company is determined from the selected ship.
- * Super Admin does not need company_id in JWT.
- *
- * Example:
- *
- *   GET /api/training/dashboard/ships/5
- *
- * Optional filters:
- *
- *   ?rank=Captain
- *   ?department=Safety
- *   ?trainingStatus=COMPLETED
- * ============================================================ */
+   ============================================================ */
 
+/**
+ * Ship Training Dashboard
+ *
+ * Super Admin:
+ *   Can access any ship.
+ *
+ * Admin:
+ *   Can access only ships belonging
+ *   to their company.
+ */
 export async function getShipTrainingDashboard(
   req,
   res
@@ -1024,9 +1355,14 @@ export async function getShipTrainingDashboard(
 
   try {
 
-    const { shipId } =
-      req.params;
+    const {
+      shipId,
+    } = req.params;
 
+
+    /* ========================================================
+       VALIDATE SHIP ID
+       ======================================================== */
 
     if (!shipId) {
 
@@ -1040,33 +1376,104 @@ export async function getShipTrainingDashboard(
     }
 
 
-    /* ----------------------------------------------------------
+    /* ========================================================
+       ACCESS / COMPANY SCOPE
+       ======================================================== */
+
+    const scope =
+      getCompanyScope(req);
+
+
+    if (scope.error) {
+
+      return res.status(
+        scope.status
+      ).json({
+
+        success: false,
+
+        message:
+          scope.message,
+      });
+    }
+
+
+    const {
+      companyId,
+      companyScoped,
+    } = scope;
+
+
+    /* ========================================================
        DASHBOARD FILTERS
-       ---------------------------------------------------------- */
+       ======================================================== */
 
     /*
-     * $1 is reserved for shipId.
+     * $1 = shipId
      *
-     * Therefore optional filters start at $2.
+     * If Admin:
+     *   $2 = companyId
+     *   optional filters start at $3
+     *
+     * If Super Admin:
+     *   optional filters start at $2
      */
+
+    const filterStartIndex =
+      companyScoped
+        ? 3
+        : 2;
+
+
     const filters =
       buildDashboardFilters(
         req.query,
-        2
+        filterStartIndex
       );
 
 
-    /* ----------------------------------------------------------
+    /* ========================================================
+       BASE CONDITIONS
+       ======================================================== */
+
+    const baseConditions = [
+
+      `ce.assigned = true`,
+
+      `s.ship_id = $1`,
+
+      `COALESCE(
+        s.is_test_ship,
+        false
+      ) = false`,
+
+      `c.deleted_at IS NULL`,
+    ];
+
+
+    /* ========================================================
+       ADMIN COMPANY RESTRICTION
+       ======================================================== */
+
+    if (companyScoped) {
+
+      baseConditions.push(
+        `s.company_id = $2`
+      );
+    }
+
+
+    /* ========================================================
        QUERY
-       ---------------------------------------------------------- */
+       ======================================================== */
 
     const query = `
 
       SELECT
 
-        /* ======================================================
+        /* ====================================================
            ENROLLMENT
-           ====================================================== */
+           ==================================================== */
 
         ce.id AS enrollment_id,
 
@@ -1085,9 +1492,9 @@ export async function getShipTrainingDashboard(
         ce.certificate_issued,
 
 
-        /* ======================================================
+        /* ====================================================
            USER
-           ====================================================== */
+           ==================================================== */
 
         u.full_name,
 
@@ -1106,18 +1513,18 @@ export async function getShipTrainingDashboard(
         u.disembarkation_date,
 
 
-        /* ======================================================
+        /* ====================================================
            SHIP
-           ====================================================== */
+           ==================================================== */
 
         s.ship_name,
 
         s.ship_type,
 
 
-        /* ======================================================
+        /* ====================================================
            COURSE
-           ====================================================== */
+           ==================================================== */
 
         c.title AS course_title,
 
@@ -1139,16 +1546,8 @@ export async function getShipTrainingDashboard(
         ON c.id = ce.course_id
 
 
-      WHERE ce.assigned = true
-
-        AND s.ship_id = $1
-
-        AND COALESCE(
-          s.is_test_ship,
-          false
-        ) = false
-
-        AND c.deleted_at IS NULL
+      WHERE
+        ${baseConditions.join("\nAND ")}
 
         ${filters.sql}
 
@@ -1160,13 +1559,26 @@ export async function getShipTrainingDashboard(
     `;
 
 
+    /* ========================================================
+       PARAMETERS
+       ======================================================== */
+
+    const queryParams = [
+
+      Number(shipId),
+
+      ...(companyScoped
+        ? [companyId]
+        : []),
+
+      ...filters.params,
+    ];
+
+
     const result =
       await db.query(
         query,
-        [
-          Number(shipId),
-          ...filters.params,
-        ]
+        queryParams
       );
 
 
@@ -1204,6 +1616,19 @@ export async function getShipTrainingDashboard(
       rows.filter(
         isPending
       ).length;
+
+
+    const completionPercentage =
+      assigned > 0
+        ? Number(
+            (
+              (
+                completed /
+                assigned
+              ) * 100
+            ).toFixed(2)
+          )
+        : 0;
 
 
     /* ========================================================
@@ -1275,25 +1700,33 @@ export async function getShipTrainingDashboard(
       crew.training_assigned++;
 
 
-      if (isCompleted(row)) {
+      if (
+        isCompleted(row)
+      ) {
 
         crew.training_completed++;
       }
 
 
-      if (isInProgress(row)) {
+      if (
+        isInProgress(row)
+      ) {
 
         crew.training_in_progress++;
       }
 
 
-      if (isNotStarted(row)) {
+      if (
+        isNotStarted(row)
+      ) {
 
         crew.training_not_started++;
       }
 
 
-      if (isPending(row)) {
+      if (
+        isPending(row)
+      ) {
 
         crew.training_pending++;
       }
@@ -1303,23 +1736,25 @@ export async function getShipTrainingDashboard(
     const crew =
       Array.from(
         crewMap.values()
-      ).map(
-        (person) => ({
+      )
+        .map(
+          (person) => ({
 
-          ...person,
+            ...person,
 
-          completion_percentage:
-            person.training_assigned > 0
-              ? Number(
-                (
-                  (person.training_completed /
-                    person.training_assigned) *
-                  100
-                ).toFixed(2)
-              )
-              : 0,
-        })
-      );
+            completion_percentage:
+              person.training_assigned > 0
+                ? Number(
+                    (
+                      (
+                        person.training_completed /
+                        person.training_assigned
+                      ) * 100
+                    ).toFixed(2)
+                  )
+                : 0,
+          })
+        );
 
 
     /* ========================================================
@@ -1375,15 +1810,7 @@ export async function getShipTrainingDashboard(
             null,
 
           completion_percentage:
-            assigned > 0
-              ? Number(
-                (
-                  (completed /
-                    assigned) *
-                  100
-                ).toFixed(2)
-              )
-              : 0,
+            completionPercentage,
         },
 
 
@@ -1416,38 +1843,83 @@ export async function getShipTrainingDashboard(
 }
 
 
-// ============================================================
-// GET /api/training/dashboard/users/:userId
-// Get individual seafarer training details
-// ============================================================
+/* ============================================================
+   API 3
+   GET /api/training/dashboard/users/:userId
+   ============================================================ */
 
+/**
+ * Individual Seafarer Training Details
+ *
+ * Super Admin:
+ *   Can access any seafarer.
+ *
+ * Admin:
+ *   Can access only seafarers
+ *   belonging to their company.
+ */
 export async function getSeafarerTrainingDashboard(
   req,
   res
 ) {
-  try {
-    const { userId } = req.params;
 
-    // ----------------------------------------------------------
-    // Validate user ID
-    // ----------------------------------------------------------
+  try {
+
+    const {
+      userId,
+    } = req.params;
+
+
+    /* ========================================================
+       VALIDATE USER ID
+       ======================================================== */
 
     if (!userId) {
+
       return res.status(400).json({
+
         success: false,
-        message: "User ID is required",
+
+        message:
+          "User ID is required",
       });
     }
 
-    // ----------------------------------------------------------
-    // Fetch seafarer + company + ship + assigned courses
-    //
-    // IMPORTANT:
-    // We do NOT check req.user.company_id here.
-    // This endpoint is currently used by Super Admin.
-    // ----------------------------------------------------------
+
+    /* ========================================================
+       ACCESS / COMPANY SCOPE
+       ======================================================== */
+
+    const scope =
+      getCompanyScope(req);
+
+
+    if (scope.error) {
+
+      return res.status(
+        scope.status
+      ).json({
+
+        success: false,
+
+        message:
+          scope.message,
+      });
+    }
+
+
+    const {
+      companyId,
+      companyScoped,
+    } = scope;
+
+
+    /* ========================================================
+       QUERY
+       ======================================================== */
 
     const query = `
+
       SELECT
 
         /* ====================================================
@@ -1525,7 +1997,8 @@ export async function getSeafarerTrainingDashboard(
          ====================================================== */
 
       LEFT JOIN company comp
-        ON comp.company_id = u.company_id
+        ON comp.company_id =
+           u.company_id
 
 
       /* ======================================================
@@ -1533,7 +2006,8 @@ export async function getSeafarerTrainingDashboard(
          ====================================================== */
 
       LEFT JOIN ships s
-        ON s.ship_id = u.ship_id
+        ON s.ship_id =
+           u.ship_id
 
 
       /* ======================================================
@@ -1541,7 +2015,8 @@ export async function getSeafarerTrainingDashboard(
          ====================================================== */
 
       LEFT JOIN course_enrollments ce
-        ON ce.user_id = u.user_id
+        ON ce.user_id =
+           u.user_id
 
         AND ce.assigned = true
 
@@ -1551,7 +2026,8 @@ export async function getSeafarerTrainingDashboard(
          ====================================================== */
 
       LEFT JOIN courses c
-        ON c.id = ce.course_id
+        ON c.id =
+           ce.course_id
 
         AND c.deleted_at IS NULL
 
@@ -1562,202 +2038,275 @@ export async function getSeafarerTrainingDashboard(
 
       WHERE u.user_id = $1
 
+        ${
+          companyScoped
+            ? `AND u.company_id = $2`
+            : ""
+        }
+
 
       ORDER BY
         ce.enrolled_at DESC
     `;
 
-    // ----------------------------------------------------------
-    // Execute query
-    // ----------------------------------------------------------
 
-    const result = await db.query(query, [
+    /* ========================================================
+       PARAMETERS
+       ======================================================== */
+
+    const queryParams = [
+
       Number(userId),
-    ]);
 
-    // ----------------------------------------------------------
-    // Seafarer not found
-    // ----------------------------------------------------------
+      ...(companyScoped
+        ? [companyId]
+        : []),
+    ];
 
-    if (result.rows.length === 0) {
+
+    const result =
+      await db.query(
+        query,
+        queryParams
+      );
+
+
+    /* ========================================================
+       SEAFARER NOT FOUND
+       ======================================================== */
+
+    if (
+      result.rows.length === 0
+    ) {
+
       return res.status(404).json({
+
         success: false,
-        message: "Seafarer not found",
+
+        message:
+          "Seafarer not found",
       });
     }
 
-    const first = result.rows[0];
 
-    // ==========================================================
-    // COURSES
-    // ==========================================================
+    const first =
+      result.rows[0];
 
-    const courses = result.rows
-      .filter(
-        (row) => row.enrollment_id
-      )
-      .map((row) => ({
-        enrollment_id:
-          row.enrollment_id,
 
-        course_id:
-          row.course_id,
+    /* ========================================================
+       COURSES
+       ======================================================== */
 
-        title:
-          row.course_title,
+    const courses =
+      result.rows
 
-        department:
-          row.course_department,
+        .filter(
+          (row) =>
+            row.enrollment_id
+        )
 
-        status:
-          row.enrollment_status,
+        .map(
+          (row) => ({
 
-        completion_status:
-          row.completion_status,
+            enrollment_id:
+              row.enrollment_id,
 
-        enrolled_at:
-          row.enrolled_at,
+            course_id:
+              row.course_id,
 
-        completed_at:
-          row.completed_at,
+            title:
+              row.course_title,
 
-        certificate_issued:
-          row.certificate_issued,
+            department:
+              row.course_department,
 
-        /*
-         * No due_date/deadline exists
-         * in the current LMS schema.
-         */
-        overdue: null,
-      }));
+            status:
+              row.enrollment_status,
 
-    // ==========================================================
-    // TRAINING SUMMARY
-    // ==========================================================
+            completion_status:
+              row.completion_status,
+
+            enrolled_at:
+              row.enrolled_at,
+
+            completed_at:
+              row.completed_at,
+
+            certificate_issued:
+              row.certificate_issued,
+
+            /*
+             * No due_date/deadline exists
+             * in the current LMS schema.
+             */
+            overdue:
+              null,
+          })
+        );
+
+
+    /* ========================================================
+       TRAINING SUMMARY
+       ======================================================== */
 
     const assigned =
       courses.length;
 
-    // ----------------------------------------------------------
-    // Completed
-    // ----------------------------------------------------------
+
+    /* --------------------------------------------------------
+       COMPLETED
+       -------------------------------------------------------- */
 
     const completed =
       courses.filter(
         (course) =>
+
           String(
-            course.completion_status || ""
+            course.completion_status ||
+            ""
           )
             .trim()
-            .toLowerCase() === "completed"
+            .toLowerCase() ===
+            "completed"
+
       ).length;
 
-    // ----------------------------------------------------------
-    // In Progress
-    // ----------------------------------------------------------
+
+    /* --------------------------------------------------------
+       IN PROGRESS
+       -------------------------------------------------------- */
 
     const inProgress =
-      courses.filter((course) => {
-        const completionStatus =
-          String(
-            course.completion_status || ""
-          )
-            .trim()
-            .toLowerCase();
+      courses.filter(
+        (course) => {
 
-        if (
-          completionStatus ===
-          "completed"
-        ) {
-          return false;
+          const completionStatus =
+            String(
+              course.completion_status ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+
+
+          if (
+            completionStatus ===
+            "completed"
+          ) {
+            return false;
+          }
+
+
+          const status =
+            String(
+              course.status ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+
+
+          return [
+            "started",
+            "in_progress",
+            "in progress",
+            "ongoing",
+          ].includes(status);
         }
+      ).length;
 
-        const status =
-          String(
-            course.status || ""
-          )
-            .trim()
-            .toLowerCase();
 
-        return [
-          "started",
-          "in_progress",
-          "in progress",
-          "ongoing",
-        ].includes(status);
-      }).length;
-
-    // ----------------------------------------------------------
-    // Not Started
-    // ----------------------------------------------------------
+    /* --------------------------------------------------------
+       NOT STARTED
+       -------------------------------------------------------- */
 
     const notStarted =
-      courses.filter((course) => {
-        const completionStatus =
-          String(
-            course.completion_status || ""
-          )
-            .trim()
-            .toLowerCase();
+      courses.filter(
+        (course) => {
 
-        if (
-          completionStatus ===
-          "completed"
-        ) {
-          return false;
+          const completionStatus =
+            String(
+              course.completion_status ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+
+
+          if (
+            completionStatus ===
+            "completed"
+          ) {
+            return false;
+          }
+
+
+          const status =
+            String(
+              course.status ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+
+
+          return [
+            "enrolled",
+            "assigned",
+            "pending",
+            "not_started",
+            "not started",
+          ].includes(status);
         }
+      ).length;
 
-        const status =
-          String(
-            course.status || ""
-          )
-            .trim()
-            .toLowerCase();
 
-        return [
-          "enrolled",
-          "assigned",
-          "pending",
-          "not_started",
-          "not started",
-        ].includes(status);
-      }).length;
+    /* --------------------------------------------------------
+       PENDING
+       -------------------------------------------------------- */
 
-    // ----------------------------------------------------------
-    // Pending
-    // ----------------------------------------------------------
-
+    /*
+     * Keep the existing controller's behavior:
+     * anything that is not completed is considered pending.
+     */
     const pending =
-      assigned - completed;
+      assigned -
+      completed;
 
-    // ----------------------------------------------------------
-    // Completion percentage
-    // ----------------------------------------------------------
+
+    /* --------------------------------------------------------
+       COMPLETION %
+       -------------------------------------------------------- */
 
     const completionPercentage =
       assigned > 0
         ? Number(
-          (
-            (completed /
-              assigned) *
-            100
-          ).toFixed(2)
-        )
+            (
+              (
+                completed /
+                assigned
+              ) * 100
+            ).toFixed(2)
+          )
         : 0;
 
-    // ==========================================================
-    // RESPONSE
-    // ==========================================================
+
+    /* ========================================================
+       RESPONSE
+       ======================================================== */
 
     return res.status(200).json({
+
       success: true,
 
       data: {
-        // ======================================================
-        // SEAFARER
-        // ======================================================
+
+        /* ====================================================
+           SEAFARER
+           ==================================================== */
 
         seafarer: {
+
           user_id:
             first.user_id,
 
@@ -1773,11 +2322,13 @@ export async function getSeafarerTrainingDashboard(
           status:
             first.status,
 
-          // ----------------------------------------------------
-          // Company
-          // ----------------------------------------------------
+
+          /* --------------------------------------------------
+             COMPANY
+             -------------------------------------------------- */
 
           company: {
+
             company_id:
               first.company_id,
 
@@ -1786,11 +2337,13 @@ export async function getSeafarerTrainingDashboard(
               null,
           },
 
-          // ----------------------------------------------------
-          // Ship
-          // ----------------------------------------------------
+
+          /* --------------------------------------------------
+             SHIP
+             -------------------------------------------------- */
 
           ship: {
+
             ship_id:
               first.ship_id,
 
@@ -1801,6 +2354,7 @@ export async function getSeafarerTrainingDashboard(
               first.ship_type,
           },
 
+
           embarkation_date:
             first.embarkation_date,
 
@@ -1808,11 +2362,13 @@ export async function getSeafarerTrainingDashboard(
             first.disembarkation_date,
         },
 
-        // ======================================================
-        // TRAINING SUMMARY
-        // ======================================================
+
+        /* ====================================================
+           TRAINING SUMMARY
+           ==================================================== */
 
         summary: {
+
           courses_assigned:
             assigned,
 
@@ -1840,20 +2396,25 @@ export async function getSeafarerTrainingDashboard(
             completionPercentage,
         },
 
-        // ======================================================
-        // ASSIGNED COURSES
-        // ======================================================
+
+        /* ====================================================
+           ASSIGNED COURSES
+           ==================================================== */
 
         courses,
       },
     });
+
   } catch (error) {
+
     console.error(
       "getSeafarerTrainingDashboard error:",
       error
     );
 
+
     return res.status(500).json({
+
       success: false,
 
       message:
@@ -1867,5 +2428,3 @@ export async function getSeafarerTrainingDashboard(
     });
   }
 }
-
-

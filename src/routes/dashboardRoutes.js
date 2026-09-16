@@ -14,7 +14,7 @@ const router = express.Router();
 
 
 router.use(requireAuth);
-router.use(allowRoles(1));
+router.use(allowRoles(1,2));
 
 router.get("/dashboard", getTrainingDashboard);
 
