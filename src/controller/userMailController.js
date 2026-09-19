@@ -304,3 +304,156 @@ ${me.full_name || ""}
     return res.status(500).json({ error: "Failed to generate support mail template" });
   }
 };
+
+// POST /api/users/send-credentials/multiple
+
+export const sendCredentialsToMultipleEmails = async (req, res) => {
+  try {
+    const requester = req.user;
+    const role = Number(requester.role_id);
+
+    // Only Superadmin and Admin
+    if (![1, 2].includes(role)) {
+      return res.status(403).json({
+        error: "Only admins can send credentials.",
+      });
+    }
+
+    const { user_ids, emails } = req.body;
+
+    // Validate user IDs
+    if (!Array.isArray(user_ids) || user_ids.length === 0) {
+      return res.status(400).json({
+        error: "user_ids array is required.",
+      });
+    }
+
+    // Validate email IDs
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({
+        error: "emails array is required.",
+      });
+    }
+
+    // Validate every email
+    const invalidEmails = emails.filter(
+      (email) => !email || !isValidEmail(email)
+    );
+
+    if (invalidEmails.length > 0) {
+      return res.status(400).json({
+        error: "One or more email addresses are invalid.",
+        invalidEmails,
+      });
+    }
+
+    // Fetch selected users
+    const { rows } = await db.query(
+      `
+      SELECT 
+        u.user_id,
+        u.seafarer_id,
+        u.company_id,
+        u.ship_id,
+        u.role_id,
+        u.username,
+        u.password_enc AS password_encrypted,
+        u.full_name,
+        u.rank,
+        u.rank AS rank_name
+      FROM users u
+      WHERE u.user_id = ANY($1::int[])
+      `,
+      [user_ids]
+    );
+
+    // Check access
+    const allowed = rows
+      .filter(
+        (u) =>
+          role === 1 ||
+          String(u.company_id) === String(requester.company_id)
+      )
+      .filter(
+        (u) => !DISALLOWED_TARGET_ROLES.has(Number(u.role_id))
+      )
+      .filter((u) => u.password_encrypted);
+
+    if (allowed.length === 0) {
+      return res.status(400).json({
+        error: "No valid users found to send credentials.",
+      });
+    }
+
+    // Get company name
+    const companyName = await fetchCompanyName(
+      requester.company_id
+    );
+
+    // Decrypt passwords
+    const rowsWithPlain = allowed.map((u) => ({
+      ...u,
+      plain_password: decryptPassword(u.password_encrypted),
+    }));
+
+    // Sort rank first, then name
+    rowsWithPlain.sort((a, b) => {
+      const ra = rankSortValue(a.rank);
+      const rb = rankSortValue(b.rank);
+
+      if (ra !== rb) {
+        return ra - rb;
+      }
+
+      return String(a.full_name || "").localeCompare(
+        String(b.full_name || ""),
+        undefined,
+        {
+          sensitivity: "base",
+        }
+      );
+    });
+
+    // Build credential email
+    const { subject, html } = buildBulkCredentialEmail({
+      companyName,
+      rows: rowsWithPlain,
+    });
+
+    // Send the same email to multiple recipients
+    await sendEmail({
+      to: emails,
+      subject,
+      html,
+    });
+
+    // Log activity
+    await logMailEvent({
+      requester,
+      actor_user_id: requester.user_id,
+      activity_type: "SEND_CREDENTIALS_MULTIPLE_EMAILS",
+      payload: {
+        user_ids,
+        recipients: emails,
+        credential_count: rowsWithPlain.length,
+      },
+    });
+
+    return res.json({
+      message: "Credentials sent successfully.",
+      recipient_count: emails.length,
+      credential_count: rowsWithPlain.length,
+      skipped_count: user_ids.length - rowsWithPlain.length,
+    });
+
+  } catch (err) {
+    console.error(
+      "sendCredentialsToMultipleEmails error:",
+      err
+    );
+
+    return res.status(500).json({
+      error: "Failed to send credentials.",
+    });
+  }
+};
