@@ -24,6 +24,11 @@ import {
   getAssessmentQuestions,
   assignAssessmentBulk,
   getAssignedAssessments,
+  startAssessmentAttempt,
+  getAssessmentAttemptQuestions,
+  checkAssessmentAttemptAnswer,
+  submitAssessmentAttempt,
+  getAssessmentAttemptResult,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -83,5 +88,37 @@ router.post("/:assessmentId/assign-bulk", assignAssessmentBulk);
 router.delete("/:assessmentId", allowRoles(1, 2, 3), deleteAssessment);
 router.delete("/questions/:questionId", allowRoles(1, 2, 3), deleteQuestion);
 router.delete("/options/:optionId", allowRoles(1, 2, 3), deleteOption);
+
+
+// Start new attempt
+router.post(
+  "/:assessmentId/attempts/start",
+  startAssessmentAttempt
+);
+
+// Get questions for this specific attempt
+router.get(
+  "/:assessmentId/attempts/:attemptId/questions",
+  getAssessmentAttemptQuestions
+);
+
+// Check and save one answer
+router.post(
+  "/:assessmentId/attempts/:attemptId/answer",
+  checkAssessmentAttemptAnswer
+);
+
+// Submit new attempt
+router.post(
+  "/:assessmentId/attempts/:attemptId/submit",
+  submitAssessmentAttempt
+);
+
+
+// Different path so the existing result API remains untouched
+router.get(
+  "/attempt-results/:attemptId",
+  getAssessmentAttemptResult
+);
 
 export default router;

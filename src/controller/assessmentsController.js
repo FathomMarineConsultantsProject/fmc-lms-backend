@@ -2467,3 +2467,994 @@ export const getAssessmentQuestions = async (req, res) => {
     });
   }
 };
+
+
+//------------------------------------------------------
+
+
+// ======================================================
+// CHECK ASSESSMENT ACCESS
+// ======================================================
+
+const checkAssessmentAccess = async (
+  req,
+  assessmentId,
+  client = db
+) => {
+  const roleId = getRoleId(req);
+
+  const params = [assessmentId];
+
+  let query = `
+    SELECT
+      a.assessment_id,
+      a.title,
+      a.assessment_type,
+      a.randomize_questions,
+      a.passing_percentage,
+      a.total_marks,
+      a.allow_multiple_attempts,
+      a.max_attempts,
+      a.is_published,
+      a.duration_minutes,
+      a.instructions
+    FROM assessments a
+    WHERE a.assessment_id = $1
+      AND a.is_deleted = false
+  `;
+
+  if (roleId !== 1) {
+    params.push(req.user.company_id);
+
+    query += `
+      AND (
+        a.company_id = $${params.length}
+        OR a.company_id IS NULL
+      )
+    `;
+
+    if (roleId === 3 || roleId === 4) {
+      params.push(req.user.ship_id);
+
+      query += `
+        AND (
+          a.ship_id = $${params.length}
+          OR a.ship_id IS NULL
+        )
+      `;
+    }
+  }
+
+  const result = await client.query(query, params);
+
+  return result.rows[0] || null;
+};
+
+// ======================================================
+// START ASSESSMENT ATTEMPT
+// ======================================================
+
+export const startAssessmentAttempt = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { assessmentId } = req.params;
+    const userId = getUserId(req);
+
+    await client.query("BEGIN");
+
+    const assessment = await checkAssessmentAccess(
+      req,
+      assessmentId,
+      client
+    );
+
+    if (!assessment) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        success: false,
+        message: "Assessment not found",
+      });
+    }
+
+    if (!assessment.is_published) {
+      await client.query("ROLLBACK");
+
+      return res.status(403).json({
+        success: false,
+        message: "Assessment is not published",
+      });
+    }
+
+    const previousAttemptsResult = await client.query(
+      `
+      SELECT COUNT(*)::INTEGER AS count
+      FROM assessment_attempts
+      WHERE assessment_id = $1
+        AND user_id = $2
+      `,
+      [assessmentId, userId]
+    );
+
+    const attemptCount = Number(
+      previousAttemptsResult.rows[0].count
+    );
+
+    if (
+      !assessment.allow_multiple_attempts &&
+      attemptCount >= 1
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        success: false,
+        message: "You have already attempted this assessment",
+      });
+    }
+
+    if (
+      assessment.allow_multiple_attempts &&
+      attemptCount >= Number(assessment.max_attempts)
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        success: false,
+        message: "Maximum attempts reached",
+      });
+    }
+
+    const questionsResult = await client.query(
+      `
+      SELECT question_id
+      FROM assessment_questions
+      WHERE assessment_id = $1
+        AND is_deleted = false
+      ${
+        assessment.randomize_questions
+          ? "ORDER BY RANDOM()"
+          : "ORDER BY question_order ASC"
+      }
+      `,
+      [assessmentId]
+    );
+
+    const questions = questionsResult.rows;
+
+    if (questions.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        success: false,
+        message: "Assessment has no questions",
+      });
+    }
+
+    const attemptResult = await client.query(
+      `
+      INSERT INTO assessment_attempts (
+        assessment_id,
+        user_id,
+        status,
+        total_questions,
+        attempt_number
+      )
+      VALUES ($1, $2, 'in_progress', $3, $4)
+      RETURNING *
+      `,
+      [
+        assessmentId,
+        userId,
+        questions.length,
+        attemptCount + 1,
+      ]
+    );
+
+    const attempt = attemptResult.rows[0];
+
+    for (let i = 0; i < questions.length; i++) {
+      await client.query(
+        `
+        INSERT INTO assessment_attempt_questions (
+          attempt_id,
+          question_id,
+          question_order
+        )
+        VALUES ($1, $2, $3)
+        `,
+        [
+          attempt.attempt_id,
+          questions[i].question_id,
+          i + 1,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      message: "Assessment attempt started successfully",
+      data: {
+        attempt_id: attempt.attempt_id,
+        assessment_id: attempt.assessment_id,
+        attempt_number: attempt.attempt_number,
+        total_questions: attempt.total_questions,
+        status: attempt.status,
+      },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error("Start assessment attempt error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Failed to start assessment attempt",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ======================================================
+// GET QUESTIONS FOR ATTEMPT
+// ======================================================
+
+export const getAssessmentAttemptQuestions = async (
+  req,
+  res
+) => {
+  try {
+    const { assessmentId, attemptId } = req.params;
+
+    const userId = getUserId(req);
+    const roleId = getRoleId(req);
+
+    const params = [attemptId, assessmentId];
+
+    let query = `
+      SELECT
+        aa.attempt_id,
+        aa.assessment_id,
+        aa.user_id,
+        aa.status,
+        aa.total_questions,
+        aa.attempt_number,
+        a.title,
+        a.assessment_type,
+        a.duration_minutes,
+        a.instructions
+      FROM assessment_attempts aa
+      JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE aa.attempt_id = $1
+        AND aa.assessment_id = $2
+        AND a.is_deleted = false
+    `;
+
+    if (roleId === 4) {
+      params.push(userId);
+
+      query += `
+        AND aa.user_id = $${params.length}
+      `;
+    }
+
+    const attemptResult = await db.query(
+      query,
+      params
+    );
+
+    if (attemptResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Assessment attempt not found",
+      });
+    }
+
+    const attempt = attemptResult.rows[0];
+
+    const questionsResult = await db.query(
+      `
+      SELECT
+        aaq.question_order,
+        aq.question_id,
+        aq.question_text,
+        aq.question_type,
+        aq.marks,
+        aq.is_required
+      FROM assessment_attempt_questions aaq
+      JOIN assessment_questions aq
+        ON aq.question_id = aaq.question_id
+      WHERE aaq.attempt_id = $1
+        AND aq.assessment_id = $2
+        AND aq.is_deleted = false
+      ORDER BY aaq.question_order ASC
+      `,
+      [attemptId, assessmentId]
+    );
+
+    const questions = [];
+
+    for (const question of questionsResult.rows) {
+      let options = [];
+
+      if (MCQ_TYPES.includes(question.question_type)) {
+        const optionsResult = await db.query(
+          `
+          SELECT
+            option_id,
+            option_text,
+            option_order
+          FROM assessment_options
+          WHERE question_id = $1
+          ORDER BY option_order ASC
+          `,
+          [question.question_id]
+        );
+
+        options = optionsResult.rows;
+      }
+
+      questions.push({
+        question_order: question.question_order,
+        question_id: question.question_id,
+        question_text: question.question_text,
+        question_type: question.question_type,
+        marks: question.marks,
+        is_required: question.is_required,
+        options,
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        attempt,
+        questions,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Get assessment attempt questions error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch assessment attempt questions",
+    });
+  }
+};
+
+// ======================================================
+// CHECK AND SAVE ONE ANSWER
+// ======================================================
+
+export const checkAssessmentAttemptAnswer = async (
+  req,
+  res
+) => {
+  const client = await db.connect();
+
+  try {
+    const { assessmentId, attemptId } = req.params;
+
+    const {
+      question_id,
+      selected_option_id,
+      selected_option_ids,
+      answer_text,
+    } = req.body;
+
+    const userId = getUserId(req);
+
+    await client.query("BEGIN");
+
+    const attemptResult = await client.query(
+      `
+      SELECT
+        aa.*,
+        a.assessment_type
+      FROM assessment_attempts aa
+      JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE aa.attempt_id = $1
+        AND aa.assessment_id = $2
+        AND aa.user_id = $3
+        AND aa.status = 'in_progress'
+      `,
+      [
+        attemptId,
+        assessmentId,
+        userId,
+      ]
+    );
+
+    if (attemptResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        success: false,
+        message:
+          "Valid in-progress assessment attempt not found",
+      });
+    }
+
+    const questionResult = await client.query(
+      `
+      SELECT aq.*
+      FROM assessment_attempt_questions aaq
+      JOIN assessment_questions aq
+        ON aq.question_id = aaq.question_id
+      WHERE aaq.attempt_id = $1
+        AND aaq.question_id = $2
+        AND aq.assessment_id = $3
+        AND aq.is_deleted = false
+      `,
+      [
+        attemptId,
+        question_id,
+        assessmentId,
+      ]
+    );
+
+    if (questionResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Question does not belong to this assessment attempt",
+      });
+    }
+
+    const question = questionResult.rows[0];
+
+    let isCorrect = null;
+    let marksAwarded = 0;
+
+    let correctOptionId = null;
+    let correctOptionText = null;
+
+    let correctOptionIds = [];
+    let correctOptions = [];
+
+    // --------------------------------------------------
+    // SINGLE MCQ
+    // --------------------------------------------------
+
+    if (question.question_type === "mcq_single") {
+      if (!selected_option_id) {
+        throw new Error(
+          "selected_option_id is required"
+        );
+      }
+
+      const selectedResult = await client.query(
+        `
+        SELECT
+          option_id,
+          option_text,
+          is_correct
+        FROM assessment_options
+        WHERE option_id = $1
+          AND question_id = $2
+        `,
+        [
+          selected_option_id,
+          question_id,
+        ]
+      );
+
+      if (selectedResult.rows.length === 0) {
+        throw new Error(
+          "Invalid selected_option_id"
+        );
+      }
+
+      const selectedOption =
+        selectedResult.rows[0];
+
+      isCorrect = selectedOption.is_correct;
+
+      if (isCorrect) {
+        marksAwarded = Number(question.marks);
+      }
+
+      const correctResult = await client.query(
+        `
+        SELECT
+          option_id,
+          option_text
+        FROM assessment_options
+        WHERE question_id = $1
+          AND is_correct = true
+        `,
+        [question_id]
+      );
+
+      if (correctResult.rows.length > 0) {
+        correctOptionId =
+          correctResult.rows[0].option_id;
+
+        correctOptionText =
+          correctResult.rows[0].option_text;
+      }
+    }
+
+    // --------------------------------------------------
+    // MULTIPLE MCQ
+    // --------------------------------------------------
+
+    if (question.question_type === "mcq_multiple") {
+      if (
+        !Array.isArray(selected_option_ids) ||
+        selected_option_ids.length === 0
+      ) {
+        throw new Error(
+          "selected_option_ids is required"
+        );
+      }
+
+      const optionsResult = await client.query(
+        `
+        SELECT
+          option_id,
+          option_text,
+          is_correct
+        FROM assessment_options
+        WHERE question_id = $1
+        `,
+        [question_id]
+      );
+
+      const allOptions = optionsResult.rows;
+
+      const validOptionIds = allOptions.map(
+        (option) => String(option.option_id)
+      );
+
+      const submittedOptionIds =
+        selected_option_ids.map(String);
+
+      const hasInvalidOption =
+        submittedOptionIds.some(
+          (id) => !validOptionIds.includes(id)
+        );
+
+      if (hasInvalidOption) {
+        throw new Error(
+          "One or more selected options are invalid"
+        );
+      }
+
+      const correctIds = allOptions
+        .filter((option) => option.is_correct)
+        .map((option) => String(option.option_id))
+        .sort();
+
+      const submittedIds = [
+        ...submittedOptionIds,
+      ].sort();
+
+      isCorrect =
+        correctIds.length === submittedIds.length &&
+        correctIds.every(
+          (id, index) => id === submittedIds[index]
+        );
+
+      if (isCorrect) {
+        marksAwarded = Number(question.marks);
+      }
+
+      correctOptionIds = correctIds;
+
+      correctOptions = allOptions
+        .filter((option) => option.is_correct)
+        .map((option) => ({
+          option_id: option.option_id,
+          option_text: option.option_text,
+        }));
+    }
+
+    // --------------------------------------------------
+    // SUBJECTIVE
+    // --------------------------------------------------
+
+    if (question.question_type === "subjective") {
+      if (
+        !answer_text ||
+        !String(answer_text).trim()
+      ) {
+        throw new Error(
+          "answer_text is required"
+        );
+      }
+
+      isCorrect = null;
+      marksAwarded = 0;
+    }
+
+    // --------------------------------------------------
+    // SAVE ANSWER
+    // --------------------------------------------------
+
+    await client.query(
+      `
+      INSERT INTO assessment_answers (
+        attempt_id,
+        question_id,
+        selected_option_id,
+        selected_option_ids,
+        answer_text,
+        is_correct,
+        marks_awarded,
+        answered_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+
+      ON CONFLICT (attempt_id, question_id)
+
+      DO UPDATE SET
+        selected_option_id =
+          EXCLUDED.selected_option_id,
+
+        selected_option_ids =
+          EXCLUDED.selected_option_ids,
+
+        answer_text =
+          EXCLUDED.answer_text,
+
+        is_correct =
+          EXCLUDED.is_correct,
+
+        marks_awarded =
+          EXCLUDED.marks_awarded,
+
+        answered_at =
+          NOW()
+      `,
+      [
+        attemptId,
+        question_id,
+        selected_option_id || null,
+        Array.isArray(selected_option_ids)
+          ? selected_option_ids
+          : null,
+        answer_text || null,
+        isCorrect,
+        marksAwarded,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      data: {
+        question_id,
+        is_correct: isCorrect,
+        marks_awarded: marksAwarded,
+        correct_option_id: correctOptionId,
+        correct_option_text: correctOptionText,
+        correct_option_ids: correctOptionIds,
+        correct_options: correctOptions,
+        explanation: question.explanation || null,
+        status:
+          question.question_type === "subjective"
+            ? "pending_review"
+            : "evaluated",
+      },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error(
+      "Check assessment attempt answer error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message || "Failed to check answer",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ======================================================
+// SUBMIT ASSESSMENT ATTEMPT
+// ======================================================
+
+export const submitAssessmentAttempt = async (
+  req,
+  res
+) => {
+  const client = await db.connect();
+
+  try {
+    const { assessmentId, attemptId } = req.params;
+
+    const userId = getUserId(req);
+
+    await client.query("BEGIN");
+
+    const attemptResult = await client.query(
+      `
+      SELECT
+        aa.*,
+        a.passing_percentage,
+        a.total_marks,
+        a.assessment_type
+      FROM assessment_attempts aa
+      JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE aa.attempt_id = $1
+        AND aa.assessment_id = $2
+        AND aa.user_id = $3
+        AND aa.status = 'in_progress'
+      `,
+      [
+        attemptId,
+        assessmentId,
+        userId,
+      ]
+    );
+
+    if (attemptResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        success: false,
+        message: "Valid in-progress attempt not found",
+      });
+    }
+
+    const attempt = attemptResult.rows[0];
+
+    const scoreResult = await client.query(
+      `
+      SELECT
+        COALESCE(
+          SUM(marks_awarded),
+          0
+        ) AS score_obtained,
+
+        COUNT(*) FILTER (
+          WHERE is_correct = true
+        ) AS correct_answers_count,
+
+        COUNT(*) FILTER (
+          WHERE is_correct IS NULL
+        ) AS pending_answers
+
+      FROM assessment_answers
+      WHERE attempt_id = $1
+      `,
+      [attemptId]
+    );
+
+    const scoreData = scoreResult.rows[0];
+
+    const scoreObtained = Number(
+      scoreData.score_obtained
+    );
+
+    const correctAnswersCount = Number(
+      scoreData.correct_answers_count
+    );
+
+    const pendingAnswers = Number(
+      scoreData.pending_answers
+    );
+
+    const percentage = calculatePercentage(
+      scoreObtained,
+      attempt.total_marks
+    );
+
+    const subjectivePendingReview =
+      pendingAnswers > 0;
+
+    const isPassed = subjectivePendingReview
+      ? null
+      : percentage >=
+        Number(attempt.passing_percentage);
+
+    const finalStatus =
+      subjectivePendingReview
+        ? "submitted"
+        : "evaluated";
+
+    const updatedAttempt = await client.query(
+      `
+      UPDATE assessment_attempts
+      SET
+        submitted_at = NOW(),
+        status = $1,
+        score_obtained = $2,
+        percentage = $3,
+        is_passed = $4,
+        correct_answers_count = $5,
+        subjective_pending_review = $6,
+        updated_at = NOW()
+      WHERE attempt_id = $7
+      RETURNING *
+      `,
+      [
+        finalStatus,
+        scoreObtained,
+        percentage,
+        isPassed,
+        correctAnswersCount,
+        subjectivePendingReview,
+        attemptId,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: subjectivePendingReview
+        ? "Assessment submitted. Subjective answers are pending review."
+        : "Assessment submitted and evaluated successfully",
+      data: updatedAttempt.rows[0],
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error(
+      "Submit assessment attempt error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Failed to submit assessment",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ======================================================
+// GET ASSESSMENT ATTEMPT RESULT
+// ======================================================
+
+export const getAssessmentAttemptResult = async (
+  req,
+  res
+) => {
+  try {
+    const { attemptId } = req.params;
+
+    const userId = getUserId(req);
+    const roleId = getRoleId(req);
+
+    const params = [attemptId];
+
+    let query = `
+      SELECT
+        aa.*,
+        a.title,
+        a.assessment_type,
+        a.passing_percentage,
+        a.total_marks
+      FROM assessment_attempts aa
+      JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE aa.attempt_id = $1
+        AND a.is_deleted = false
+    `;
+
+    if (roleId === 4) {
+      params.push(userId);
+
+      query += `
+        AND aa.user_id = $${params.length}
+      `;
+    }
+
+    const attemptResult = await db.query(
+      query,
+      params
+    );
+
+    if (attemptResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Attempt result not found",
+      });
+    }
+
+    const answersResult = await db.query(
+      `
+      SELECT
+        ans.answer_id,
+        ans.attempt_id,
+        ans.question_id,
+
+        ans.selected_option_id,
+        ans.selected_option_ids,
+        ans.answer_text,
+        ans.is_correct,
+        ans.marks_awarded,
+        ans.answered_at,
+
+        aaq.question_order,
+
+        q.question_text,
+        q.question_type,
+        q.marks,
+        q.explanation,
+
+        selected_opt.option_text
+          AS selected_option_text,
+
+        COALESCE(
+          (
+            SELECT json_agg(
+              json_build_object(
+                'option_id',
+                correct_opt.option_id,
+                'option_text',
+                correct_opt.option_text
+              )
+              ORDER BY correct_opt.option_order
+            )
+            FROM assessment_options correct_opt
+            WHERE correct_opt.question_id = q.question_id
+              AND correct_opt.is_correct = true
+          ),
+          '[]'::json
+        ) AS correct_options
+
+      FROM assessment_answers ans
+
+      JOIN assessment_questions q
+        ON q.question_id = ans.question_id
+
+      JOIN assessment_attempt_questions aaq
+        ON aaq.attempt_id = ans.attempt_id
+        AND aaq.question_id = ans.question_id
+
+      LEFT JOIN assessment_options selected_opt
+        ON selected_opt.option_id =
+          ans.selected_option_id
+
+      WHERE ans.attempt_id = $1
+
+      ORDER BY aaq.question_order ASC
+      `,
+      [attemptId]
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        attempt: attemptResult.rows[0],
+        answers: answersResult.rows,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Get assessment attempt result error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch attempt result",
+    });
+  }
+};
