@@ -2541,7 +2541,18 @@ export const startAssessmentAttempt = async (req, res) => {
     const { assessmentId } = req.params;
     const userId = getUserId(req);
 
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User authentication required",
+      });
+    }
+
     await client.query("BEGIN");
+
+    // --------------------------------------------------
+    // 1. GET ASSESSMENT
+    // --------------------------------------------------
 
     const assessment = await checkAssessmentAccess(
       req,
@@ -2567,6 +2578,10 @@ export const startAssessmentAttempt = async (req, res) => {
       });
     }
 
+    // --------------------------------------------------
+    // 2. GET PREVIOUS ATTEMPT COUNT
+    // --------------------------------------------------
+
     const previousAttemptsResult = await client.query(
       `
       SELECT COUNT(*)::INTEGER AS count
@@ -2578,12 +2593,16 @@ export const startAssessmentAttempt = async (req, res) => {
     );
 
     const attemptCount = Number(
-      previousAttemptsResult.rows[0].count
+      previousAttemptsResult.rows[0].count || 0
     );
+
+    // --------------------------------------------------
+    // 3. CHECK ATTEMPT LIMITS
+    // --------------------------------------------------
 
     if (
       !assessment.allow_multiple_attempts &&
-      attemptCount >= 1
+      attemptCount > 0
     ) {
       await client.query("ROLLBACK");
 
@@ -2595,7 +2614,7 @@ export const startAssessmentAttempt = async (req, res) => {
 
     if (
       assessment.allow_multiple_attempts &&
-      attemptCount >= Number(assessment.max_attempts)
+      attemptCount >= Number(assessment.max_attempts || 1)
     ) {
       await client.query("ROLLBACK");
 
@@ -2605,9 +2624,21 @@ export const startAssessmentAttempt = async (req, res) => {
       });
     }
 
+    // --------------------------------------------------
+    // 4. GET QUESTIONS
+    // --------------------------------------------------
+    // If randomize_questions = true:
+    //     questions are shuffled once.
+    //
+    // If randomize_questions = false:
+    //     original question_order is used.
+    // --------------------------------------------------
+
     const questionsResult = await client.query(
       `
-      SELECT question_id
+      SELECT
+        question_id,
+        question_order
       FROM assessment_questions
       WHERE assessment_id = $1
         AND is_deleted = false
@@ -2631,6 +2662,10 @@ export const startAssessmentAttempt = async (req, res) => {
       });
     }
 
+    // --------------------------------------------------
+    // 5. CREATE NEW ATTEMPT
+    // --------------------------------------------------
+
     const attemptResult = await client.query(
       `
       INSERT INTO assessment_attempts (
@@ -2640,7 +2675,13 @@ export const startAssessmentAttempt = async (req, res) => {
         total_questions,
         attempt_number
       )
-      VALUES ($1, $2, 'in_progress', $3, $4)
+      VALUES (
+        $1,
+        $2,
+        'in_progress',
+        $3,
+        $4
+      )
       RETURNING *
       `,
       [
@@ -2653,25 +2694,50 @@ export const startAssessmentAttempt = async (req, res) => {
 
     const attempt = attemptResult.rows[0];
 
+    // --------------------------------------------------
+    // 6. STORE QUESTION ORDER FOR THIS ATTEMPT
+    // --------------------------------------------------
+
+    const attemptQuestionValues = [];
+    const attemptQuestionParams = [];
+
+    let paramIndex = 1;
+
     for (let i = 0; i < questions.length; i++) {
-      await client.query(
-        `
-        INSERT INTO assessment_attempt_questions (
-          attempt_id,
-          question_id,
-          question_order
-        )
-        VALUES ($1, $2, $3)
-        `,
-        [
-          attempt.attempt_id,
-          questions[i].question_id,
-          i + 1,
-        ]
+      attemptQuestionParams.push(
+        attempt.attempt_id,
+        questions[i].question_id,
+        i + 1
       );
+
+      attemptQuestionValues.push(
+        `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2})`
+      );
+
+      paramIndex += 3;
     }
 
+    await client.query(
+      `
+      INSERT INTO assessment_attempt_questions (
+        attempt_id,
+        question_id,
+        question_order
+      )
+      VALUES ${attemptQuestionValues.join(", ")}
+      `,
+      attemptQuestionParams
+    );
+
+    // --------------------------------------------------
+    // 7. COMMIT
+    // --------------------------------------------------
+
     await client.query("COMMIT");
+
+    // --------------------------------------------------
+    // 8. RESPONSE
+    // --------------------------------------------------
 
     return res.status(201).json({
       success: true,
@@ -2679,6 +2745,7 @@ export const startAssessmentAttempt = async (req, res) => {
       data: {
         attempt_id: attempt.attempt_id,
         assessment_id: attempt.assessment_id,
+        user_id: attempt.user_id,
         attempt_number: attempt.attempt_number,
         total_questions: attempt.total_questions,
         status: attempt.status,
@@ -2687,7 +2754,10 @@ export const startAssessmentAttempt = async (req, res) => {
   } catch (error) {
     await client.query("ROLLBACK");
 
-    console.error("Start assessment attempt error:", error);
+    console.error(
+      "Start assessment attempt error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
