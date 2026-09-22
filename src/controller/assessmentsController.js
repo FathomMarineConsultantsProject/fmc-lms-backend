@@ -1819,8 +1819,8 @@ export const assignAssessmentBulk = async (req, res) => {
 
   try {
     const { assessmentId } = req.params;
-    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body; 
-    
+    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body;
+
     const currentUserId = getUserId(req);
     const roleId = getRoleId(req);
 
@@ -1842,10 +1842,10 @@ export const assignAssessmentBulk = async (req, res) => {
 
     // 3. DETERMINE TARGET SCOPE
     let targetCompanyId = bodyCompanyId || null;
-    
+
     if (roleId === 2) {
       // Admins are STRICTLY locked to their own company
-      targetCompanyId = req.user.company_id; 
+      targetCompanyId = req.user.company_id;
     }
 
     // 4. BUILD THE USER QUERY
@@ -1867,7 +1867,7 @@ export const assignAssessmentBulk = async (req, res) => {
     if (Array.isArray(ship_ids) && ship_ids.length > 0) {
       userParams.push(ship_ids);
       // ANY() allows Postgres to check if the user's ship_id is inside our array!
-      userQuery += ` AND ship_id = ANY($${userParams.length}::int[])`; 
+      userQuery += ` AND ship_id = ANY($${userParams.length}::int[])`;
     }
 
     // 5. Fetch Target Users
@@ -1885,12 +1885,12 @@ export const assignAssessmentBulk = async (req, res) => {
 
     for (const crew of crewMembers) {
       params.push(assessmentId, crew.user_id, currentUserId, crew.company_id, crew.ship_id);
-      
+
       if (due_date) {
-          params.push(due_date);
-          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
+        params.push(due_date);
+        values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
       } else {
-          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
+        values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
       }
     }
 
@@ -2642,10 +2642,9 @@ export const startAssessmentAttempt = async (req, res) => {
       FROM assessment_questions
       WHERE assessment_id = $1
         AND is_deleted = false
-      ${
-        assessment.randomize_questions
-          ? "ORDER BY RANDOM()"
-          : "ORDER BY question_order ASC"
+      ${assessment.randomize_questions
+        ? "ORDER BY RANDOM()"
+        : "ORDER BY question_order ASC"
       }
       `,
       [assessmentId]
@@ -3054,6 +3053,17 @@ export const checkAssessmentAttemptAnswer = async (
 
         correctOptionText =
           correctResult.rows[0].option_text;
+
+        correctOptionIds = [
+          String(correctOptionId)
+        ];
+
+        correctOptions = [
+          {
+            option_id: correctOptionId,
+            option_text: correctOptionText
+          }
+        ];
       }
     }
 
@@ -3336,7 +3346,7 @@ export const submitAssessmentAttempt = async (
     const isPassed = subjectivePendingReview
       ? null
       : percentage >=
-        Number(attempt.passing_percentage);
+      Number(attempt.passing_percentage);
 
     const finalStatus =
       subjectivePendingReview
