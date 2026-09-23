@@ -9,9 +9,6 @@ const useSSL =
   process.env.NODE_ENV === "production" ||
   !!process.env.VERCEL;
 
-console.log("DB host:", process.env.PG_HOST);
-console.log("DB SSL enabled:", useSSL);
-
 export const db = new Pool({
   host: process.env.PG_HOST,
   port: Number(process.env.PG_PORT || 5432),

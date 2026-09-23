@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { normalizeAssessmentDraft, AssessmentValidationError } from "../services/assessmentService.js";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Define the exact structure the AI must return
@@ -264,4 +265,84 @@ export const generateTableOfContents = async (req, res) => {
         console.error("Gemini API Error (generateTableOfContents):", error);
         return res.status(500).json({ error: "AI server is busy. Please try again later." });
     }
+};
+
+const AI_ASSESSMENT_TYPES = ["mcq_single", "mcq_multiple"];
+
+/** Generates an unpersisted, staff-reviewable assessment draft. */
+export const generateAssessmentDraft = async (req, res) => {
+  const description = String(req.body?.description ?? "").trim();
+  const assessmentType = req.body?.assessmentType ?? "mcq_single";
+  const questionCount = Number(req.body?.questionCount ?? 10);
+  const difficultyLevel = String(req.body?.difficultyLevel ?? "medium").trim();
+
+  if (!description) return res.status(400).json({ error: "description is required" });
+  if (description.length > 2000) return res.status(400).json({ error: "description must be 2000 characters or fewer" });
+  if (!AI_ASSESSMENT_TYPES.includes(assessmentType)) return res.status(400).json({ error: "assessmentType must be mcq_single or mcq_multiple" });
+  if (!Number.isInteger(questionCount) || questionCount < 1 || questionCount > 30) {
+    return res.status(400).json({ error: "questionCount must be an integer between 1 and 30" });
+  }
+  if (!["easy", "medium", "hard"].includes(difficultyLevel)) return res.status(400).json({ error: "difficultyLevel must be easy, medium or hard" });
+  const passingPercentage = Number(req.body?.passingPercentage ?? 70);
+  const durationMinutes = Number(req.body?.durationMinutes ?? Math.max(5, questionCount * 2));
+  if (!Number.isFinite(passingPercentage) || passingPercentage < 0 || passingPercentage > 100) return res.status(400).json({ error: "passingPercentage must be between 0 and 100" });
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 1) return res.status(400).json({ error: "durationMinutes must be a positive integer" });
+
+  const draftSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+      title: { type: SchemaType.STRING },
+      description: { type: SchemaType.STRING },
+      assessment_type: { type: SchemaType.STRING, enum: [assessmentType] },
+      difficulty_level: { type: SchemaType.STRING },
+      passing_percentage: { type: SchemaType.NUMBER },
+      duration_minutes: { type: SchemaType.INTEGER },
+      instructions: { type: SchemaType.STRING },
+      questions: {
+        type: SchemaType.ARRAY,
+        items: {
+          type: SchemaType.OBJECT,
+          properties: {
+            question_text: { type: SchemaType.STRING },
+            question_type: { type: SchemaType.STRING, enum: [assessmentType] },
+            marks: { type: SchemaType.NUMBER },
+            explanation: { type: SchemaType.STRING },
+            options: {
+              type: SchemaType.ARRAY,
+              items: {
+                type: SchemaType.OBJECT,
+                properties: { option_text: { type: SchemaType.STRING }, is_correct: { type: SchemaType.BOOLEAN } },
+                required: ["option_text", "is_correct"],
+              },
+            },
+          },
+          required: ["question_text", "question_type", "marks", "options"],
+        },
+      },
+    },
+    required: ["title", "description", "assessment_type", "difficulty_level", "passing_percentage", "duration_minutes", "instructions", "questions"],
+  };
+
+  try {
+    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "AI generation is not configured" });
+    const model = genAI.getGenerativeModel({
+      model: process.env.GEMINI_ASSESSMENT_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+      generationConfig: { responseMimeType: "application/json", responseSchema: draftSchema, temperature: 0.25 },
+      systemInstruction: "You create accurate maritime LMS assessments. Produce only educational questions. Do not include IDs, users, scope, timestamps, or database fields outside the requested JSON schema.",
+    });
+    const prompt = `Create exactly ${questionCount} ${assessmentType} maritime assessment questions on: ${description}. Difficulty: ${difficultyLevel}. Use 3-4 plausible options per question, concise explanations and positive marks. ${assessmentType === "mcq_single" ? "Exactly one correct option per question." : "At least one correct option per question."}`;
+    let draft;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await model.generateContent(attempt === 0 ? prompt : `${prompt}\nYour previous response had the wrong question count. Return exactly ${questionCount} questions.`);
+      const raw = JSON.parse(result.response.text());
+      draft = normalizeAssessmentDraft({ ...raw, title: req.body?.title || raw.title, assessment_type: assessmentType, difficulty_level: difficultyLevel, passing_percentage: passingPercentage, duration_minutes: durationMinutes, instructions: req.body?.instructions || raw.instructions });
+      if (draft.questions.length === questionCount) break;
+    }
+    if (draft.questions.length !== questionCount) throw new AssessmentValidationError("Generated question count did not match the request");
+    return res.json({ success: true, data: { ...draft, total_marks: draft.questions.reduce((sum, question) => sum + question.marks, 0) } });
+  } catch (error) {
+    console.error("Gemini assessment draft generation failed:", error?.message);
+    const status = error instanceof AssessmentValidationError || error instanceof SyntaxError ? 422 : 502;
+    return res.status(status).json({ error: status === 422 ? "AI returned an invalid assessment draft. Please try again." : "Assessment generation is temporarily unavailable. Please try again." });
+  }
 };

@@ -14,7 +14,7 @@
   ],
   "crons": [
     {
-      "path": "/users/sync-status?secret=fmc1234567890marine",
+      "path": "/users/sync-status",
       "schedule": "20 19 * * *"
     }
   ]

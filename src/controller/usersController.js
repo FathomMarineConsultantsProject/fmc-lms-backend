@@ -1115,15 +1115,10 @@ export const updateUser = async (req, res) => {
 // 2) Authorization Bearer token of role_id=1 (superadmin)
 export const syncUserStatusByDates = async (req, res) => {
   try {
-    // Allow either:
-    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
-    // 2) Manual: Authorization Bearer token (superadmin)
-
+    // Vercel sends CRON_SECRET in the Authorization header for scheduled runs.
     const expected = process.env.CRON_SECRET;
-
-    const secretFromQuery = req.query?.secret;
     const isCronAllowed =
-      expected && secretFromQuery && String(secretFromQuery) === String(expected);
+      expected && req.headers.authorization === `Bearer ${expected}`;
 
     const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
 
@@ -2541,4 +2536,3 @@ export const bulkUpdateUserDates = async (req, res) => {
     return res.status(500).json({ error: "Failed to bulk update user embarkation dates" });
   }
 };
-

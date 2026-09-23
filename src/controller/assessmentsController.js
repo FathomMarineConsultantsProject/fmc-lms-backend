@@ -1,5 +1,6 @@
 import { db } from "../db.js";
 import xlsx from "xlsx";
+import { AssessmentValidationError, createAssessmentRecord, replaceAssessmentRecord, MCQ_TYPES, ASSESSMENT_TYPES } from "../services/assessmentService.js";
 
 const isAdminRole = (roleId) => [1, 2, 3].includes(Number(roleId));
 
@@ -82,204 +83,18 @@ const calculatePercentage = (score, total) => {
   return Number(((Number(score) / Number(total)) * 100).toFixed(2));
 };
 
-const MCQ_TYPES = ["mcq_single", "mcq_multiple"];
-const ASSESSMENT_TYPES = ["mcq_single", "mcq_multiple", "subjective"];
+// Creation validation/persistence is shared with Excel import and AI drafts.
 
 // ================= CREATE ASSESSMENT =================
 
 export const createAssessment = async (req, res) => {
-  const client = await db.connect();
-
   try {
     const userId = getUserId(req);
-    const roleId = getRoleId(req);
-
-    const {
-      title,
-      description,
-      assessment_type,
-      category,
-      difficulty_level,
-      passing_percentage,
-      duration_minutes,
-      instructions,
-      is_published,
-      allow_multiple_attempts,
-      max_attempts,
-      randomize_questions,
-      show_result_immediately,
-      company_id,
-      ship_id,
-      questions = [],
-    } = req.body;
-
-    if (!title || !assessment_type) {
-      return res.status(400).json({
-        success: false,
-        message: "title and assessment_type are required",
-      });
-    }
-
-    if (!ASSESSMENT_TYPES.includes(assessment_type)) {
-      return res.status(400).json({
-        success: false,
-        message: "assessment_type must be mcq_single, mcq_multiple or subjective",
-      });
-    }
-
-    if (!Array.isArray(questions) || questions.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "At least one question is required",
-      });
-    }
-
-    await client.query("BEGIN");
-
-    let totalMarks = 0;
-
-    for (const q of questions) {
-      totalMarks += Number(q.marks || 1);
-
-      if (!ASSESSMENT_TYPES.includes(q.question_type)) {
-        throw new Error("Invalid question_type");
-      }
-
-      if (q.question_type !== assessment_type) {
-        throw new Error("All question_type values must match assessment_type");
-      }
-
-      if (MCQ_TYPES.includes(assessment_type)) {
-        if (!Array.isArray(q.options) || q.options.length < 2) {
-          throw new Error("MCQ questions must have at least 2 options");
-        }
-
-        const correctCount = q.options.filter((opt) => opt.is_correct).length;
-
-        if (assessment_type === "mcq_single" && correctCount !== 1) {
-          throw new Error("mcq_single questions must have exactly one correct option");
-        }
-
-        if (assessment_type === "mcq_multiple" && correctCount < 1) {
-          throw new Error("mcq_multiple questions must have at least one correct option");
-        }
-      }
-
-      if (assessment_type === "subjective" && q.options?.length) {
-        throw new Error("Subjective questions cannot have options");
-      }
-    }
-
-    const scope = getCreateScope(req);
-    const assessmentResult = await client.query(
-
-      `
-      INSERT INTO assessments (
-        title,
-        description,
-        assessment_type,
-        category,
-        difficulty_level,
-        passing_percentage,
-        duration_minutes,
-        total_marks,
-        instructions,
-        is_published,
-        allow_multiple_attempts,
-        max_attempts,
-        randomize_questions,
-        show_result_immediately,
-        company_id,
-        ship_id,
-        created_by,
-        updated_by
-      )
-      VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-        $11,$12,$13,$14,$15,$16,$17,$18
-      )
-      RETURNING *
-      `,
-      [
-        title,
-        description || null,
-        assessment_type,
-        category || null,
-        difficulty_level || null,
-        passing_percentage || 0,
-        duration_minutes || null,
-        totalMarks,
-        instructions || null,
-        normalizeBool(is_published, false),
-        normalizeBool(allow_multiple_attempts, false),
-        max_attempts || 1,
-        normalizeBool(randomize_questions, false),
-        normalizeBool(show_result_immediately, true),
-        scope.company_id,
-        scope.ship_id,
-        userId,
-        userId,
-      ]
-    );
-
-    const assessment = assessmentResult.rows[0];
-
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-
-      const questionResult = await client.query(
-        `
-        INSERT INTO assessment_questions (
-          assessment_id,
-          question_text,
-          question_type,
-          marks,
-          question_order,
-          explanation,
-          is_required
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        RETURNING *
-        `,
-        [
-          assessment.assessment_id,
-          q.question_text,
-          q.question_type,
-          q.marks || 1,
-          q.question_order || i + 1,
-          q.explanation || null,
-          q.is_required !== false,
-        ]
-      );
-
-      const question = questionResult.rows[0];
-
-      if (MCQ_TYPES.includes(assessment_type)) {
-        for (let j = 0; j < q.options.length; j++) {
-          const opt = q.options[j];
-
-          await client.query(
-            `
-            INSERT INTO assessment_options (
-              question_id,
-              option_text,
-              is_correct,
-              option_order
-            )
-            VALUES ($1,$2,$3,$4)
-            `,
-            [
-              question.question_id,
-              opt.option_text,
-              normalizeBool(opt.is_correct, false),
-              opt.option_order || j + 1,
-            ]
-          );
-        }
-      }
-    }
-
-    await client.query("COMMIT");
+    const assessment = await createAssessmentRecord({
+      draft: req.body,
+      scope: getCreateScope(req),
+      userId,
+    });
 
     return res.status(201).json({
       success: true,
@@ -287,15 +102,11 @@ export const createAssessment = async (req, res) => {
       data: assessment,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
     console.error("Create assessment error:", error);
-
-    return res.status(500).json({
+    return res.status(error instanceof AssessmentValidationError ? 400 : 500).json({
       success: false,
       message: error.message || "Failed to create assessment",
     });
-  } finally {
-    client.release();
   }
 };
 
@@ -306,10 +117,16 @@ export const getAssessments = async (req, res) => {
     const roleId = getRoleId(req);
     const user = req.user;
 
+    if (!isAdminRole(roleId)) return res.status(403).json({ success: false, message: "Staff access required" });
+
     let query = `
       SELECT 
         a.*,
-        COUNT(q.question_id)::INTEGER AS question_count
+        (SELECT json_build_object('id', c.id, 'title', c.title) FROM course_assessments ca JOIN courses c ON c.id = ca.course_id WHERE ca.assessment_id = a.assessment_id LIMIT 1) AS linked_course,
+        COUNT(q.question_id)::INTEGER AS question_count,
+        (SELECT COUNT(DISTINCT aa.user_id)::INTEGER FROM assessment_assignments aa JOIN users u ON u.user_id = aa.user_id WHERE aa.assessment_id = a.assessment_id ${roleId === 1 ? "" : "AND u.company_id = $1"} ${roleId === 3 ? "AND u.ship_id = $2" : ""}) AS assignment_count,
+        (SELECT COUNT(*)::INTEGER FROM (SELECT DISTINCT ON (at.user_id) at.user_id, at.status, at.is_passed, at.percentage FROM assessment_attempts at JOIN users u ON u.user_id = at.user_id WHERE at.assessment_id = a.assessment_id ${roleId === 1 ? "" : "AND u.company_id = $1"} ${roleId === 3 ? "AND u.ship_id = $2" : ""} ORDER BY at.user_id, at.attempt_number DESC, at.created_at DESC) latest) AS attempted_count,
+        (SELECT COUNT(*)::INTEGER FROM (SELECT DISTINCT ON (at.user_id) at.status FROM assessment_attempts at JOIN users u ON u.user_id = at.user_id WHERE at.assessment_id = a.assessment_id ${roleId === 1 ? "" : "AND u.company_id = $1"} ${roleId === 3 ? "AND u.ship_id = $2" : ""} ORDER BY at.user_id, at.attempt_number DESC, at.created_at DESC) latest WHERE latest.status IN ('submitted','evaluated')) AS completed_count
       FROM assessments a
       LEFT JOIN assessment_questions q 
         ON q.assessment_id = a.assessment_id 
@@ -364,8 +181,8 @@ export const getAssessmentById = async (req, res) => {
 
     const assessmentResult = await db.query(
       `
-      SELECT *
-      FROM assessments
+      SELECT a.*, (SELECT json_build_object('id', c.id, 'title', c.title) FROM course_assessments ca JOIN courses c ON c.id = ca.course_id WHERE ca.assessment_id = a.assessment_id LIMIT 1) AS linked_course
+      FROM assessments a
       WHERE assessment_id = $1
       AND is_deleted = false
       `,
@@ -380,6 +197,11 @@ export const getAssessmentById = async (req, res) => {
         message: "Assessment not found",
       });
     }
+
+    if (roleId === 4 && !(await db.query(
+      "SELECT 1 FROM assessment_assignments WHERE assessment_id = $1 AND user_id = $2 LIMIT 1",
+      [assessmentId, getUserId(req)]
+    )).rowCount) return res.status(404).json({ success: false, message: "Assessment not found" });
 
     if (roleId === 4 && !assessment.is_published) {
       return res.status(403).json({
@@ -417,8 +239,12 @@ export const getAssessmentById = async (req, res) => {
         [q.question_id]
       );
 
+      // Learners must never receive explanations before answering: they may disclose an answer.
+      const learnerQuestion = roleId === 4
+        ? { question_id: q.question_id, question_text: q.question_text, question_type: q.question_type, marks: q.marks, question_order: q.question_order, is_required: q.is_required }
+        : q;
       questions.push({
-        ...q,
+        ...learnerQuestion,
         options: optionsResult.rows,
       });
     }
@@ -427,6 +253,7 @@ export const getAssessmentById = async (req, res) => {
       success: true,
       data: {
         ...assessment,
+        assignment_count: (await db.query("SELECT COUNT(*)::INTEGER AS count FROM assessment_assignments WHERE assessment_id = $1", [assessmentId])).rows[0].count,
         questions,
       },
     });
@@ -436,6 +263,120 @@ export const getAssessmentById = async (req, res) => {
       success: false,
       message: "Failed to fetch assessment",
     });
+  }
+};
+
+export const getAssessmentAssignments = async (req, res) => {
+  try {
+    const { assessmentId } = req.params;
+    if (!(await checkAssessmentScope(req, assessmentId, db, { includeGlobal: true }))) {
+      return res.status(404).json({ success: false, message: "Assessment not found" });
+    }
+    const result = await db.query(`
+      SELECT aa.assignment_id, aa.user_id, aa.due_date, aa.created_at,
+             u.full_name, u.rank, u.email, u.ship_id
+      FROM assessment_assignments aa
+      JOIN users u ON u.user_id = aa.user_id
+      WHERE aa.assessment_id = $1
+      ORDER BY u.full_name`, [assessmentId]);
+    return res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    console.error("Get assessment assignments error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch assignments" });
+  }
+};
+
+// One row per learner for counts and display; full attempt history is nested.
+export const getAssessmentResults = async (req, res) => {
+  try {
+    const { assessmentId } = req.params;
+    if (!(await checkAssessmentScope(req, assessmentId, db, { includeGlobal: true }))) {
+      return res.status(404).json({ success: false, message: "Assessment not found" });
+    }
+    const role = getRoleId(req);
+    const params = [assessmentId];
+    let userScope = "";
+    if (role !== 1) { params.push(req.user.company_id); userScope += ` AND u.company_id = $${params.length}`; }
+    if (role === 3) { params.push(req.user.ship_id); userScope += ` AND u.ship_id = $${params.length}`; }
+    const assessment = (await db.query(`SELECT a.assessment_id, a.title, a.total_marks,
+      (SELECT json_build_object('id', c.id, 'title', c.title) FROM course_assessments ca JOIN courses c ON c.id = ca.course_id WHERE ca.assessment_id = a.assessment_id LIMIT 1) AS linked_course
+      FROM assessments a WHERE a.assessment_id = $1`, [assessmentId])).rows[0];
+    const people = await db.query(`
+      WITH participants AS (
+        SELECT aa.user_id, MIN(aa.created_at) AS assigned_at, MIN(aa.due_date) AS due_date, true AS assigned
+        FROM assessment_assignments aa WHERE aa.assessment_id = $1 GROUP BY aa.user_id
+        UNION ALL
+        SELECT at.user_id, NULL, NULL, false FROM assessment_attempts at
+        WHERE at.assessment_id = $1 GROUP BY at.user_id
+      ), grouped AS (
+        SELECT user_id, MIN(assigned_at) AS assigned_at, MIN(due_date) AS due_date, BOOL_OR(assigned) AS assigned
+        FROM participants GROUP BY user_id
+      )
+      SELECT g.*, u.full_name, u.rank, u.ship_id, s.ship_name,
+        COALESCE(hist.attempts, '[]'::json) AS attempts,
+        COALESCE(hist.attempt_count, 0)::INTEGER AS attempt_count,
+        latest.status, latest.score_obtained, latest.percentage, latest.is_passed,
+        latest.attempt_number, latest.started_at, latest.submitted_at
+      FROM grouped g JOIN users u ON u.user_id = g.user_id
+      LEFT JOIN ships s ON s.ship_id = u.ship_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS attempt_count, json_agg(json_build_object(
+          'attempt_id', at.attempt_id, 'attempt_number', at.attempt_number,
+          'status', at.status, 'score_obtained', at.score_obtained,
+          'percentage', at.percentage, 'is_passed', at.is_passed,
+          'started_at', at.started_at, 'submitted_at', at.submitted_at
+        ) ORDER BY at.attempt_number DESC, at.created_at DESC) AS attempts
+        FROM assessment_attempts at WHERE at.assessment_id = $1 AND at.user_id = g.user_id
+      ) hist ON true
+      LEFT JOIN LATERAL (
+        SELECT at.status, at.score_obtained, at.percentage, at.is_passed,
+          at.attempt_number, at.started_at, at.submitted_at
+        FROM assessment_attempts at WHERE at.assessment_id = $1 AND at.user_id = g.user_id
+        ORDER BY at.attempt_number DESC, at.created_at DESC LIMIT 1
+      ) latest ON true
+      WHERE true ${userScope}
+      ORDER BY u.full_name`, params);
+    const rows = people.rows;
+    const completed = rows.filter((row) => ["submitted", "evaluated"].includes(row.status));
+    const summary = {
+      assigned: rows.filter((row) => row.assigned).length,
+      attempted: rows.filter((row) => row.attempt_count > 0).length,
+      completed: completed.length,
+      passed: completed.filter((row) => row.is_passed === true).length,
+      failed: completed.filter((row) => row.is_passed === false).length,
+      average_percentage: completed.filter((row) => row.percentage !== null).length
+        ? Number((completed.reduce((sum, row) => sum + (row.percentage === null ? 0 : Number(row.percentage)), 0) / completed.filter((row) => row.percentage !== null).length).toFixed(2)) : null,
+    };
+    return res.json({ success: true, data: { assessment, summary, participants: rows } });
+  } catch (error) {
+    console.error("Assessment results error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch assessment results" });
+  }
+};
+
+export const getAssignableOfficers = async (req, res) => {
+  try {
+    const params = [];
+    let where = "WHERE u.role_id = 4";
+    if (getRoleId(req) !== 1) {
+      params.push(req.user.company_id);
+      where += ` AND u.company_id = $${params.length}`;
+    }
+    if (getRoleId(req) === 3) {
+      params.push(req.user.ship_id);
+      where += ` AND u.ship_id = $${params.length}`;
+    }
+    const search = String(req.query.q || "").trim().slice(0, 100);
+    if (search) {
+      params.push(`%${search}%`);
+      where += ` AND (u.full_name ILIKE $${params.length} OR u.rank ILIKE $${params.length})`;
+    }
+    const result = await db.query(`SELECT u.user_id, u.full_name, u.rank, u.email, u.ship_id
+      FROM users u ${where} ORDER BY u.full_name LIMIT 200`, params);
+    return res.json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error("Get assignable officers error:", error);
+    return res.status(500).json({ success: false, message: "Failed to load officers" });
   }
 };
 
@@ -536,6 +477,24 @@ export const updateAssessment = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to update assessment",
+    });
+  }
+};
+
+export const updateFullAssessment = async (req, res) => {
+  try {
+    const { assessmentId } = req.params;
+    if (!(await checkAssessmentScope(req, assessmentId, db, { includeGlobal: true }))) {
+      return res.status(404).json({ success: false, message: "Assessment not found" });
+    }
+    const data = await replaceAssessmentRecord({
+      assessmentId, draft: req.body, scope: getCreateScope(req), userId: getUserId(req),
+    });
+    return res.json({ success: true, message: "Assessment updated successfully", data });
+  } catch (error) {
+    console.error("Update full assessment error:", error);
+    return res.status(error instanceof AssessmentValidationError ? 400 : 500).json({
+      success: false, message: error instanceof AssessmentValidationError ? error.message : "Failed to update assessment",
     });
   }
 };
@@ -791,6 +750,7 @@ export const updateQuestionOptions = async (req, res) => {
 
     await client.query("COMMIT");
 
+
     return res.json({
       success: true,
       message: "Question options updated successfully",
@@ -1043,6 +1003,23 @@ export const startAssessment = async (req, res) => {
 
     const assessment = assessmentResult.rows[0];
 
+    if (getRoleId(req) === 4 && !(await db.query(
+      "SELECT 1 FROM assessment_assignments WHERE assessment_id = $1 AND user_id = $2 LIMIT 1",
+      [assessmentId, userId]
+    )).rowCount) return res.status(403).json({ success: false, message: "Assessment is not assigned to you" });
+
+    const courseGate = await db.query(`
+      SELECT c.id, c.title FROM course_assessments ca
+      JOIN courses c ON c.id = ca.course_id
+      WHERE ca.assessment_id = $1 LIMIT 1`, [assessmentId]);
+    if (courseGate.rowCount) {
+      const completion = await db.query(
+        "SELECT 1 FROM course_enrollments WHERE user_id = $1 AND course_id = $2 AND completion_status = 'completed' LIMIT 1",
+        [userId, courseGate.rows[0].id]
+      );
+      if (!completion.rowCount) return res.status(403).json({ success: false, message: `Complete the linked course before starting this assessment: ${courseGate.rows[0].title}` });
+    }
+
     const previousAttempts = await db.query(
       `
       SELECT COUNT(*)::INTEGER AS count
@@ -1054,6 +1031,10 @@ export const startAssessment = async (req, res) => {
     );
 
     const attemptCount = previousAttempts.rows[0].count;
+
+    if ((await db.query("SELECT 1 FROM assessment_attempts WHERE assessment_id = $1 AND user_id = $2 AND status = 'in_progress' LIMIT 1", [assessmentId, userId])).rowCount) {
+      return res.status(409).json({ success: false, message: "Continue your existing attempt" });
+    }
 
     if (!assessment.allow_multiple_attempts && attemptCount >= 1) {
       return res.status(400).json({
@@ -1348,12 +1329,17 @@ DO UPDATE SET
 
     await client.query("COMMIT");
 
+    const resultVisibility = await db.query("SELECT show_result_immediately FROM assessments WHERE assessment_id = $1", [assessmentId]);
+    const responseAttempt = getRoleId(req) === 4 && !resultVisibility.rows[0]?.show_result_immediately
+      ? { attempt_id: updatedAttempt.rows[0].attempt_id, assessment_id: assessmentId, status: finalStatus, attempt_number: updatedAttempt.rows[0].attempt_number, submitted_at: updatedAttempt.rows[0].submitted_at }
+      : updatedAttempt.rows[0];
+
     return res.json({
       success: true,
       message: subjectivePendingReview
         ? "Assessment submitted. Subjective answers are pending review."
         : "Assessment submitted and evaluated successfully",
-      data: updatedAttempt.rows[0],
+      data: responseAttempt,
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -1384,7 +1370,8 @@ export const getAttemptResult = async (req, res) => {
         a.title,
         a.assessment_type,
         a.passing_percentage,
-        a.total_marks
+        a.total_marks,
+        a.show_result_immediately
       FROM assessment_attempts aa
       JOIN assessments a ON a.assessment_id = aa.assessment_id
       WHERE aa.attempt_id = $1
@@ -1395,6 +1382,11 @@ export const getAttemptResult = async (req, res) => {
     if (roleId === 4) {
       params.push(userId);
       query += ` AND aa.user_id = $${params.length}`;
+    } else if (roleId === 2 || roleId === 3) {
+      params.push(req.user.company_id);
+      query += ` AND EXISTS (SELECT 1 FROM users u WHERE u.user_id = aa.user_id AND u.company_id = $${params.length}`;
+      if (roleId === 3) { params.push(req.user.ship_id); query += ` AND u.ship_id = $${params.length}`; }
+      query += ")";
     }
 
     const attemptResult = await db.query(query, params);
@@ -1404,6 +1396,10 @@ export const getAttemptResult = async (req, res) => {
         success: false,
         message: "Result not found",
       });
+    }
+
+    if (roleId === 4 && (!attemptResult.rows[0].show_result_immediately || !["submitted", "evaluated"].includes(attemptResult.rows[0].status))) {
+      return res.status(403).json({ success: false, message: "Results are not available yet" });
     }
 
     const answersResult = await db.query(
@@ -1435,11 +1431,14 @@ export const getAttemptResult = async (req, res) => {
       [attemptId]
     );
 
+    const safeAnswers = roleId === 4
+      ? answersResult.rows.map(({ is_correct, ...answer }) => answer)
+      : answersResult.rows;
     return res.json({
       success: true,
       data: {
         attempt: attemptResult.rows[0],
-        answers: answersResult.rows,
+        answers: safeAnswers,
       },
     });
   } catch (error) {
@@ -1466,7 +1465,8 @@ export const getMyResults = async (req, res) => {
     a.assessment_type,
     a.difficulty_level,
     a.passing_percentage,
-    a.total_marks
+    a.total_marks,
+    a.show_result_immediately
   FROM assessment_attempts aa
   JOIN assessments a ON a.assessment_id = aa.assessment_id
   WHERE aa.user_id = $1
@@ -1478,10 +1478,12 @@ export const getMyResults = async (req, res) => {
 
     const result = await db.query(query, params);
 
+    const safeRows = getRoleId(req) === 4 ? result.rows.map((row) => row.show_result_immediately && ["submitted", "evaluated"].includes(row.status)
+      ? row : { ...row, score_obtained: null, percentage: null, is_passed: null, correct_answers_count: null }) : result.rows;
     return res.json({
       success: true,
       count: result.rows.length,
-      data: result.rows,
+      data: safeRows,
     });
   } catch (error) {
     console.error("Get my results error:", error);
@@ -1619,6 +1621,30 @@ export const createAssessmentFromExcel = async (req, res) => {
         message: "Excel is empty",
       });
     }
+
+    // Convert the workbook into the same public creation contract used by manual and AI drafts.
+    // This return intentionally keeps Excel persistence on the shared domain service.
+    const excelDraft = {
+      title, description, assessment_type, category, difficulty_level, passing_percentage,
+      duration_minutes, instructions,
+      is_published: is_published === "true" || is_published === true,
+      allow_multiple_attempts: allow_multiple_attempts === "true" || allow_multiple_attempts === true,
+      max_attempts, randomize_questions: randomize_questions === "true" || randomize_questions === true,
+      show_result_immediately: show_result_immediately == null ? true : show_result_immediately === "true" || show_result_immediately === true,
+      questions: rows.map((row, index) => {
+        const options = [row["option 1"], row["option 2"], row["option 3"], row["option 4"]].filter(Boolean);
+        const correct = String(row["correct options"] || "").split(",").map(value => Number(value.trim()) - 1);
+        return {
+          question_text: row.question,
+          question_type: assessment_type,
+          marks: Number(row["total marks"] || 1),
+          question_order: Number(row["question no."] || index + 1),
+          options: MCQ_TYPES.includes(assessment_type) ? options.map((option_text, optionIndex) => ({ option_text, is_correct: correct.includes(optionIndex) })) : [],
+        };
+      }),
+    };
+    const sharedAssessment = await createAssessmentRecord({ draft: excelDraft, scope: getCreateScope(req), userId });
+    return res.status(201).json({ success: true, message: "Assessment created from Excel successfully", data: sharedAssessment });
 
     await client.query("BEGIN");
 
@@ -1800,10 +1826,10 @@ export const createAssessmentFromExcel = async (req, res) => {
       data: assessment,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    try { await client.query("ROLLBACK"); } catch (_) { /* no transaction begun */ }
     console.error("Create assessment from Excel error:", error);
 
-    return res.status(500).json({
+    return res.status(error instanceof AssessmentValidationError ? 400 : 500).json({
       success: false,
       message: error.message || "Failed to create assessment from Excel",
     });
@@ -1815,121 +1841,65 @@ export const createAssessmentFromExcel = async (req, res) => {
 // ================= BULK ASSIGN ASSESSMENT =================
 
 export const assignAssessmentBulk = async (req, res) => {
+  const { assessmentId } = req.params;
+  const suppliedIds = req.body?.user_ids;
+  if (!Array.isArray(suppliedIds) || !suppliedIds.length || suppliedIds.length > 500 ||
+      suppliedIds.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
+    return res.status(400).json({ success: false, message: "user_ids must contain 1 to 500 valid user IDs" });
+  }
+  const userIds = [...new Set(suppliedIds.map(Number))];
+  const dueDate = req.body?.due_date || null;
+  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    return res.status(400).json({ success: false, message: "due_date must be YYYY-MM-DD" });
+  }
   const client = await db.connect();
-
   try {
-    const { assessmentId } = req.params;
-    const { company_id: bodyCompanyId, ship_ids = [], due_date } = req.body; 
-    
-    const currentUserId = getUserId(req);
-    const roleId = getRoleId(req);
-
-    // 1. STRICT ROLE CHECK: Sub-admins (3) and Users (4) cannot assign
-    if (roleId === 3 || roleId === 4) {
-      return res.status(403).json({
-        success: false,
-        message: "You do not have permission to assign assessments.",
-      });
-    }
-
     await client.query("BEGIN");
-
-    // 2. Verify Assigner access
-    const allowed = await checkAssessmentScope(req, assessmentId, client, { includeGlobal: true });
-    if (!allowed) {
-      throw new Error("Assessment not found or you do not have permission to access it");
+    if (!(await checkAssessmentScope(req, assessmentId, client, { includeGlobal: true }))) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Assessment not found" });
     }
-
-    // 3. DETERMINE TARGET SCOPE
-    let targetCompanyId = bodyCompanyId || null;
-    
-    if (roleId === 2) {
-      // Admins are STRICTLY locked to their own company
-      targetCompanyId = req.user.company_id; 
+    const params = [userIds];
+    let scopeSql = "";
+    if (getRoleId(req) !== 1) {
+      params.push(req.user.company_id);
+      scopeSql += ` AND u.company_id = $${params.length}`;
     }
-
-    // 4. BUILD THE USER QUERY
-    const userParams = [];
-    let userQuery = `
-      SELECT user_id, company_id, ship_id 
-      FROM users 
-      WHERE 1=1
-      AND role_id NOT IN (1, 2)     -- <-- EXCLUDE SUPERADMINS & ADMINS
-      AND company_id IS NOT NULL    -- <-- DB CRASH PREVENTION
-    `;
-
-    if (targetCompanyId) {
-      userParams.push(targetCompanyId);
-      userQuery += ` AND company_id = $${userParams.length}`;
+    if (getRoleId(req) === 3) {
+      params.push(req.user.ship_id);
+      scopeSql += ` AND u.ship_id = $${params.length}`;
     }
-
-    // <--  MULTIPLE SHIPS LOGIC -->
-    if (Array.isArray(ship_ids) && ship_ids.length > 0) {
-      userParams.push(ship_ids);
-      // ANY() allows Postgres to check if the user's ship_id is inside our array!
-      userQuery += ` AND ship_id = ANY($${userParams.length}::int[])`; 
+    const eligible = await client.query(`
+      SELECT u.user_id, u.company_id, u.ship_id FROM users u
+      WHERE u.user_id = ANY($1::int[]) AND u.role_id = 4 ${scopeSql}`, params);
+    if (eligible.rowCount !== userIds.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ success: false, message: "One or more selected officers are unavailable or outside your scope" });
     }
-
-    // 5. Fetch Target Users
-    const crewResult = await client.query(userQuery, userParams);
-    const crewMembers = crewResult.rows;
-
-    if (crewMembers.length === 0) {
-      throw new Error("No active users found matching this criteria.");
-    }
-
-    // 6. PREPARE BULK INSERT
     const values = [];
-    const params = [];
-    let paramIndex = 1;
-
-    for (const crew of crewMembers) {
-      params.push(assessmentId, crew.user_id, currentUserId, crew.company_id, crew.ship_id);
-      
-      if (due_date) {
-          params.push(due_date);
-          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
-      } else {
-          values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
-      }
+    const insertParams = [];
+    for (const user of eligible.rows) {
+      const start = insertParams.length;
+      insertParams.push(assessmentId, user.user_id, getUserId(req), user.company_id, user.ship_id, dueDate);
+      values.push(`($${start + 1},$${start + 2},$${start + 3},$${start + 4},$${start + 5},$${start + 6})`);
     }
-
-    // 7. EXECUTE BULK INSERT
-    const insertQuery = `
-      INSERT INTO assessment_assignments (
-        assessment_id, user_id, assigned_by, company_id, ship_id ${due_date ? ', due_date' : ''}
-      )
+    const inserted = await client.query(`
+      INSERT INTO assessment_assignments
+        (assessment_id, user_id, assigned_by, company_id, ship_id, due_date)
       VALUES ${values.join(",")}
       ON CONFLICT (assessment_id, user_id) DO NOTHING
-      RETURNING assignment_id;
-    `;
-
-    const insertResult = await client.query(insertQuery, params);
-    const newlyAssignedCount = insertResult.rowCount;
-
+      RETURNING assignment_id`, insertParams);
     await client.query("COMMIT");
-
-    return res.status(201).json({
-      success: true,
-      message: `Assessment successfully assigned to ${newlyAssignedCount} user(s).`,
-      meta: {
-        total_users_in_target: crewMembers.length,
-        new_assignments: newlyAssignedCount,
-        skipped_duplicates: crewMembers.length - newlyAssignedCount
-      }
-    });
-
+    return res.status(201).json({ success: true, message: `Assigned to ${inserted.rowCount} officers`, meta: {
+      requested_count: userIds.length,
+      assigned_count: inserted.rowCount,
+      already_assigned_count: userIds.length - inserted.rowCount,
+    } });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Bulk assign assessment error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message || "Failed to assign assessment",
-    });
-  } finally {
-    client.release();
-  }
+    return res.status(500).json({ success: false, message: "Failed to assign assessment" });
+  } finally { client.release(); }
 };
 
 // ================= GET ASSIGNED ASSESSMENTS FOR USER =================
@@ -1944,10 +1914,10 @@ export const getAssignedAssessments = async (req, res) => {
     const query = `
       WITH LatestAttempts AS (
           SELECT DISTINCT ON (assessment_id) 
-              assessment_id, is_passed, status, score_obtained, created_at
+              assessment_id, is_passed, status, score_obtained, percentage, attempt_number, submitted_at, created_at
           FROM assessment_attempts
           WHERE user_id = $1
-          ORDER BY assessment_id, created_at DESC
+          ORDER BY assessment_id, attempt_number DESC, created_at DESC
       )
       SELECT 
           a.assessment_id, 
@@ -1961,10 +1931,22 @@ export const getAssignedAssessments = async (req, res) => {
           (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.assessment_id AND aq.is_deleted = false) as question_count,
           aa.due_date,
           aa.created_at as assigned_at,
-          COALESCE(la.is_passed, false) as is_completed,
+          (la.status IN ('submitted', 'evaluated')) as is_completed,
           la.status as attempt_status,
-          la.score_obtained
-      FROM assessment_assignments aa
+          CASE WHEN a.show_result_immediately AND la.status IN ('submitted','evaluated') THEN la.score_obtained END AS score_obtained,
+          CASE WHEN a.show_result_immediately AND la.status IN ('submitted','evaluated') THEN la.percentage END AS percentage,
+          CASE WHEN a.show_result_immediately AND la.status IN ('submitted','evaluated') THEN la.is_passed END AS is_passed,
+          la.attempt_number,
+          la.submitted_at,
+          a.show_result_immediately,
+          a.allow_multiple_attempts,
+          a.max_attempts,
+          (SELECT COUNT(*)::INTEGER FROM assessment_attempts at WHERE at.assessment_id = a.assessment_id AND at.user_id = $1) AS attempt_count,
+          (SELECT COALESCE(json_agg(json_build_object('attempt_id', at.attempt_id, 'attempt_number', at.attempt_number, 'status', at.status, 'score_obtained', CASE WHEN a.show_result_immediately AND at.status IN ('submitted','evaluated') THEN at.score_obtained END, 'percentage', CASE WHEN a.show_result_immediately AND at.status IN ('submitted','evaluated') THEN at.percentage END, 'is_passed', CASE WHEN a.show_result_immediately AND at.status IN ('submitted','evaluated') THEN at.is_passed END, 'submitted_at', at.submitted_at) ORDER BY at.attempt_number DESC), '[]'::json) FROM assessment_attempts at WHERE at.assessment_id = a.assessment_id AND at.user_id = $1) AS attempts,
+          (SELECT json_build_object('id', c.id, 'title', c.title) FROM course_assessments ca JOIN courses c ON c.id = ca.course_id WHERE ca.assessment_id = a.assessment_id LIMIT 1) AS linked_course,
+          EXISTS (SELECT 1 FROM course_assessments ca JOIN course_enrollments ce ON ce.course_id = ca.course_id WHERE ca.assessment_id = a.assessment_id AND ce.user_id = $1 AND ce.completion_status = 'completed') AS course_completed,
+          NOT EXISTS (SELECT 1 FROM course_assessments ca WHERE ca.assessment_id = a.assessment_id) OR EXISTS (SELECT 1 FROM course_assessments ca JOIN course_enrollments ce ON ce.course_id = ca.course_id WHERE ca.assessment_id = a.assessment_id AND ce.user_id = $1 AND ce.completion_status = 'completed') AS can_start
+      FROM (SELECT DISTINCT ON (assessment_id) assessment_id, due_date, created_at FROM assessment_assignments WHERE user_id = $1 ORDER BY assessment_id, created_at DESC) aa
       JOIN assessments a ON aa.assessment_id = a.assessment_id
       LEFT JOIN LatestAttempts la ON a.assessment_id = la.assessment_id
       WHERE aa.user_id = $1 
@@ -2380,6 +2362,11 @@ export const getAssessmentQuestions = async (req, res) => {
         message: "Assessment not found",
       });
     }
+
+    if (getRoleId(req) === 4 && !(await db.query(
+      "SELECT 1 FROM assessment_assignments WHERE assessment_id = $1 AND user_id = $2 LIMIT 1",
+      [assessmentId, getUserId(req)]
+    )).rowCount) return res.status(404).json({ success: false, message: "Assessment not found" });
 
     const assessmentResult = await db.query(
       `

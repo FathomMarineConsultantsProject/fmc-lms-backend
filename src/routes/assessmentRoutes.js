@@ -7,6 +7,7 @@ import {
   getAssessments,
   getAssessmentById,
   updateAssessment,
+  updateFullAssessment,
   deleteAssessment,
   startAssessment,
   submitAssessment,
@@ -24,6 +25,9 @@ import {
   getAssessmentQuestions,
   assignAssessmentBulk,
   getAssignedAssessments,
+  getAssessmentAssignments,
+  getAssignableOfficers,
+  getAssessmentResults,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -53,20 +57,24 @@ router.post(
 // );
 
 router.get("/", getAssessments);
+router.get("/management", allowRoles(1, 2, 3), getAssessments);
+router.get("/officers", allowRoles(1, 2, 3), getAssignableOfficers);
 router.get("/assigned", getAssignedAssessments);
+router.get("/:assessmentId/results", allowRoles(1, 2, 3), getAssessmentResults);
+router.get("/:assessmentId/assignments", allowRoles(1, 2, 3), getAssessmentAssignments);
 router.post("/:assessmentId/start", startAssessment);
 router.post("/:assessmentId/submit", submitAssessment);
 router.get("/:assessmentId/analytics", allowRoles(1, 2, 3), getAssessmentAnalytics);
 
 router.get(
   "/results/users",
-  allowRoles(1, 2, 3, 4),
+  allowRoles(1, 2, 3),
   getUserResultsByRole
 );
 
 router.get(
   "/analytics/users",
-  allowRoles(1, 2, 3, 4),
+  allowRoles(1, 2, 3),
   getAnalyticsByRole
 );
 
@@ -77,9 +85,10 @@ router.get(
 
 router.get("/:assessmentId", getAssessmentById);
 router.put("/:assessmentId", allowRoles(1, 2, 3), updateAssessment);
+router.put("/:assessmentId/full", allowRoles(1, 2, 3), updateFullAssessment);
 router.put("/:assessmentId/questions", allowRoles(1, 2, 3), updateAssessmentQuestions);
 router.put("/questions/:questionId/options", allowRoles(1, 2, 3), updateQuestionOptions);
-router.post("/:assessmentId/assign-bulk", assignAssessmentBulk);
+router.post("/:assessmentId/assign-bulk", allowRoles(1, 2, 3), assignAssessmentBulk);
 router.delete("/:assessmentId", allowRoles(1, 2, 3), deleteAssessment);
 router.delete("/questions/:questionId", allowRoles(1, 2, 3), deleteQuestion);
 router.delete("/options/:optionId", allowRoles(1, 2, 3), deleteOption);
