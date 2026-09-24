@@ -28,7 +28,7 @@ export const router = Router();
  */
 
 router.get("/sync-status", syncUserStatusByDates);
-router.post("/sync-status", syncUserStatusByDates); // optional for Postman manual trigger
+router.post("/sync-status", requireAuth, allowRoles(1), syncUserStatusByDates); // manual superadmin trigger
 
 router.use(requireAuth);
 

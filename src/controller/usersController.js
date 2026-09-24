@@ -1108,27 +1108,17 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// POST /users/sync-status
-// Runs daily via Vercel Cron (or manually via Postman).
-// Security: either
-// 1) x-cron-secret header matches CRON_SECRET env, OR
-// 2) Authorization Bearer token of role_id=1 (superadmin)
+// Runs daily via Vercel Cron, or manually by an authenticated superadmin.
 export const syncUserStatusByDates = async (req, res) => {
   try {
-    // Allow either:
-    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
-    // 2) Manual: Authorization Bearer token (superadmin)
-
     const expected = process.env.CRON_SECRET;
-
-    const secretFromQuery = req.query?.secret;
     const isCronAllowed =
-      expected && secretFromQuery && String(secretFromQuery) === String(expected);
+      Boolean(expected) && req.headers.authorization === `Bearer ${expected}`;
 
     const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
 
     if (!isCronAllowed && !isSuperAdmin) {
-      return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
+      return res.status(401).json({ error: "Unauthorized (cron or superadmin required)" });
     }
 
     // ----- Date-based sync rules -----

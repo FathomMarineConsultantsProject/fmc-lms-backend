@@ -1,6 +1,97 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// Generation only supplies editable question content; assessment settings and saving stay in the existing flow.
+export const generateAssessmentQuestions = async (req, res) => {
+    const { title, description, assessment_type, question_count, difficulty_level, category } = req.body || {};
+    const types = ["mcq_single", "mcq_multiple", "subjective"];
+    if (typeof title !== "string" || !title.trim() || title.length > 200 ||
+        typeof description !== "string" || description.length > 2000 ||
+        !types.includes(assessment_type) || !Number.isInteger(question_count) ||
+        question_count < 1 || question_count > 30 ||
+        !["easy", "medium", "hard"].includes(difficulty_level) ||
+        (category !== undefined && (typeof category !== "string" || category.length > 100))) {
+        return res.status(400).json({ error: "Invalid assessment generation settings." });
+    }
+
+    const isSubjective = assessment_type === "subjective";
+    const questionProperties = { question_text: { type: SchemaType.STRING } };
+    if (!isSubjective) {
+        questionProperties.options = {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    option_text: { type: SchemaType.STRING },
+                    is_correct: { type: SchemaType.BOOLEAN }
+                },
+                required: ["option_text", "is_correct"]
+            }
+        };
+    }
+    const responseSchema = {
+        type: SchemaType.OBJECT,
+        properties: {
+            questions: {
+                type: SchemaType.ARRAY,
+                items: {
+                    type: SchemaType.OBJECT,
+                    properties: questionProperties,
+                    required: isSubjective ? ["question_text"] : ["question_text", "options"]
+                }
+            }
+        },
+        required: ["questions"]
+    };
+
+    const validate = (data) => {
+        if (!Array.isArray(data?.questions) || data.questions.length !== question_count) return false;
+        return data.questions.every((q) => {
+            if (typeof q.question_text !== "string" || !q.question_text.trim()) return false;
+            if (q.question_type !== undefined && q.question_type !== assessment_type) return false;
+            if (isSubjective) return q.options === undefined || (Array.isArray(q.options) && q.options.length === 0);
+            if (!Array.isArray(q.options) || q.options.length < 2) return false;
+            if (!q.options.every((o) => typeof o.option_text === "string" && o.option_text.trim() && typeof o.is_correct === "boolean")) return false;
+            const correct = q.options.filter((o) => o.is_correct).length;
+            return assessment_type === "mcq_single" ? correct === 1 : correct >= 1;
+        });
+    };
+
+    try {
+        const model = genAI.getGenerativeModel({
+            model: process.env.GEMINI_ASSESSMENT_MODEL || "gemini-3.5-flash-lite",
+            generationConfig: { responseMimeType: "application/json", responseSchema, temperature: 0.3 }
+        });
+        const context = `Title: ${title.trim()}\nDescription: ${description.trim()}\nType: ${assessment_type}\nDifficulty: ${difficulty_level}${category?.trim() ? `\nCategory: ${category.trim()}` : ""}`;
+        let hadInvalidResponse = false;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const prompt = `Generate exactly ${question_count} distinct maritime assessment questions as JSON matching the schema. ${isSubjective ? "Written questions only; no options or model answers." : assessment_type === "mcq_single" ? "At least two options and exactly one correct option per question." : "At least two options and one or more correct options per question."}\n${context}${hadInvalidResponse ? "\nThe previous response failed validation. Return exactly the requested count and valid option structure." : ""}`;
+            let result;
+            try {
+                result = await model.generateContent(prompt);
+            } catch (error) {
+                if (attempt === 0 && (error.status === 503 || error.status === 429)) {
+                    await new Promise((resolve) => setTimeout(resolve, 1200));
+                    continue;
+                }
+                throw error;
+            }
+            let data;
+            try { data = JSON.parse(result.response.text()); } catch { data = null; }
+            if (validate(data)) {
+                return res.json({ questions: data.questions.map((q) => isSubjective
+                    ? { question_text: q.question_text.trim() }
+                    : { question_text: q.question_text.trim(), options: q.options.map((o) => ({ option_text: o.option_text.trim(), is_correct: o.is_correct })) }) });
+            }
+            hadInvalidResponse = true;
+        }
+        return res.status(422).json({ error: "Generated questions did not match the requested format." });
+    } catch (error) {
+        console.error("Assessment generation error:", error);
+        return res.status(503).json({ error: "AI generation is temporarily unavailable." });
+    }
+};
+
 // Define the exact structure the AI must return
 const dashboardSchema = {
     type: SchemaType.OBJECT,

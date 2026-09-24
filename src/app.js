@@ -36,6 +36,9 @@ const allowedExactOrigins = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
 ]);
+if (process.env.FRONTEND_URL) {
+  allowedExactOrigins.add(new URL(process.env.FRONTEND_URL).origin);
+}
 
 // Allow Vercel preview deployments for THIS frontend project:
 // e.g. https://fmc-admin-dashboard-frontend-git-main-xxxx.vercel.app

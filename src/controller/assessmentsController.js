@@ -417,8 +417,11 @@ export const getAssessmentById = async (req, res) => {
         [q.question_id]
       );
 
+      const visibleQuestion = roleId === 4
+        ? (({ explanation, ...rest }) => rest)(q)
+        : q;
       questions.push({
-        ...q,
+        ...visibleQuestion,
         options: optionsResult.rows,
       });
     }
@@ -1404,6 +1407,10 @@ export const getAttemptResult = async (req, res) => {
         success: false,
         message: "Result not found",
       });
+    }
+
+    if (roleId === 4 && attemptResult.rows[0].status === "in_progress") {
+      return res.status(403).json({ success: false, message: "Results are available after submission" });
     }
 
     const answersResult = await db.query(
@@ -3216,20 +3223,7 @@ export const checkAssessmentAttemptAnswer = async (
 
     return res.json({
       success: true,
-      data: {
-        question_id,
-        is_correct: isCorrect,
-        marks_awarded: marksAwarded,
-        correct_option_id: correctOptionId,
-        correct_option_text: correctOptionText,
-        correct_option_ids: correctOptionIds,
-        correct_options: correctOptions,
-        explanation: question.explanation || null,
-        status:
-          question.question_type === "subjective"
-            ? "pending_review"
-            : "evaluated",
-      },
+      data: { question_id, status: "saved" },
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -3455,6 +3449,10 @@ export const getAssessmentAttemptResult = async (
         success: false,
         message: "Attempt result not found",
       });
+    }
+
+    if (roleId === 4 && attemptResult.rows[0].status === "in_progress") {
+      return res.status(403).json({ success: false, message: "Results are available after submission" });
     }
 
     const answersResult = await db.query(
