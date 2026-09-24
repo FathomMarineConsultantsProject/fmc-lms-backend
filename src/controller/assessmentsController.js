@@ -3222,9 +3222,18 @@ export const checkAssessmentAttemptAnswer = async (
     await client.query("COMMIT");
 
     return res.json({
-      success: true,
-      data: { question_id, status: "saved" },
-    });
+  success: true,
+  data: {
+    question_id,
+    is_correct: isCorrect,
+    marks_awarded: marksAwarded,
+    correct_option_id: correctOptionId,
+    correct_option_text: correctOptionText,
+    correct_option_ids: correctOptionIds,
+    correct_options: correctOptions,
+    status: "evaluated",
+  },
+});
   } catch (error) {
     await client.query("ROLLBACK");
 
