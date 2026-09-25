@@ -454,7 +454,7 @@ export const getAllUsers = async (req, res) => {
     }
 
     // Hide Superadmin (1) & Admin (2) from user listings
-    where.push(`u.role_id IN (3, 4)`);
+    where.push(`u.role_id IN (2,3, 4)`);
 
     // ---- search filters ----
     if (q) {
@@ -703,7 +703,7 @@ export const getUsersByShipId = async (req, res) => {
 
     const where = [
       `u.ship_id = $1`,
-      `u.role_id IN (3, 4)` // hide role 1 & 2
+      `u.role_id IN (2,3, 4)` // hide role 1 & 2
     ];
     const params = [ship_id];
     let idx = 2;
@@ -2738,7 +2738,7 @@ export const searchUsers = async (req, res) => {
 
     // Only Subadmins & Crew
     where.push(
-      `u.role_id IN (3, 4)`
+      `u.role_id IN (2,3, 4)`
     );
 
     // ============================================================
