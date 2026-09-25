@@ -1,6 +1,70 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+export const regenerateAssessmentQuestion = async (req, res) => {
+    const { title, description, assessment_type, difficulty_level, category, current_question } = req.body || {};
+    const types = ['mcq_single', 'mcq_multiple', 'subjective'];
+    if (typeof title !== 'string' || !title.trim() || title.length > 200 ||
+        typeof description !== 'string' || description.length > 2000 ||
+        !types.includes(assessment_type) || !['easy', 'medium', 'hard'].includes(difficulty_level) ||
+        (category !== undefined && (typeof category !== 'string' || category.length > 100)) ||
+        typeof current_question !== 'string' || current_question.length > 2000) {
+        return res.status(400).json({ error: 'Invalid question regeneration settings.' });
+    }
+    const subjective = assessment_type === 'subjective';
+    const properties = { question_text: { type: SchemaType.STRING } };
+    if (!subjective) properties.options = { type: SchemaType.ARRAY, items: { type: SchemaType.OBJECT,
+        properties: { option_text: { type: SchemaType.STRING }, is_correct: { type: SchemaType.BOOLEAN } },
+        required: ['option_text', 'is_correct'] } };
+    const responseSchema = { type: SchemaType.OBJECT, properties, required: subjective ? ['question_text'] : ['question_text', 'options'] };
+    try {
+        const model = genAI.getGenerativeModel({ model: process.env.GEMINI_ASSESSMENT_MODEL || 'gemini-3.5-flash-lite',
+            generationConfig: { responseMimeType: 'application/json', responseSchema, temperature: 0.3 } });
+        const prompt = `Generate one different maritime assessment question as JSON. Title: ${title.trim()}\nDescription: ${description.trim()}\nType: ${assessment_type}\nDifficulty: ${difficulty_level}\nCategory: ${category?.trim() || 'unspecified'}\nCurrent question to replace: ${current_question.trim()}\n${subjective ? 'Written question only. No options or answer.' : assessment_type === 'mcq_single' ? 'At least two options; exactly one correct.' : 'At least two options; one or more correct.'}`;
+        const result = await model.generateContent(prompt);
+        let question;
+        try { question = JSON.parse(result.response.text()); } catch { question = null; }
+        const options = question?.options;
+        const valid = typeof question?.question_text === 'string' && !!question.question_text.trim() &&
+            question.question_text.trim() !== current_question.trim() &&
+            (subjective ? options === undefined || (Array.isArray(options) && options.length === 0) :
+                Array.isArray(options) && options.length >= 2 &&
+                options.every(o => typeof o.option_text === 'string' && !!o.option_text.trim() && typeof o.is_correct === 'boolean') &&
+                (assessment_type === 'mcq_single' ? options.filter(o => o.is_correct).length === 1 : options.some(o => o.is_correct)));
+        if (!valid) return res.status(422).json({ error: 'Generated question did not match the requested format.' });
+        return res.json({ question: subjective ? { question_text: question.question_text.trim() } :
+            { question_text: question.question_text.trim(), options: options.map(o => ({ option_text: o.option_text.trim(), is_correct: o.is_correct })) } });
+    } catch (error) {
+        console.error('Question regeneration error:', error);
+        return res.status(503).json({ error: 'AI generation is temporarily unavailable.' });
+    }
+};
+
+export const fillIncidentReport = async (req, res) => {
+    const incidentTypes = ['Equipment Failure', 'Near Miss', 'Injury', 'Environmental', 'Security', 'Fire', 'Collision', 'Grounding'];
+    const { incident_type } = req.body || {};
+    if (!incidentTypes.includes(incident_type)) return res.status(400).json({ error: 'Invalid incident type.' });
+    const fields = ['title', 'severity', 'priority', 'location_on_ship', 'description', 'immediate_action', 'root_cause', 'lesson_learned', 'corrective_action', 'preventive_action'];
+    const responseSchema = { type: SchemaType.OBJECT, properties: Object.fromEntries(fields.map(field => [field, { type: SchemaType.STRING }])), required: fields };
+    try {
+        const model = genAI.getGenerativeModel({ model: process.env.GEMINI_ASSESSMENT_MODEL || 'gemini-3.5-flash-lite',
+            generationConfig: { responseMimeType: 'application/json', responseSchema, temperature: 0.3 } });
+        const result = await model.generateContent(`Suggest concise, professional, editable maritime incident report fields for incident type: ${incident_type}. Return JSON matching the schema. Severity and priority must each be Low, Medium, High, or Critical. Location must be Cargo Hold, Engine Room, Accommodation, or Deck. These are hypothetical suggestions, not verified facts. Do not claim specific real actions or causes are confirmed.`);
+        let data;
+        try { data = JSON.parse(result.response.text()); } catch { data = null; }
+        if (!data || fields.some(field => typeof data[field] !== 'string' || !data[field].trim() || data[field].length > 2000))
+            return res.status(422).json({ error: 'Generated incident fields were invalid.' });
+        const levels = ['Low', 'Medium', 'High', 'Critical'];
+        const locations = ['Cargo Hold', 'Engine Room', 'Accommodation', 'Deck'];
+        if (!levels.includes(data.severity) || !levels.includes(data.priority) || !locations.includes(data.location_on_ship))
+            return res.status(422).json({ error: 'Generated incident selections were invalid.' });
+        return res.json({ suggestions: Object.fromEntries(fields.map(field => [field, data[field].trim()])) });
+    } catch (error) {
+        console.error('Incident fill error:', error);
+        return res.status(503).json({ error: 'AI generation is temporarily unavailable.' });
+    }
+};
+
 // Generation only supplies editable question content; assessment settings and saving stay in the existing flow.
 export const generateAssessmentQuestions = async (req, res) => {
     const { title, description, assessment_type, question_count, difficulty_level, category } = req.body || {};
