@@ -1114,10 +1114,6 @@ export const updateSubscription = async (req, res) => {
     const existingEndDate =
       String(existing.end_date).slice(0, 10);
 
-    let newStartDate = existingStartDate;
-    let newEndDate = existingEndDate;
-    let newStatus = existing.status;
-
     const newNotes =
       notes !== undefined
         ? notes
@@ -1128,15 +1124,38 @@ export const updateSubscription = async (req, res) => {
     // ==================================================
 
     if (action === "start") {
-      /*
-       * Start does NOT validate request dates.
-       *
-       * It simply activates the existing subscription.
-       */
+      const result = await db.query(
+        `
+          UPDATE company_subscriptions
+          SET
+            status = 'active',
+            updated_at = NOW(),
+            created_by = $1,
+            notes = $2
+          WHERE subscription_id = $3
+          RETURNING
+            subscription_id,
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_at,
+            updated_at,
+            created_by,
+            notes
+        `,
+        [
+          superAdminId,
+          newNotes,
+          subscriptionId,
+        ]
+      );
 
-      newStartDate = existingStartDate;
-      newEndDate = existingEndDate;
-      newStatus = "active";
+      return res.status(200).json({
+        message:
+          "Subscription started successfully.",
+        subscription: result.rows[0],
+      });
     }
 
     // ==================================================
@@ -1144,15 +1163,38 @@ export const updateSubscription = async (req, res) => {
     // ==================================================
 
     else if (action === "stop") {
-      /*
-       * Stop does NOT validate dates.
-       *
-       * Existing dates are preserved.
-       */
+      const result = await db.query(
+        `
+          UPDATE company_subscriptions
+          SET
+            status = 'cancelled',
+            updated_at = NOW(),
+            created_by = $1,
+            notes = $2
+          WHERE subscription_id = $3
+          RETURNING
+            subscription_id,
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_at,
+            updated_at,
+            created_by,
+            notes
+        `,
+        [
+          superAdminId,
+          newNotes,
+          subscriptionId,
+        ]
+      );
 
-      newStartDate = existingStartDate;
-      newEndDate = existingEndDate;
-      newStatus = "cancelled";
+      return res.status(200).json({
+        message:
+          "Subscription stopped successfully.",
+        subscription: result.rows[0],
+      });
     }
 
     // ==================================================
@@ -1160,10 +1202,9 @@ export const updateSubscription = async (req, res) => {
     // ==================================================
 
     else if (action === "timespan") {
-      /*
-       * Timespan is the ONLY action that requires
-       * startDate and endDate.
-       */
+      // ----------------------------------------------
+      // Both dates are required
+      // ----------------------------------------------
 
       if (!startDate || !endDate) {
         return res.status(400).json({
@@ -1199,15 +1240,21 @@ export const updateSubscription = async (req, res) => {
       // Validate actual calendar dates
       // ----------------------------------------------
 
-      const [startYear, startMonth, startDay] =
-        newStartDateValue
-          .split("-")
-          .map(Number);
+      const [
+        startYear,
+        startMonth,
+        startDay,
+      ] = newStartDateValue
+        .split("-")
+        .map(Number);
 
-      const [endYear, endMonth, endDay] =
-        newEndDateValue
-          .split("-")
-          .map(Number);
+      const [
+        endYear,
+        endMonth,
+        endDay,
+      ] = newEndDateValue
+        .split("-")
+        .map(Number);
 
       const startDateObject = new Date(
         startYear,
@@ -1237,7 +1284,10 @@ export const updateSubscription = async (req, res) => {
         endDateObject.getDate() ===
           endDay;
 
-      if (!validStartDate || !validEndDate) {
+      if (
+        !validStartDate ||
+        !validEndDate
+      ) {
         return res.status(400).json({
           message:
             "Invalid dates. Please provide valid calendar dates.",
@@ -1258,78 +1308,47 @@ export const updateSubscription = async (req, res) => {
         });
       }
 
-      newStartDate = newStartDateValue;
-      newEndDate = newEndDateValue;
+      // ----------------------------------------------
+      // Update ONLY the timespan
+      // ----------------------------------------------
 
-      /*
-       * Setting a timespan also activates the
-       * subscription.
-       */
-      newStatus = "active";
+      const result = await db.query(
+        `
+          UPDATE company_subscriptions
+          SET
+            start_date = $1,
+            end_date = $2,
+            status = 'active',
+            updated_at = NOW(),
+            created_by = $3,
+            notes = $4
+          WHERE subscription_id = $5
+          RETURNING
+            subscription_id,
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_at,
+            updated_at,
+            created_by,
+            notes
+        `,
+        [
+          newStartDateValue,
+          newEndDateValue,
+          superAdminId,
+          newNotes,
+          subscriptionId,
+        ]
+      );
+
+      return res.status(200).json({
+        message:
+          "Subscription timespan updated successfully.",
+        subscription: result.rows[0],
+      });
     }
-
-    // --------------------------------------------------
-    // Update database
-    // --------------------------------------------------
-
-    const result = await db.query(
-      `
-        UPDATE company_subscriptions
-        SET
-          start_date = $1,
-          end_date = $2,
-          status = $3,
-          updated_at = NOW(),
-          created_by = $4,
-          notes = $5
-        WHERE subscription_id = $6
-        RETURNING
-          subscription_id,
-          company_id,
-          start_date,
-          end_date,
-          status,
-          created_at,
-          updated_at,
-          created_by,
-          notes
-      `,
-      [
-        newStartDate,
-        newEndDate,
-        newStatus,
-        superAdminId,
-        newNotes,
-        subscriptionId,
-      ]
-    );
-
-    // --------------------------------------------------
-    // Response
-    // --------------------------------------------------
-
-    let message =
-      "Subscription updated successfully.";
-
-    if (action === "start") {
-      message =
-        "Subscription started successfully.";
-    }
-
-    if (action === "stop") {
-      message =
-        "Subscription stopped successfully.";
-    }
-
-    if (action === "timespan") {
-      message =
-        "Subscription timespan updated successfully.";
-    }
-
-    return res.status(200).json({
-      message,
-      subscription: result.rows[0],
-    });
   } catch (error) {
     console.error(
       "Update subscription error:",
