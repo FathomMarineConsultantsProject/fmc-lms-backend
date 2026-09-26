@@ -1044,14 +1044,12 @@ export const rejectSubscriptionRequest = async (
 // PUT /api/admin/subscriptions/:subscriptionId
 // =========================================================
 
-export const updateSubscription = async (
-  req,
-  res
-) => {
+export const updateSubscription = async (req, res) => {
   try {
     const { subscriptionId } = req.params;
 
     const {
+      action,
       startDate,
       endDate,
       status,
@@ -1091,24 +1089,83 @@ export const updateSubscription = async (
     const existing = existingResult.rows[0];
 
     // ---------------------------------------------------------
-    // Use existing values when not provided
+    // Existing values
     // ---------------------------------------------------------
 
-    const newStartDate =
-      startDate ||
+    const existingStartDate =
       String(existing.start_date).slice(0, 10);
 
-    const newEndDate =
-      endDate ||
+    const existingEndDate =
       String(existing.end_date).slice(0, 10);
 
-    const newStatus =
-      status || existing.status;
+    // ---------------------------------------------------------
+    // Determine new values
+    // ---------------------------------------------------------
+
+    let newStartDate = existingStartDate;
+    let newEndDate = existingEndDate;
+    let newStatus = existing.status;
 
     const newNotes =
       notes !== undefined
         ? notes
         : existing.notes;
+
+    // =========================================================
+    // EXTEND
+    // =========================================================
+
+    if (action === "extend") {
+      if (!endDate) {
+        return res.status(400).json({
+          message: "End date is required to extend subscription.",
+        });
+      }
+
+      newEndDate = endDate;
+      newStatus = "active";
+    }
+
+    // =========================================================
+    // STOP
+    // =========================================================
+
+    else if (action === "stop") {
+      newStatus = "cancelled";
+
+      // Keep existing dates.
+      newStartDate = existingStartDate;
+      newEndDate = existingEndDate;
+    }
+
+    // =========================================================
+    // RESUME
+    // =========================================================
+
+    else if (action === "resume") {
+      newStartDate =
+        startDate || existingStartDate;
+
+      newEndDate =
+        endDate || existingEndDate;
+
+      newStatus = "active";
+    }
+
+    // =========================================================
+    // Backward-compatible normal update
+    // =========================================================
+
+    else {
+      newStartDate =
+        startDate || existingStartDate;
+
+      newEndDate =
+        endDate || existingEndDate;
+
+      newStatus =
+        status || existing.status;
+    }
 
     // ---------------------------------------------------------
     // Validate dates
