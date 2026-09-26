@@ -1,5 +1,6 @@
 import { db } from "../db.js";
 import xlsx from "xlsx";
+import { genuineEnrollment, getLinkedAssessmentAccess } from "./courseAssessmentAccess.js";
 
 const isAdminRole = (roleId) => [1, 2, 3].includes(Number(roleId));
 
@@ -111,6 +112,7 @@ export const createAssessment = async (req, res) => {
       company_id,
       ship_id,
       questions = [],
+      course_id,
     } = req.body;
 
     if (!title || !assessment_type) {
@@ -134,7 +136,40 @@ export const createAssessment = async (req, res) => {
       });
     }
 
+    if (course_id !== undefined &&
+      (!Number.isInteger(Number(max_attempts)) || Number(max_attempts) < 2 ||
+       !Number.isInteger(Number(passing_percentage)) || Number(passing_percentage) < 1 || Number(passing_percentage) > 100)) {
+      return res.status(400).json({ success: false,
+        message: 'Course assessments require a passing percentage from 1 to 100 and at least 2 attempts' });
+    }
+
     await client.query("BEGIN");
+
+    let sourceCourse = null;
+    if (course_id !== undefined) {
+      if (![1, 2].includes(roleId) || !Number.isSafeInteger(Number(course_id)) || Number(course_id) < 1) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ success: false, message: 'Course assessment creation is not allowed' });
+      }
+      const courseResult = await client.query(`SELECT id, company_id, ship_id FROM courses
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int = 1 OR company_id = $3)
+        FOR UPDATE`, [course_id, roleId, req.user.company_id || null]);
+      if (!courseResult.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ success: false, message: 'Course not found or access denied' });
+      }
+      sourceCourse = courseResult.rows[0];
+      const existing = await client.query(`SELECT ca.assessment_id FROM course_assessments ca
+        JOIN assessments a ON a.assessment_id = ca.assessment_id AND a.is_deleted = false
+        WHERE ca.course_id = $1`, [course_id]);
+      if (existing.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ success: false, message: 'Course already has an assessment' });
+      }
+      // A soft-deleted assessment may have held this unique course link.
+      await client.query(`DELETE FROM course_assessments ca USING assessments a
+        WHERE ca.course_id = $1 AND a.assessment_id = ca.assessment_id AND a.is_deleted = true`, [course_id]);
+    }
 
     let totalMarks = 0;
 
@@ -170,7 +205,9 @@ export const createAssessment = async (req, res) => {
       }
     }
 
-    const scope = getCreateScope(req);
+    const scope = sourceCourse
+      ? { company_id: sourceCourse.company_id, ship_id: sourceCourse.ship_id }
+      : getCreateScope(req);
     const assessmentResult = await client.query(
 
       `
@@ -211,7 +248,7 @@ export const createAssessment = async (req, res) => {
         totalMarks,
         instructions || null,
         normalizeBool(is_published, false),
-        normalizeBool(allow_multiple_attempts, false),
+        sourceCourse ? true : normalizeBool(allow_multiple_attempts, false),
         max_attempts || 1,
         normalizeBool(randomize_questions, false),
         normalizeBool(show_result_immediately, true),
@@ -279,6 +316,10 @@ export const createAssessment = async (req, res) => {
       }
     }
 
+    if (sourceCourse) {
+      await client.query(`INSERT INTO course_assessments (course_id, assessment_id, created_by)
+        VALUES ($1, $2, $3)`, [sourceCourse.id, assessment.assessment_id, userId]);
+    }
     await client.query("COMMIT");
 
     return res.status(201).json({
@@ -474,6 +515,16 @@ export const updateAssessment = async (req, res) => {
         success: false,
         message: "Assessment not found",
       });
+    }
+
+    if (roleId === 1 && (company_id !== undefined || ship_id !== undefined)) {
+      const linked = await db.query(`SELECT c.company_id, c.ship_id FROM course_assessments ca
+        JOIN courses c ON c.id = ca.course_id WHERE ca.assessment_id = $1`, [assessmentId]);
+      if (linked.rowCount &&
+        ((company_id !== undefined && String(company_id || '') !== String(linked.rows[0].company_id || '')) ||
+         (ship_id !== undefined && String(ship_id || '') !== String(linked.rows[0].ship_id || '')))) {
+        return res.status(400).json({ success: false, message: 'Course assessment scope must match its course' });
+      }
     }
 
     const params = [
@@ -1019,6 +1070,11 @@ export const startAssessment = async (req, res) => {
   try {
     const { assessmentId } = req.params;
     const userId = getUserId(req);
+    const linkedAccess = await getLinkedAssessmentAccess(db, assessmentId, req.user);
+    if (linkedAccess && (!linkedAccess.company_allowed || !linkedAccess.ship_allowed ||
+      (![1, 2].includes(getRoleId(req)) && (!linkedAccess.entitled || linkedAccess.completion_status !== 'completed')))) {
+      return res.status(403).json({ success: false, message: 'Complete your assigned course before starting this assessment' });
+    }
 
     const params = [assessmentId];
 
@@ -1955,6 +2011,22 @@ export const getAssignedAssessments = async (req, res) => {
           FROM assessment_attempts
           WHERE user_id = $1
           ORDER BY assessment_id, created_at DESC
+      ), Eligible AS (
+        SELECT assessment_id, MIN(due_date) AS due_date, MIN(created_at) AS created_at
+        FROM (
+          SELECT assessment_id, due_date, created_at FROM assessment_assignments WHERE user_id = $1
+          UNION ALL
+          SELECT ca.assessment_id, NULL AS due_date, ca.created_at
+          FROM course_assessments ca
+          JOIN courses c ON c.id = ca.course_id AND c.deleted_at IS NULL
+          JOIN assessments linked_a ON linked_a.assessment_id = ca.assessment_id
+          JOIN course_enrollments ce ON ce.course_id = c.id AND ce.user_id = $1
+          WHERE ${genuineEnrollment()}
+            AND ($2::int = 1 OR c.company_id = $3 OR c.company_id IS NULL)
+            AND ($2::int NOT IN (3,4) OR c.ship_id = $4 OR c.ship_id IS NULL)
+            AND ($2::int = 1 OR linked_a.company_id = $3 OR linked_a.company_id IS NULL)
+            AND ($2::int NOT IN (3,4) OR linked_a.ship_id = $4 OR linked_a.ship_id IS NULL)
+        ) sources GROUP BY assessment_id
       )
       SELECT 
           a.assessment_id, 
@@ -1965,22 +2037,29 @@ export const getAssignedAssessments = async (req, res) => {
           a.difficulty_level,
           a.passing_percentage,
           a.duration_minutes,
+          a.allow_multiple_attempts,
+          a.max_attempts,
+          (SELECT COUNT(*)::int FROM assessment_attempts at WHERE at.assessment_id = a.assessment_id AND at.user_id = $1) AS attempt_count,
           (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.assessment_id AND aq.is_deleted = false) as question_count,
           aa.due_date,
           aa.created_at as assigned_at,
+          ca.course_id AS linked_course_id,
+          CASE WHEN ca.course_id IS NULL THEN true
+            ELSE ce.completion_status = 'completed' AND (${genuineEnrollment()}) END AS can_take,
           COALESCE(la.is_passed, false) as is_completed,
           la.status as attempt_status,
           la.score_obtained
-      FROM assessment_assignments aa
+      FROM Eligible aa
       JOIN assessments a ON aa.assessment_id = a.assessment_id
+      LEFT JOIN course_assessments ca ON ca.assessment_id = a.assessment_id
+      LEFT JOIN course_enrollments ce ON ce.course_id = ca.course_id AND ce.user_id = $1
       LEFT JOIN LatestAttempts la ON a.assessment_id = la.assessment_id
-      WHERE aa.user_id = $1 
-        AND a.is_deleted = false 
+      WHERE a.is_deleted = false
         AND a.is_published = true
       ORDER BY aa.due_date ASC NULLS LAST, aa.created_at DESC;
     `;
 
-    const result = await client.query(query, [currentUserId]);
+    const result = await client.query(query, [currentUserId, getRoleId(req), req.user.company_id || null, req.user.ship_id || null]);
 
     return res.status(200).json({
       success: true,
@@ -2556,6 +2635,12 @@ export const startAssessmentAttempt = async (req, res) => {
     }
 
     await client.query("BEGIN");
+    const linkedAccess = await getLinkedAssessmentAccess(client, assessmentId, req.user);
+    if (linkedAccess && (!linkedAccess.company_allowed || !linkedAccess.ship_allowed ||
+      (![1, 2].includes(getRoleId(req)) && (!linkedAccess.entitled || linkedAccess.completion_status !== 'completed')))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ success: false, message: 'Complete your assigned course before starting this assessment' });
+    }
 
     // --------------------------------------------------
     // 1. GET ASSESSMENT

@@ -3,6 +3,8 @@ import crypto from "crypto";
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
+import { generateAssessmentQuestions } from "./aiController.js";
+import { genuineEnrollment } from "./courseAssessmentAccess.js";
 
 const VALID_CONTENT_MODES = new Set(["single_training", "course"]);
 const VALID_CONTENT_TYPES = new Set([
@@ -83,6 +85,109 @@ async function checkCourseScope(req, courseId, client = db, options = {}) {
   return result.rowCount > 0;
 }
 const getAuthUserId = (req) => req.user?.user_id ?? req.user?.id ?? null;
+
+async function getManageableCourse(req, courseId) {
+  if (![1, 2].includes(getRoleId(req))) return null;
+  const result = await db.query(`SELECT id, title, description, department, company_id, ship_id
+    FROM courses WHERE id = $1 AND deleted_at IS NULL
+    AND ($2::int = 1 OR company_id = $3)`,
+    [courseId, getRoleId(req), req.user.company_id || null]);
+  return result.rows[0] || null;
+}
+
+export async function getCourseAssessment(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    if (!Number.isSafeInteger(courseId) || courseId < 1) return res.status(400).json({ message: 'Invalid course id' });
+    const allowed = await checkCourseScope(req, courseId, db, { includeGlobal: true });
+    if (!allowed) return res.status(404).json({ message: 'Course not found' });
+    const result = await db.query(`SELECT a.assessment_id, a.title, a.is_published,
+      a.allow_multiple_attempts, a.max_attempts,
+      (SELECT COUNT(*)::int FROM assessment_attempts at
+       WHERE at.assessment_id = a.assessment_id AND at.user_id = $2) AS attempt_count
+      FROM course_assessments ca JOIN assessments a ON a.assessment_id = ca.assessment_id
+      WHERE ca.course_id = $1 AND a.is_deleted = false`, [courseId, getAuthUserId(req)]);
+    const roleId = getRoleId(req);
+    const canManage = !!(await getManageableCourse(req, courseId));
+    const canGenerate = canManage && !result.rowCount;
+    let canTake = roleId === 1 || roleId === 2;
+    let completed = false;
+    if (!canTake) {
+      const enrollment = await db.query(`SELECT completion_status, ${genuineEnrollment()} AS entitled
+        FROM course_enrollments ce WHERE ce.course_id = $1 AND ce.user_id = $2`,
+        [courseId, getAuthUserId(req)]);
+      completed = enrollment.rows[0]?.completion_status === 'completed';
+      canTake = !!enrollment.rows[0]?.entitled && completed;
+    }
+    const assessment = result.rows[0] || null;
+    const remaining = assessment && Number(assessment.attempt_count) <
+      (assessment.allow_multiple_attempts ? Number(assessment.max_attempts) : 1);
+    return res.json({ assessment, can_generate: canGenerate, can_manage: canManage,
+      can_take: canTake && !!assessment?.is_published && remaining, completed,
+      locked_reason: !assessment?.is_published ? 'Assessment is not published.'
+        : !canTake ? 'Complete this training to take its assessment.'
+        : !remaining ? 'Maximum attempts reached.' : null });
+  } catch (error) {
+    console.error('getCourseAssessment error:', error);
+    return res.status(500).json({ message: 'Failed to fetch course assessment' });
+  }
+}
+
+const cleanCourseText = (value, limit) => String(value || '')
+  .replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ')
+  .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+  .replace(/\s+/g, ' ').trim().slice(0, limit);
+
+export async function generateCourseAssessment(req, res) {
+  try {
+    const courseId = Number(req.params.courseId);
+    if (!Number.isSafeInteger(courseId) || courseId < 1) return res.status(400).json({ message: 'Invalid course id' });
+    const course = await getManageableCourse(req, courseId);
+    if (!course) return res.status(404).json({ message: 'Course not found or access denied' });
+    const linked = await db.query(`SELECT a.assessment_id FROM course_assessments ca
+      JOIN assessments a ON a.assessment_id = ca.assessment_id AND a.is_deleted = false
+      WHERE ca.course_id = $1`, [courseId]);
+    if (linked.rowCount) return res.status(409).json({ message: 'Course already has an assessment', assessment_id: linked.rows[0].assessment_id });
+    const contents = await db.query(`SELECT content_title, content_description FROM course_contents
+      WHERE course_id = $1 ORDER BY sort_order, id`, [courseId]);
+    const sections = new Map();
+    for (const row of contents.rows) {
+      const match = String(row.content_title || '').match(/^\[(.*?)\]\s*-\s*(.*)$/);
+      const section = match ? match[1] : 'Course materials';
+      const title = match ? match[2] : row.content_title;
+      if (!sections.has(section)) sections.set(section, []);
+      const description = cleanCourseText(row.content_description, 160);
+      const useful = description && !/^(auto[- ]generated topic|untitled|n\/?a|none|no description)$/i.test(description);
+      sections.get(section).push({ content_title: cleanCourseText(title, 180), ...(useful ? { content_description: description } : {}) });
+    }
+    const context = { title: cleanCourseText(course.title, 200),
+      description: cleanCourseText(course.description, 800),
+      department: cleanCourseText(course.department, 80),
+      sections: [...sections].map(([section_title, items]) => ({ section_title, items })) };
+    const instruction = 'Use only this course metadata. Cover its sections broadly. Avoid precise facts or procedures unsupported by the metadata.';
+    const heading = `${instruction}\nCourse: ${context.title}\nDepartment: ${context.department}\n`;
+    const outline = context.sections.flatMap(section => [
+      `Section: ${cleanCourseText(section.section_title, 100)}`,
+      ...section.items.map(item => `- ${cleanCourseText(item.content_title, 110)}`)
+    ]).join('\n');
+    let prompt = `${heading}${outline}`;
+    const overview = `\nOverview: ${context.description}`;
+    if (prompt.length + overview.length <= 2000) prompt += overview;
+    else prompt += overview.slice(0, Math.max(0, 2000 - prompt.length));
+    for (const section of context.sections) for (const item of section.items) {
+      if (!item.content_description) continue;
+      const extra = `\n${cleanCourseText(item.content_title, 70)}: ${item.content_description}`;
+      if (prompt.length + extra.length <= 2000) prompt += extra;
+    }
+    return generateAssessmentQuestions({ ...req, body: { title: context.title,
+      description: prompt.slice(0, 2000), assessment_type: req.body.assessment_type,
+      question_count: req.body.question_count, difficulty_level: req.body.difficulty_level,
+      category: course.department?.slice(0, 100) || undefined } }, res);
+  } catch (error) {
+    console.error('generateCourseAssessment error:', error);
+    return res.status(500).json({ message: 'Failed to generate course assessment' });
+  }
+}
 
 const normalizeString = (value) => {
   if (value === undefined || value === null) return null;

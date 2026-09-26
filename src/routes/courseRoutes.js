@@ -1,5 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { allowRoles } from "../middleware/rbac.js";
 import { uploadCourseFiles } from "../middleware/uploadCourseFiles.js";
 import {
   createCourse,
@@ -28,6 +29,7 @@ import {
   assignCourseToShips
 
 } from "../controller/coursesController.js";
+import { getCourseAssessment, generateCourseAssessment } from "../controller/coursesController.js";
 
 const router = express.Router();
 
@@ -36,6 +38,8 @@ router.get("/", requireAuth, getCourses);
 
 router.get("/enrolled/:userId", requireAuth, getCoursesByUserId);
 router.get("/media/:mediaFileId/url", requireAuth, getCourseContentMediaSignedUrl);
+router.get('/:courseId/assessment', requireAuth, getCourseAssessment);
+router.post('/:courseId/generate-assessment', requireAuth, allowRoles(1, 2), generateCourseAssessment);
 
 // logged-in user completion routes
 router.post(
