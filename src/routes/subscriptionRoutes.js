@@ -1,26 +1,108 @@
-// src/middleware/rbac.js
+// src/routes/subscriptionRoutes.js
 
-export const allowRoles = (...allowed) => (req, res, next) => {
-  const roleIdRaw = req.user?.role_id;
+import { Router } from "express";
 
-  if (roleIdRaw === undefined || roleIdRaw === null) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+import {
+  getSubscriptionStatus,
+  getMySubscription,
+  requestSubscription,
+  getMySubscriptionRequest,
+  getSubscriptionRequests,
+  getCompanySubscription,
+  createSubscription,
+  approveSubscriptionRequest,
+  rejectSubscriptionRequest,
+  updateSubscription,
+} from "../controller/subscriptionController.js";
 
-  const roleId = Number(roleIdRaw);
-  const allowedRoles = allowed.map(Number);
+import { requireAuth } from "../middleware/requireAuth.js";
+import { allowRoles } from "../middleware/rbac.js";
 
-  if (!allowedRoles.includes(roleId)) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+const router = Router();
 
-  next();
-};
+// =========================================================
+// COMPANY / USER ROUTES
+// =========================================================
 
-// helpers (also normalized)
-export const canManageCompanies = (roleId) => Number(roleId) === 1; // only super admin
-export const canManageShips = (roleId) => [1, 2].includes(Number(roleId)); // super admin/admin
-export const canManageUsers = (roleId) => [1, 2, 3].includes(Number(roleId));
-export const canCreateIncident = (roleId) => [1, 2, 3, 4].includes(Number(roleId));
-export const canEditIncident = (roleId) => [1, 2, 3].includes(Number(roleId)); // crew cannot edit/delete
-export const canManageImmersive = (roleId) => [1, 2].includes(Number(roleId)); // super admin/admin can manage VR and Equipment
+// Check whether company's subscription is active
+router.get(
+  "/status",
+  requireAuth,
+  getSubscriptionStatus
+);
+
+// Get current company's subscription
+router.get(
+  "/my",
+  requireAuth,
+  getMySubscription
+);
+
+// Request subscription / re-subscription
+router.post(
+  "/request",
+  requireAuth,
+  requestSubscription
+);
+
+// Get latest subscription request for current company
+router.get(
+  "/request",
+  requireAuth,
+  getMySubscriptionRequest
+);
+
+// =========================================================
+// SUPER ADMIN ROUTES
+// =========================================================
+
+// Get all subscription requests
+// Optional: ?status=pending
+router.get(
+  "/admin/requests",
+  requireAuth,
+  allowRoles("super_admin"),
+  getSubscriptionRequests
+);
+
+// Get subscription of a specific company
+router.get(
+  "/admin/company/:companyId",
+  requireAuth,
+  allowRoles("super_admin"),
+  getCompanySubscription
+);
+
+// Create subscription for a company
+router.post(
+  "/admin",
+  requireAuth,
+  allowRoles("super_admin"),
+  createSubscription
+);
+
+// Approve subscription request
+router.post(
+  "/admin/requests/:requestId/approve",
+  requireAuth,
+  allowRoles("super_admin"),
+  approveSubscriptionRequest
+);
+
+// Reject subscription request
+router.post(
+  "/admin/requests/:requestId/reject",
+  requireAuth,
+  allowRoles("super_admin"),
+  rejectSubscriptionRequest
+);
+
+// Update / extend subscription
+router.put(
+  "/admin/:subscriptionId",
+  requireAuth,
+  allowRoles("super_admin"),
+  updateSubscription
+);
+
+export default router;
