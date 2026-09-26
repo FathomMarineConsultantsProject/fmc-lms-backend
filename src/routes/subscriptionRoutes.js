@@ -61,7 +61,7 @@ router.get(
 router.get(
   "/admin/requests",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   getSubscriptionRequests
 );
 
@@ -69,7 +69,7 @@ router.get(
 router.get(
   "/admin/company/:companyId",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   getCompanySubscription
 );
 
@@ -77,7 +77,7 @@ router.get(
 router.post(
   "/admin",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   createSubscription
 );
 
@@ -85,7 +85,7 @@ router.post(
 router.post(
   "/admin/requests/:requestId/approve",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   approveSubscriptionRequest
 );
 
@@ -93,7 +93,7 @@ router.post(
 router.post(
   "/admin/requests/:requestId/reject",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   rejectSubscriptionRequest
 );
 
@@ -101,7 +101,7 @@ router.post(
 router.put(
   "/admin/:subscriptionId",
   requireAuth,
-  allowRoles("super_admin"),
+  allowRoles(1),
   updateSubscription
 );
 
