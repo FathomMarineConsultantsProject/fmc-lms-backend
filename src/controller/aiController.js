@@ -1,8 +1,23 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { getCourseAssessmentContext } from "./courseAssessmentContext.js";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export const regenerateAssessmentQuestion = async (req, res) => {
-    const { title, description, assessment_type, difficulty_level, category, current_question } = req.body || {};
+    let { title, description, assessment_type, difficulty_level, category, current_question, course_id } = req.body || {};
+    if (course_id !== undefined) {
+        if (![1, 2].includes(Number(req.user?.role_id)))
+            return res.status(403).json({ error: 'Course regeneration is not allowed.' });
+        try {
+            const context = await getCourseAssessmentContext(req, course_id);
+            if (!context) return res.status(404).json({ error: 'Course not found or access denied.' });
+            title = context.title;
+            description = context.description;
+            category = context.department.slice(0, 100) || undefined;
+        } catch (error) {
+            console.error('Course regeneration context error:', error);
+            return res.status(503).json({ error: 'Course context is temporarily unavailable.' });
+        }
+    }
     const types = ['mcq_single', 'mcq_multiple', 'subjective'];
     if (typeof title !== 'string' || !title.trim() || title.length > 200 ||
         typeof description !== 'string' || description.length > 2000 ||

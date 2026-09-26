@@ -137,10 +137,9 @@ export const createAssessment = async (req, res) => {
     }
 
     if (course_id !== undefined &&
-      (!Number.isInteger(Number(max_attempts)) || Number(max_attempts) < 2 ||
-       !Number.isInteger(Number(passing_percentage)) || Number(passing_percentage) < 1 || Number(passing_percentage) > 100)) {
+      (!Number.isInteger(Number(passing_percentage)) || Number(passing_percentage) < 1 || Number(passing_percentage) > 100)) {
       return res.status(400).json({ success: false,
-        message: 'Course assessments require a passing percentage from 1 to 100 and at least 2 attempts' });
+        message: 'Course assessments require a passing percentage from 1 to 100' });
     }
 
     await client.query("BEGIN");
@@ -248,8 +247,8 @@ export const createAssessment = async (req, res) => {
         totalMarks,
         instructions || null,
         normalizeBool(is_published, false),
-        sourceCourse ? true : normalizeBool(allow_multiple_attempts, false),
-        max_attempts || 1,
+        sourceCourse ? true : (allow_multiple_attempts === undefined ? true : normalizeBool(allow_multiple_attempts, true)),
+        sourceCourse ? null : (max_attempts === undefined ? null : max_attempts),
         normalizeBool(randomize_questions, false),
         normalizeBool(show_result_immediately, true),
         scope.company_id,
@@ -1114,23 +1113,6 @@ export const startAssessment = async (req, res) => {
 
     const attemptCount = previousAttempts.rows[0].count;
 
-    if (!assessment.allow_multiple_attempts && attemptCount >= 1) {
-      return res.status(400).json({
-        success: false,
-        message: "You have already attempted this assessment",
-      });
-    }
-
-    if (
-      assessment.allow_multiple_attempts &&
-      attemptCount >= Number(assessment.max_attempts)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Maximum attempts reached",
-      });
-    }
-
     const questionCountResult = await db.query(
       `
       SELECT COUNT(*)::INTEGER AS total_questions
@@ -1777,8 +1759,8 @@ export const createAssessmentFromExcel = async (req, res) => {
         totalMarks,
         instructions || null,
         normalizeBool(is_published === "true" || is_published === true, false),
-        normalizeBool(allow_multiple_attempts === "true" || allow_multiple_attempts === true, false),
-        max_attempts || 1,
+        allow_multiple_attempts === undefined ? true : normalizeBool(allow_multiple_attempts === "true" || allow_multiple_attempts === true, true),
+        max_attempts === undefined ? null : max_attempts,
         normalizeBool(randomize_questions === "true" || randomize_questions === true, false),
         normalizeBool(show_result_immediately === "true" || show_result_immediately === true, true),
         scope.company_id,
@@ -2689,32 +2671,8 @@ export const startAssessmentAttempt = async (req, res) => {
     );
 
     // --------------------------------------------------
-    // 3. CHECK ATTEMPT LIMITS
+    // 3. Preserve the count for attempt_number; attempts have no product limit.
     // --------------------------------------------------
-
-    if (
-      !assessment.allow_multiple_attempts &&
-      attemptCount > 0
-    ) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        success: false,
-        message: "You have already attempted this assessment",
-      });
-    }
-
-    if (
-      assessment.allow_multiple_attempts &&
-      attemptCount >= Number(assessment.max_attempts || 1)
-    ) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        success: false,
-        message: "Maximum attempts reached",
-      });
-    }
 
     // --------------------------------------------------
     // 4. GET QUESTIONS
