@@ -1,13 +1,64 @@
 import { db } from "../db.js";
 
 // =========================================================
+// HELPER FUNCTIONS
+// =========================================================
+
+const isValidDate = (date) => {
+  if (!date || typeof date !== "string") {
+    return false;
+  }
+
+  // Expected format: YYYY-MM-DD
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+
+  const parsed = new Date(`${date}T00:00:00Z`);
+
+  return !Number.isNaN(parsed.getTime());
+};
+
+const isDateRangeValid = (startDate, endDate) => {
+  if (!isValidDate(startDate) || !isValidDate(endDate)) {
+    return false;
+  }
+
+  return startDate <= endDate;
+};
+
+const getSubscriptionStatusFromDates = (
+  startDate,
+  endDate,
+  databaseStatus
+) => {
+  if (databaseStatus === "cancelled") {
+    return "cancelled";
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (today < startDate) {
+    return "not_started";
+  }
+
+  if (today > endDate) {
+    return "expired";
+  }
+
+  return "active";
+};
+
+// =========================================================
 // 1. GET SUBSCRIPTION STATUS
 // GET /api/subscriptions/status
 // =========================================================
 
 export const getSubscriptionStatus = async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const companyId = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
 
     if (!companyId) {
       return res.status(400).json({
@@ -17,23 +68,27 @@ export const getSubscriptionStatus = async (req, res) => {
 
     const result = await db.query(
       `
-      SELECT
-        subscription_id,
-        company_id,
-        start_date,
-        end_date,
-        status,
-        created_at,
-        updated_at,
-        notes
-      FROM company_subscriptions
-      WHERE company_id = $1
-      LIMIT 1
+        SELECT
+          subscription_id,
+          company_id,
+          start_date,
+          end_date,
+          status,
+          created_at,
+          updated_at,
+          created_by,
+          notes
+        FROM company_subscriptions
+        WHERE company_id = $1
+        LIMIT 1
       `,
       [companyId]
     );
 
-    // No subscription exists
+    // ---------------------------------------------------------
+    // No subscription
+    // ---------------------------------------------------------
+
     if (result.rows.length === 0) {
       return res.status(200).json({
         hasAccess: false,
@@ -44,73 +99,57 @@ export const getSubscriptionStatus = async (req, res) => {
 
     const subscription = result.rows[0];
 
-    const today = new Date();
-    const startDate = new Date(subscription.start_date);
-    const endDate = new Date(subscription.end_date);
+    const startDate = String(subscription.start_date).slice(0, 10);
+    const endDate = String(subscription.end_date).slice(0, 10);
 
-    // Remove time from today's date
-    today.setHours(0, 0, 0, 0);
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(0, 0, 0, 0);
+    const currentStatus = getSubscriptionStatusFromDates(
+      startDate,
+      endDate,
+      subscription.status
+    );
 
-    let hasAccess = false;
-    let currentStatus = subscription.status;
+    const hasAccess = currentStatus === "active";
 
-    // Subscription is cancelled
-    if (subscription.status === "cancelled") {
-      currentStatus = "cancelled";
-      hasAccess = false;
-    }
+    // ---------------------------------------------------------
+    // Keep database status synchronized
+    // ---------------------------------------------------------
 
-    // Subscription has not started
-    else if (today < startDate) {
-      currentStatus = "not_started";
-      hasAccess = false;
-    }
-
-    // Subscription has expired
-    else if (today > endDate) {
-      currentStatus = "expired";
-      hasAccess = false;
-
-      // Keep database status synchronized
-      if (subscription.status !== "expired") {
-        await db.query(
-          `
+    if (
+      currentStatus === "expired" &&
+      subscription.status !== "expired"
+    ) {
+      await db.query(
+        `
           UPDATE company_subscriptions
           SET
             status = 'expired',
             updated_at = NOW()
           WHERE subscription_id = $1
-          `,
-          [subscription.subscription_id]
-        );
-      }
+        `,
+        [subscription.subscription_id]
+      );
     }
 
-    // Subscription is active
-    else {
-      currentStatus = "active";
-      hasAccess = true;
-
-      // Keep database status synchronized
-      if (subscription.status !== "active") {
-        await db.query(
-          `
+    if (
+      currentStatus === "active" &&
+      subscription.status === "expired"
+    ) {
+      await db.query(
+        `
           UPDATE company_subscriptions
           SET
             status = 'active',
             updated_at = NOW()
           WHERE subscription_id = $1
-          `,
-          [subscription.subscription_id]
-        );
-      }
+        `,
+        [subscription.subscription_id]
+      );
     }
 
     return res.status(200).json({
       hasAccess,
       status: currentStatus,
+
       subscription: {
         subscriptionId: subscription.subscription_id,
         companyId: subscription.company_id,
@@ -119,6 +158,7 @@ export const getSubscriptionStatus = async (req, res) => {
         status: currentStatus,
         createdAt: subscription.created_at,
         updatedAt: subscription.updated_at,
+        createdBy: subscription.created_by,
         notes: subscription.notes,
       },
     });
@@ -132,7 +172,6 @@ export const getSubscriptionStatus = async (req, res) => {
   }
 };
 
-
 // =========================================================
 // 2. GET MY SUBSCRIPTION
 // GET /api/subscriptions/my
@@ -140,7 +179,9 @@ export const getSubscriptionStatus = async (req, res) => {
 
 export const getMySubscription = async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const companyId = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
 
     if (!companyId) {
       return res.status(400).json({
@@ -150,18 +191,19 @@ export const getMySubscription = async (req, res) => {
 
     const result = await db.query(
       `
-      SELECT
-        subscription_id,
-        company_id,
-        start_date,
-        end_date,
-        status,
-        created_at,
-        updated_at,
-        notes
-      FROM company_subscriptions
-      WHERE company_id = $1
-      LIMIT 1
+        SELECT
+          subscription_id,
+          company_id,
+          start_date,
+          end_date,
+          status,
+          created_at,
+          updated_at,
+          created_by,
+          notes
+        FROM company_subscriptions
+        WHERE company_id = $1
+        LIMIT 1
       `,
       [companyId]
     );
@@ -174,24 +216,30 @@ export const getMySubscription = async (req, res) => {
 
     const subscription = result.rows[0];
 
-    const today = new Date();
-    const startDate = new Date(subscription.start_date);
-    const endDate = new Date(subscription.end_date);
+    const startDate = String(subscription.start_date).slice(0, 10);
+    const endDate = String(subscription.end_date).slice(0, 10);
 
-    today.setHours(0, 0, 0, 0);
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(0, 0, 0, 0);
+    const currentStatus = getSubscriptionStatusFromDates(
+      startDate,
+      endDate,
+      subscription.status
+    );
 
-    let currentStatus = subscription.status;
-
-    if (subscription.status !== "cancelled") {
-      if (today < startDate) {
-        currentStatus = "not_started";
-      } else if (today > endDate) {
-        currentStatus = "expired";
-      } else {
-        currentStatus = "active";
-      }
+    // Keep expired status synchronized
+    if (
+      currentStatus === "expired" &&
+      subscription.status !== "expired"
+    ) {
+      await db.query(
+        `
+          UPDATE company_subscriptions
+          SET
+            status = 'expired',
+            updated_at = NOW()
+          WHERE subscription_id = $1
+        `,
+        [subscription.subscription_id]
+      );
     }
 
     return res.status(200).json({
@@ -203,6 +251,7 @@ export const getMySubscription = async (req, res) => {
         status: currentStatus,
         createdAt: subscription.created_at,
         updatedAt: subscription.updated_at,
+        createdBy: subscription.created_by,
         notes: subscription.notes,
       },
     });
@@ -216,7 +265,6 @@ export const getMySubscription = async (req, res) => {
   }
 };
 
-
 // =========================================================
 // 3. REQUEST SUBSCRIPTION / RE-SUBSCRIBE
 // POST /api/subscriptions/request
@@ -224,8 +272,11 @@ export const getMySubscription = async (req, res) => {
 
 export const requestSubscription = async (req, res) => {
   try {
-    const companyId = req.user.company_id;
-    const userId = req.user.user_id;
+    const companyId = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
+
+    const userId = req.user?.user_id;
 
     if (!companyId) {
       return res.status(400).json({
@@ -233,17 +284,28 @@ export const requestSubscription = async (req, res) => {
       });
     }
 
-    // Check for an existing pending request
+    if (!userId) {
+      return res.status(400).json({
+        message: "User ID not found",
+      });
+    }
+
+    // ---------------------------------------------------------
+    // Check existing pending request
+    // ---------------------------------------------------------
+
     const pendingRequest = await db.query(
       `
-      SELECT
-        request_id,
-        status,
-        requested_at
-      FROM subscription_requests
-      WHERE company_id = $1
-        AND status = 'pending'
-      LIMIT 1
+        SELECT
+          request_id,
+          company_id,
+          requested_by,
+          requested_at,
+          status
+        FROM subscription_requests
+        WHERE company_id = $1
+          AND status = 'pending'
+        LIMIT 1
       `,
       [companyId]
     );
@@ -255,20 +317,24 @@ export const requestSubscription = async (req, res) => {
       });
     }
 
+    // ---------------------------------------------------------
+    // Create request
+    // ---------------------------------------------------------
+
     const result = await db.query(
       `
-      INSERT INTO subscription_requests (
-        company_id,
-        requested_by,
-        status
-      )
-      VALUES ($1, $2, 'pending')
-      RETURNING
-        request_id,
-        company_id,
-        requested_by,
-        requested_at,
-        status
+        INSERT INTO subscription_requests (
+          company_id,
+          requested_by,
+          status
+        )
+        VALUES ($1, $2, 'pending')
+        RETURNING
+          request_id,
+          company_id,
+          requested_by,
+          requested_at,
+          status
       `,
       [companyId, userId]
     );
@@ -287,7 +353,6 @@ export const requestSubscription = async (req, res) => {
   }
 };
 
-
 // =========================================================
 // 4. GET MY SUBSCRIPTION REQUEST
 // GET /api/subscriptions/request
@@ -295,7 +360,9 @@ export const requestSubscription = async (req, res) => {
 
 export const getMySubscriptionRequest = async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const companyId = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
 
     if (!companyId) {
       return res.status(400).json({
@@ -305,20 +372,21 @@ export const getMySubscriptionRequest = async (req, res) => {
 
     const result = await db.query(
       `
-      SELECT
-        request_id,
-        company_id,
-        requested_by,
-        requested_at,
-        status,
-        processed_at,
-        start_date,
-        end_date,
-        admin_notes
-      FROM subscription_requests
-      WHERE company_id = $1
-      ORDER BY requested_at DESC
-      LIMIT 1
+        SELECT
+          request_id,
+          company_id,
+          requested_by,
+          requested_at,
+          status,
+          processed_by,
+          processed_at,
+          start_date,
+          end_date,
+          admin_notes
+        FROM subscription_requests
+        WHERE company_id = $1
+        ORDER BY requested_at DESC
+        LIMIT 1
       `,
       [companyId]
     );
@@ -342,7 +410,6 @@ export const getMySubscriptionRequest = async (req, res) => {
   }
 };
 
-
 // =========================================================
 // 5. SUPER ADMIN
 // GET ALL SUBSCRIPTION REQUESTS
@@ -352,6 +419,19 @@ export const getMySubscriptionRequest = async (req, res) => {
 export const getSubscriptionRequests = async (req, res) => {
   try {
     const { status } = req.query;
+
+    const allowedStatuses = [
+      "pending",
+      "approved",
+      "rejected",
+    ];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        message:
+          "Invalid status. Allowed values: pending, approved, rejected",
+      });
+    }
 
     let query = `
       SELECT
@@ -397,7 +477,6 @@ export const getSubscriptionRequests = async (req, res) => {
   }
 };
 
-
 // =========================================================
 // 6. SUPER ADMIN
 // GET COMPANY SUBSCRIPTION
@@ -408,24 +487,30 @@ export const getCompanySubscription = async (req, res) => {
   try {
     const { companyId } = req.params;
 
+    if (!companyId) {
+      return res.status(400).json({
+        message: "Company ID is required",
+      });
+    }
+
     const result = await db.query(
       `
-      SELECT
-        cs.subscription_id,
-        cs.company_id,
-        c.company_name,
-        cs.start_date,
-        cs.end_date,
-        cs.status,
-        cs.created_at,
-        cs.updated_at,
-        cs.created_by,
-        cs.notes
-      FROM company_subscriptions cs
-      LEFT JOIN company c
-        ON c.company_id = cs.company_id
-      WHERE cs.company_id = $1
-      LIMIT 1
+        SELECT
+          cs.subscription_id,
+          cs.company_id,
+          c.company_name,
+          cs.start_date,
+          cs.end_date,
+          cs.status,
+          cs.created_at,
+          cs.updated_at,
+          cs.created_by,
+          cs.notes
+        FROM company_subscriptions cs
+        LEFT JOIN company c
+          ON c.company_id = cs.company_id
+        WHERE cs.company_id = $1
+        LIMIT 1
       `,
       [companyId]
     );
@@ -436,8 +521,22 @@ export const getCompanySubscription = async (req, res) => {
       });
     }
 
+    const subscription = result.rows[0];
+
+    const startDate = String(subscription.start_date).slice(0, 10);
+    const endDate = String(subscription.end_date).slice(0, 10);
+
+    const currentStatus = getSubscriptionStatusFromDates(
+      startDate,
+      endDate,
+      subscription.status
+    );
+
     return res.status(200).json({
-      subscription: result.rows[0],
+      subscription: {
+        ...subscription,
+        status: currentStatus,
+      },
     });
   } catch (error) {
     console.error("Get company subscription error:", error);
@@ -448,7 +547,6 @@ export const getCompanySubscription = async (req, res) => {
     });
   }
 };
-
 
 // =========================================================
 // 7. SUPER ADMIN
@@ -465,7 +563,7 @@ export const createSubscription = async (req, res) => {
       notes,
     } = req.body;
 
-    const superAdminId = req.user.user_id;
+    const superAdminId = req.user?.user_id;
 
     if (!companyId || !startDate || !endDate) {
       return res.status(400).json({
@@ -474,22 +572,22 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    // Validate dates
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    if (end < start) {
+    if (!isDateRangeValid(startDate, endDate)) {
       return res.status(400).json({
-        message: "End date cannot be before start date",
+        message:
+          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
       });
     }
 
+    // ---------------------------------------------------------
     // Verify company exists
+    // ---------------------------------------------------------
+
     const companyResult = await db.query(
       `
-      SELECT company_id
-      FROM company
-      WHERE company_id = $1
+        SELECT company_id
+        FROM company
+        WHERE company_id = $1
       `,
       [companyId]
     );
@@ -500,13 +598,16 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    // Check if subscription already exists
+    // ---------------------------------------------------------
+    // Check existing subscription
+    // ---------------------------------------------------------
+
     const existingSubscription = await db.query(
       `
-      SELECT subscription_id
-      FROM company_subscriptions
-      WHERE company_id = $1
-      LIMIT 1
+        SELECT subscription_id
+        FROM company_subscriptions
+        WHERE company_id = $1
+        LIMIT 1
       `,
       [companyId]
     );
@@ -520,183 +621,12 @@ export const createSubscription = async (req, res) => {
       });
     }
 
+    // ---------------------------------------------------------
+    // Create subscription
+    // ---------------------------------------------------------
+
     const result = await db.query(
       `
-      INSERT INTO company_subscriptions (
-        company_id,
-        start_date,
-        end_date,
-        status,
-        created_by,
-        notes
-      )
-      VALUES (
-        $1,
-        $2,
-        $3,
-        'active',
-        $4,
-        $5
-      )
-      RETURNING
-        subscription_id,
-        company_id,
-        start_date,
-        end_date,
-        status,
-        created_at,
-        updated_at,
-        created_by,
-        notes
-      `,
-      [
-        companyId,
-        startDate,
-        endDate,
-        superAdminId,
-        notes || null,
-      ]
-    );
-
-    return res.status(201).json({
-      message: "Subscription created successfully",
-      subscription: result.rows[0],
-    });
-  } catch (error) {
-    console.error("Create subscription error:", error);
-
-    return res.status(500).json({
-      message: "Failed to create subscription",
-      error: error.message,
-    });
-  }
-};
-
-
-// =========================================================
-// 8. SUPER ADMIN
-// APPROVE SUBSCRIPTION REQUEST
-// POST /api/admin/subscriptions/requests/:requestId/approve
-// =========================================================
-
-export const approveSubscriptionRequest = async (
-  req,
-  res
-) => {
-  const client = await db.connect();
-
-  try {
-    const { requestId } = req.params;
-
-    const {
-      startDate,
-      endDate,
-      adminNotes,
-    } = req.body;
-
-    const superAdminId = req.user.user_id;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        message: "Start date and end date are required",
-      });
-    }
-
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    if (end < start) {
-      return res.status(400).json({
-        message: "End date cannot be before start date",
-      });
-    }
-
-    await client.query("BEGIN");
-
-    // Get request
-    const requestResult = await client.query(
-      `
-      SELECT
-        request_id,
-        company_id,
-        status
-      FROM subscription_requests
-      WHERE request_id = $1
-      FOR UPDATE
-      `,
-      [requestId]
-    );
-
-    if (requestResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(404).json({
-        message: "Subscription request not found",
-      });
-    }
-
-    const request = requestResult.rows[0];
-
-    if (request.status !== "pending") {
-      await client.query("ROLLBACK");
-
-      return res.status(409).json({
-        message:
-          "This subscription request has already been processed",
-      });
-    }
-
-    // Check existing subscription
-    const existingSubscription = await client.query(
-      `
-      SELECT subscription_id
-      FROM company_subscriptions
-      WHERE company_id = $1
-      FOR UPDATE
-      `,
-      [request.company_id]
-    );
-
-    let subscription;
-
-    if (existingSubscription.rows.length > 0) {
-      // Update existing subscription
-      const updateResult = await client.query(
-        `
-        UPDATE company_subscriptions
-        SET
-          start_date = $1,
-          end_date = $2,
-          status = 'active',
-          updated_at = NOW(),
-          created_by = $3,
-          notes = $4
-        WHERE company_id = $5
-        RETURNING
-          subscription_id,
-          company_id,
-          start_date,
-          end_date,
-          status,
-          created_at,
-          updated_at,
-          created_by,
-          notes
-        `,
-        [
-          startDate,
-          endDate,
-          superAdminId,
-          adminNotes || null,
-          request.company_id,
-        ]
-      );
-
-      subscription = updateResult.rows[0];
-    } else {
-      // Create subscription
-      const insertResult = await client.query(
-        `
         INSERT INTO company_subscriptions (
           company_id,
           start_date,
@@ -723,6 +653,206 @@ export const approveSubscriptionRequest = async (
           updated_at,
           created_by,
           notes
+      `,
+      [
+        companyId,
+        startDate,
+        endDate,
+        superAdminId,
+        notes || null,
+      ]
+    );
+
+    return res.status(201).json({
+      message: "Subscription created successfully",
+      subscription: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Create subscription error:", error);
+
+    // PostgreSQL unique violation
+    if (error.code === "23505") {
+      return res.status(409).json({
+        message:
+          "A subscription already exists for this company.",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to create subscription",
+      error: error.message,
+    });
+  }
+};
+
+// =========================================================
+// 8. SUPER ADMIN
+// APPROVE SUBSCRIPTION REQUEST
+// POST /api/admin/subscriptions/requests/:requestId/approve
+// =========================================================
+
+export const approveSubscriptionRequest = async (
+  req,
+  res
+) => {
+  const client = await db.connect();
+
+  let transactionStarted = false;
+
+  try {
+    const { requestId } = req.params;
+
+    const {
+      startDate,
+      endDate,
+      adminNotes,
+    } = req.body;
+
+    const superAdminId = req.user?.user_id;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        message: "Start date and end date are required",
+      });
+    }
+
+    if (!isDateRangeValid(startDate, endDate)) {
+      return res.status(400).json({
+        message:
+          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    // ---------------------------------------------------------
+    // Lock and get request
+    // ---------------------------------------------------------
+
+    const requestResult = await client.query(
+      `
+        SELECT
+          request_id,
+          company_id,
+          status
+        FROM subscription_requests
+        WHERE request_id = $1
+        FOR UPDATE
+      `,
+      [requestId]
+    );
+
+    if (requestResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        message: "Subscription request not found",
+      });
+    }
+
+    const request = requestResult.rows[0];
+
+    if (request.status !== "pending") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        message:
+          "This subscription request has already been processed",
+      });
+    }
+
+    // ---------------------------------------------------------
+    // Lock existing subscription
+    // ---------------------------------------------------------
+
+    const existingSubscription = await client.query(
+      `
+        SELECT
+          subscription_id
+        FROM company_subscriptions
+        WHERE company_id = $1
+        FOR UPDATE
+      `,
+      [request.company_id]
+    );
+
+    let subscription;
+
+    // ---------------------------------------------------------
+    // Update existing subscription
+    // ---------------------------------------------------------
+
+    if (existingSubscription.rows.length > 0) {
+      const updateResult = await client.query(
+        `
+          UPDATE company_subscriptions
+          SET
+            start_date = $1,
+            end_date = $2,
+            status = 'active',
+            updated_at = NOW(),
+            created_by = $3,
+            notes = $4
+          WHERE company_id = $5
+          RETURNING
+            subscription_id,
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_at,
+            updated_at,
+            created_by,
+            notes
+        `,
+        [
+          startDate,
+          endDate,
+          superAdminId,
+          adminNotes || null,
+          request.company_id,
+        ]
+      );
+
+      subscription = updateResult.rows[0];
+    }
+
+    // ---------------------------------------------------------
+    // Create new subscription
+    // ---------------------------------------------------------
+
+    else {
+      const insertResult = await client.query(
+        `
+          INSERT INTO company_subscriptions (
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_by,
+            notes
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            'active',
+            $4,
+            $5
+          )
+          RETURNING
+            subscription_id,
+            company_id,
+            start_date,
+            end_date,
+            status,
+            created_at,
+            updated_at,
+            created_by,
+            notes
         `,
         [
           request.company_id,
@@ -736,18 +866,21 @@ export const approveSubscriptionRequest = async (
       subscription = insertResult.rows[0];
     }
 
-    // Update request
+    // ---------------------------------------------------------
+    // Mark request as approved
+    // ---------------------------------------------------------
+
     await client.query(
       `
-      UPDATE subscription_requests
-      SET
-        status = 'approved',
-        processed_by = $1,
-        processed_at = NOW(),
-        start_date = $2,
-        end_date = $3,
-        admin_notes = $4
-      WHERE request_id = $5
+        UPDATE subscription_requests
+        SET
+          status = 'approved',
+          processed_by = $1,
+          processed_at = NOW(),
+          start_date = $2,
+          end_date = $3,
+          admin_notes = $4
+        WHERE request_id = $5
       `,
       [
         superAdminId,
@@ -759,6 +892,7 @@ export const approveSubscriptionRequest = async (
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(200).json({
       message:
@@ -766,12 +900,28 @@ export const approveSubscriptionRequest = async (
       subscription,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Rollback error:",
+          rollbackError
+        );
+      }
+    }
 
     console.error(
       "Approve subscription request error:",
       error
     );
+
+    if (error.code === "23505") {
+      return res.status(409).json({
+        message:
+          "A subscription already exists for this company.",
+      });
+    }
 
     return res.status(500).json({
       message:
@@ -782,7 +932,6 @@ export const approveSubscriptionRequest = async (
     client.release();
   }
 };
-
 
 // =========================================================
 // 9. SUPER ADMIN
@@ -799,15 +948,20 @@ export const rejectSubscriptionRequest = async (
 
     const { adminNotes } = req.body;
 
-    const superAdminId = req.user.user_id;
+    const superAdminId = req.user?.user_id;
+
+    // ---------------------------------------------------------
+    // Check request
+    // ---------------------------------------------------------
 
     const requestResult = await db.query(
       `
-      SELECT
-        request_id,
-        status
-      FROM subscription_requests
-      WHERE request_id = $1
+        SELECT
+          request_id,
+          company_id,
+          status
+        FROM subscription_requests
+        WHERE request_id = $1
       `,
       [requestId]
     );
@@ -825,22 +979,26 @@ export const rejectSubscriptionRequest = async (
       });
     }
 
+    // ---------------------------------------------------------
+    // Reject request
+    // ---------------------------------------------------------
+
     const result = await db.query(
       `
-      UPDATE subscription_requests
-      SET
-        status = 'rejected',
-        processed_by = $1,
-        processed_at = NOW(),
-        admin_notes = $2
-      WHERE request_id = $3
-      RETURNING
-        request_id,
-        company_id,
-        status,
-        processed_by,
-        processed_at,
-        admin_notes
+        UPDATE subscription_requests
+        SET
+          status = 'rejected',
+          processed_by = $1,
+          processed_at = NOW(),
+          admin_notes = $2
+        WHERE request_id = $3
+        RETURNING
+          request_id,
+          company_id,
+          status,
+          processed_by,
+          processed_at,
+          admin_notes
       `,
       [
         superAdminId,
@@ -868,7 +1026,6 @@ export const rejectSubscriptionRequest = async (
   }
 };
 
-
 // =========================================================
 // 10. SUPER ADMIN
 // UPDATE / EXTEND SUBSCRIPTION
@@ -889,20 +1046,26 @@ export const updateSubscription = async (
       notes,
     } = req.body;
 
-    const superAdminId = req.user.user_id;
+    const superAdminId = req.user?.user_id;
 
+    // ---------------------------------------------------------
     // Get current subscription
+    // ---------------------------------------------------------
+
     const existingResult = await db.query(
       `
-      SELECT
-        subscription_id,
-        company_id,
-        start_date,
-        end_date,
-        status,
-        notes
-      FROM company_subscriptions
-      WHERE subscription_id = $1
+        SELECT
+          subscription_id,
+          company_id,
+          start_date,
+          end_date,
+          status,
+          created_at,
+          updated_at,
+          created_by,
+          notes
+        FROM company_subscriptions
+        WHERE subscription_id = $1
       `,
       [subscriptionId]
     );
@@ -915,11 +1078,17 @@ export const updateSubscription = async (
 
     const existing = existingResult.rows[0];
 
+    // ---------------------------------------------------------
+    // Use existing values when not provided
+    // ---------------------------------------------------------
+
     const newStartDate =
-      startDate || existing.start_date;
+      startDate ||
+      String(existing.start_date).slice(0, 10);
 
     const newEndDate =
-      endDate || existing.end_date;
+      endDate ||
+      String(existing.end_date).slice(0, 10);
 
     const newStatus =
       status || existing.status;
@@ -929,17 +1098,21 @@ export const updateSubscription = async (
         ? notes
         : existing.notes;
 
+    // ---------------------------------------------------------
     // Validate dates
-    const start = new Date(newStartDate);
-    const end = new Date(newEndDate);
+    // ---------------------------------------------------------
 
-    if (end < start) {
+    if (!isDateRangeValid(newStartDate, newEndDate)) {
       return res.status(400).json({
-        message: "End date cannot be before start date",
+        message:
+          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
       });
     }
 
+    // ---------------------------------------------------------
     // Validate status
+    // ---------------------------------------------------------
+
     const allowedStatuses = [
       "active",
       "expired",
@@ -953,27 +1126,31 @@ export const updateSubscription = async (
       });
     }
 
+    // ---------------------------------------------------------
+    // Update subscription
+    // ---------------------------------------------------------
+
     const result = await db.query(
       `
-      UPDATE company_subscriptions
-      SET
-        start_date = $1,
-        end_date = $2,
-        status = $3,
-        updated_at = NOW(),
-        created_by = $4,
-        notes = $5
-      WHERE subscription_id = $6
-      RETURNING
-        subscription_id,
-        company_id,
-        start_date,
-        end_date,
-        status,
-        created_at,
-        updated_at,
-        created_by,
-        notes
+        UPDATE company_subscriptions
+        SET
+          start_date = $1,
+          end_date = $2,
+          status = $3,
+          updated_at = NOW(),
+          created_by = $4,
+          notes = $5
+        WHERE subscription_id = $6
+        RETURNING
+          subscription_id,
+          company_id,
+          start_date,
+          end_date,
+          status,
+          created_at,
+          updated_at,
+          created_by,
+          notes
       `,
       [
         newStartDate,
@@ -990,7 +1167,10 @@ export const updateSubscription = async (
       subscription: result.rows[0],
     });
   } catch (error) {
-    console.error("Update subscription error:", error);
+    console.error(
+      "Update subscription error:",
+      error
+    );
 
     return res.status(500).json({
       message: "Failed to update subscription",
