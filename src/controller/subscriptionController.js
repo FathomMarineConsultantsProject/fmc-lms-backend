@@ -1052,11 +1052,27 @@ export const updateSubscription = async (req, res) => {
       action,
       startDate,
       endDate,
-      status,
       notes,
     } = req.body;
 
     const superAdminId = req.user?.user_id;
+
+    // --------------------------------------------------
+    // Validate action
+    // --------------------------------------------------
+
+    const allowedActions = [
+      "start",
+      "stop",
+      "timespan",
+    ];
+
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({
+        message:
+          "Invalid action. Allowed values: start, stop, timespan",
+      });
+    }
 
     // --------------------------------------------------
     // Get existing subscription
@@ -1107,138 +1123,153 @@ export const updateSubscription = async (req, res) => {
         ? notes
         : existing.notes;
 
-    // --------------------------------------------------
-    // EXTEND
-    // --------------------------------------------------
+    // ==================================================
+    // START
+    // ==================================================
 
-    if (action === "extend") {
-      if (!endDate) {
-        return res.status(400).json({
-          message:
-            "End date is required to extend subscription.",
-        });
-      }
+    if (action === "start") {
+      /*
+       * Start does NOT validate request dates.
+       *
+       * It simply activates the existing subscription.
+       */
 
-      newEndDate = String(endDate).slice(0, 10);
-
+      newStartDate = existingStartDate;
+      newEndDate = existingEndDate;
       newStatus = "active";
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // STOP
-    // --------------------------------------------------
+    // ==================================================
 
     else if (action === "stop") {
+      /*
+       * Stop does NOT validate dates.
+       *
+       * Existing dates are preserved.
+       */
+
       newStartDate = existingStartDate;
       newEndDate = existingEndDate;
-
       newStatus = "cancelled";
     }
 
-    // --------------------------------------------------
-    // RESUME
-    // --------------------------------------------------
+    // ==================================================
+    // TIMESPAN
+    // ==================================================
 
-    else if (action === "resume") {
-      newStartDate =
-        startDate
-          ? String(startDate).slice(0, 10)
-          : existingStartDate;
+    else if (action === "timespan") {
+      /*
+       * Timespan is the ONLY action that requires
+       * startDate and endDate.
+       */
 
-      newEndDate =
-        endDate
-          ? String(endDate).slice(0, 10)
-          : existingEndDate;
+      if (!startDate || !endDate) {
+        return res.status(400).json({
+          message:
+            "Start date and end date are required for timespan.",
+        });
+      }
 
+      const newStartDateValue =
+        String(startDate).trim();
+
+      const newEndDateValue =
+        String(endDate).trim();
+
+      // ----------------------------------------------
+      // Strict YYYY-MM-DD validation
+      // ----------------------------------------------
+
+      const dateRegex =
+        /^\d{4}-\d{2}-\d{2}$/;
+
+      if (
+        !dateRegex.test(newStartDateValue) ||
+        !dateRegex.test(newEndDateValue)
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid dates. Dates must use YYYY-MM-DD format.",
+        });
+      }
+
+      // ----------------------------------------------
+      // Validate actual calendar dates
+      // ----------------------------------------------
+
+      const [startYear, startMonth, startDay] =
+        newStartDateValue
+          .split("-")
+          .map(Number);
+
+      const [endYear, endMonth, endDay] =
+        newEndDateValue
+          .split("-")
+          .map(Number);
+
+      const startDateObject = new Date(
+        startYear,
+        startMonth - 1,
+        startDay
+      );
+
+      const endDateObject = new Date(
+        endYear,
+        endMonth - 1,
+        endDay
+      );
+
+      const validStartDate =
+        startDateObject.getFullYear() ===
+          startYear &&
+        startDateObject.getMonth() ===
+          startMonth - 1 &&
+        startDateObject.getDate() ===
+          startDay;
+
+      const validEndDate =
+        endDateObject.getFullYear() ===
+          endYear &&
+        endDateObject.getMonth() ===
+          endMonth - 1 &&
+        endDateObject.getDate() ===
+          endDay;
+
+      if (!validStartDate || !validEndDate) {
+        return res.status(400).json({
+          message:
+            "Invalid dates. Please provide valid calendar dates.",
+        });
+      }
+
+      // ----------------------------------------------
+      // End date cannot be before start date
+      // ----------------------------------------------
+
+      if (
+        endDateObject.getTime() <
+        startDateObject.getTime()
+      ) {
+        return res.status(400).json({
+          message:
+            "End date cannot be before start date.",
+        });
+      }
+
+      newStartDate = newStartDateValue;
+      newEndDate = newEndDateValue;
+
+      /*
+       * Setting a timespan also activates the
+       * subscription.
+       */
       newStatus = "active";
     }
 
     // --------------------------------------------------
-    // BACKWARD COMPATIBILITY
-    // --------------------------------------------------
-
-    else {
-      newStartDate =
-        startDate
-          ? String(startDate).slice(0, 10)
-          : existingStartDate;
-
-      newEndDate =
-        endDate
-          ? String(endDate).slice(0, 10)
-          : existingEndDate;
-
-      newStatus =
-        status || existing.status;
-    }
-
-    // --------------------------------------------------
-    // Validate date format
-    // --------------------------------------------------
-
-    const dateRegex =
-      /^\d{4}-\d{2}-\d{2}$/;
-
-    if (
-      !dateRegex.test(newStartDate) ||
-      !dateRegex.test(newEndDate)
-    ) {
-      return res.status(400).json({
-        message:
-          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
-      });
-    }
-
-    // --------------------------------------------------
-    // Validate actual dates
-    // --------------------------------------------------
-
-    const start = new Date(
-      `${newStartDate}T00:00:00`
-    );
-
-    const end = new Date(
-      `${newEndDate}T00:00:00`
-    );
-
-    if (
-      Number.isNaN(start.getTime()) ||
-      Number.isNaN(end.getTime())
-    ) {
-      return res.status(400).json({
-        message:
-          "Invalid dates. Please provide valid calendar dates.",
-      });
-    }
-
-    if (end < start) {
-      return res.status(400).json({
-        message:
-          "End date cannot be before start date.",
-      });
-    }
-
-    // --------------------------------------------------
-    // Validate status
-    // --------------------------------------------------
-
-    const allowedStatuses = [
-      "active",
-      "expired",
-      "cancelled",
-    ];
-
-    if (
-      !allowedStatuses.includes(newStatus)
-    ) {
-      return res.status(400).json({
-        message:
-          "Invalid status. Allowed values: active, expired, cancelled",
-      });
-    }
-
-    // --------------------------------------------------
-    // Update subscription
+    // Update database
     // --------------------------------------------------
 
     const result = await db.query(
@@ -1277,16 +1308,26 @@ export const updateSubscription = async (req, res) => {
     // Response
     // --------------------------------------------------
 
-    return res.status(200).json({
-      message:
-        action === "extend"
-          ? "Subscription extended successfully"
-          : action === "stop"
-          ? "Subscription stopped successfully"
-          : action === "resume"
-          ? "Subscription resumed successfully"
-          : "Subscription updated successfully",
+    let message =
+      "Subscription updated successfully.";
 
+    if (action === "start") {
+      message =
+        "Subscription started successfully.";
+    }
+
+    if (action === "stop") {
+      message =
+        "Subscription stopped successfully.";
+    }
+
+    if (action === "timespan") {
+      message =
+        "Subscription timespan updated successfully.";
+    }
+
+    return res.status(200).json({
+      message,
       subscription: result.rows[0],
     });
   } catch (error) {
