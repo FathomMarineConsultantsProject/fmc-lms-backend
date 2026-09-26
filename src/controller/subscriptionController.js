@@ -1047,19 +1047,30 @@ export const rejectSubscriptionRequest = async (
 export const updateSubscription = async (req, res) => {
   try {
     const { subscriptionId } = req.params;
-    const { action, startDate, endDate, notes } = req.body;
 
-    const allowedActions = ["pause", "resume", "timespan"];
+    const {
+      action,
+      startDate,
+      endDate,
+      notes,
+    } = req.body;
+
+    const allowedActions = [
+      "pause",
+      "resume",
+      "timespan",
+    ];
 
     if (!allowedActions.includes(action)) {
       return res.status(400).json({
-        message: "Invalid action. Allowed actions: pause, resume, timespan",
+        message:
+          "Invalid action. Allowed actions: pause, resume, timespan",
       });
     }
 
-    // --------------------------------------------------
+    // ================================
     // PAUSE
-    // --------------------------------------------------
+    // ================================
     if (action === "pause") {
       const result = await db.query(
         `
@@ -1100,9 +1111,9 @@ export const updateSubscription = async (req, res) => {
       });
     }
 
-    // --------------------------------------------------
+    // ================================
     // RESUME
-    // --------------------------------------------------
+    // ================================
     if (action === "resume") {
       const result = await db.query(
         `
@@ -1143,43 +1154,21 @@ export const updateSubscription = async (req, res) => {
       });
     }
 
-    // --------------------------------------------------
+    // ================================
     // TIMESPAN
-    // --------------------------------------------------
+    // ================================
     if (action === "timespan") {
       if (!startDate || !endDate) {
         return res.status(400).json({
-          message: "startDate and endDate are required for timespan",
+          message:
+            "startDate and endDate are required for timespan",
         });
       }
 
-      // Strict YYYY-MM-DD validation
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-
-      if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
+      if (!isDateRangeValid(startDate, endDate)) {
         return res.status(400).json({
-          message: "Dates must be in YYYY-MM-DD format",
-        });
-      }
-
-      // Validate that the dates are real calendar dates
-      const start = new Date(`${startDate}T00:00:00Z`);
-      const end = new Date(`${endDate}T00:00:00Z`);
-
-      if (
-        Number.isNaN(start.getTime()) ||
-        Number.isNaN(end.getTime()) ||
-        start.toISOString().slice(0, 10) !== startDate ||
-        end.toISOString().slice(0, 10) !== endDate
-      ) {
-        return res.status(400).json({
-          message: "Invalid startDate or endDate",
-        });
-      }
-
-      if (end < start) {
-        return res.status(400).json({
-          message: "endDate must be greater than or equal to startDate",
+          message:
+            "Invalid dates. Use YYYY-MM-DD and ensure endDate is greater than or equal to startDate.",
         });
       }
 
@@ -1221,12 +1210,16 @@ export const updateSubscription = async (req, res) => {
       }
 
       return res.status(200).json({
-        message: "Subscription timespan updated successfully",
+        message:
+          "Subscription timespan updated successfully",
         subscription: result.rows[0],
       });
     }
   } catch (error) {
-    console.error("Update subscription error:", error);
+    console.error(
+      "Update subscription error:",
+      error
+    );
 
     return res.status(500).json({
       message: "Failed to update subscription",
