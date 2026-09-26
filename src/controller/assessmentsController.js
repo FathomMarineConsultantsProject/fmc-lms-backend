@@ -211,8 +211,8 @@ export const createAssessment = async (req, res) => {
         totalMarks,
         instructions || null,
         normalizeBool(is_published, false),
-        normalizeBool(allow_multiple_attempts, false),
-        max_attempts || 1,
+        normalizeBool(allow_multiple_attempts, true),
+        max_attempts || null,
         normalizeBool(randomize_questions, false),
         normalizeBool(show_result_immediately, true),
         scope.company_id,
@@ -616,9 +616,12 @@ export const updateAssessmentQuestions = async (req, res) => {
 
     await client.query(
       `
-      DELETE FROM assessment_questions
-      WHERE assessment_id = $1
-      `,
+    UPDATE assessment_questions
+    SET is_deleted = true,
+        updated_at = NOW()
+    WHERE assessment_id = $1
+      AND is_deleted = false
+  `,
       [assessmentId]
     );
 
@@ -1034,6 +1037,7 @@ export const startAssessment = async (req, res) => {
 
     const assessmentResult = await db.query(query, params);
 
+    // Assessment not found
     if (assessmentResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -1043,27 +1047,44 @@ export const startAssessment = async (req, res) => {
 
     const assessment = assessmentResult.rows[0];
 
+    // Get previous attempts of this user
     const previousAttempts = await db.query(
       `
       SELECT COUNT(*)::INTEGER AS count
       FROM assessment_attempts
       WHERE assessment_id = $1
-      AND user_id = $2
+        AND user_id = $2
       `,
       [assessmentId, userId]
     );
 
     const attemptCount = previousAttempts.rows[0].count;
 
-    if (!assessment.allow_multiple_attempts && attemptCount >= 1) {
+    // =====================================================
+    // SINGLE ATTEMPT
+    // =====================================================
+    // If multiple attempts are NOT allowed and user
+    // has already attempted the assessment
+    if (
+      !assessment.allow_multiple_attempts &&
+      attemptCount > 0
+    ) {
       return res.status(400).json({
         success: false,
         message: "You have already attempted this assessment",
       });
     }
 
+    // =====================================================
+    // MULTIPLE ATTEMPTS WITH MAXIMUM LIMIT
+    // =====================================================
+    // Example:
+    // max_attempts = 3
+    // attemptCount = 3
+    // => user cannot start another attempt
     if (
       assessment.allow_multiple_attempts &&
+      assessment.max_attempts !== null &&
       attemptCount >= Number(assessment.max_attempts)
     ) {
       return res.status(400).json({
@@ -1072,15 +1093,26 @@ export const startAssessment = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // COUNT QUESTIONS
+    // =====================================================
+
     const questionCountResult = await db.query(
       `
       SELECT COUNT(*)::INTEGER AS total_questions
       FROM assessment_questions
       WHERE assessment_id = $1
-      AND is_deleted = false
+        AND is_deleted = false
       `,
       [assessmentId]
     );
+
+    const totalQuestions =
+      questionCountResult.rows[0].total_questions;
+
+    // =====================================================
+    // CREATE NEW ATTEMPT
+    // =====================================================
 
     const attemptResult = await db.query(
       `
@@ -1091,24 +1123,30 @@ export const startAssessment = async (req, res) => {
         total_questions,
         attempt_number
       )
-      VALUES ($1,$2,'in_progress',$3,$4)
+      VALUES ($1, $2, 'in_progress', $3, $4)
       RETURNING *
       `,
       [
         assessmentId,
         userId,
-        questionCountResult.rows[0].total_questions,
+        totalQuestions,
         attemptCount + 1,
       ]
     );
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.status(201).json({
       success: true,
       message: "Assessment started",
       data: attemptResult.rows[0],
     });
+
   } catch (error) {
     console.error("Start assessment error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to start assessment",
@@ -1714,8 +1752,8 @@ export const createAssessmentFromExcel = async (req, res) => {
         totalMarks,
         instructions || null,
         normalizeBool(is_published === "true" || is_published === true, false),
-        normalizeBool(allow_multiple_attempts === "true" || allow_multiple_attempts === true, false),
-        max_attempts || 1,
+        normalizeBool(allow_multiple_attempts === "true" || allow_multiple_attempts === true, true),
+        max_attempts || null,
         normalizeBool(randomize_questions === "true" || randomize_questions === true, false),
         normalizeBool(show_result_immediately === "true" || show_result_immediately === true, true),
         scope.company_id,
@@ -2614,7 +2652,8 @@ export const startAssessmentAttempt = async (req, res) => {
 
     if (
       assessment.allow_multiple_attempts &&
-      attemptCount >= Number(assessment.max_attempts || 1)
+      assessment.max_attempts !== null &&
+      attemptCount >= Number(assessment.max_attempts)
     ) {
       await client.query("ROLLBACK");
 
@@ -2841,7 +2880,6 @@ export const getAssessmentAttemptQuestions = async (
         ON aq.question_id = aaq.question_id
       WHERE aaq.attempt_id = $1
         AND aq.assessment_id = $2
-        AND aq.is_deleted = false
       ORDER BY aaq.question_order ASC
       `,
       [attemptId, assessmentId]
@@ -2963,7 +3001,6 @@ export const checkAssessmentAttemptAnswer = async (
       WHERE aaq.attempt_id = $1
         AND aaq.question_id = $2
         AND aq.assessment_id = $3
-        AND aq.is_deleted = false
       `,
       [
         attemptId,

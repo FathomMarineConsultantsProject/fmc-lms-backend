@@ -26,6 +26,7 @@ import competancyRoutes from './routes/competancyMatrixRoutes.js'
 import aiAssistant from './routes/aiRoutes.js'
 import dashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
+import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 const app = express();
 
 app.set("trust proxy", 1);
@@ -114,6 +115,7 @@ app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
 
+app.use("/api/subscriptions", subscriptionRoutes);
 /**
  * Unity course progress APIs
  *
