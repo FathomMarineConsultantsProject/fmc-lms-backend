@@ -1058,9 +1058,9 @@ export const updateSubscription = async (req, res) => {
 
     const superAdminId = req.user?.user_id;
 
-    // ---------------------------------------------------------
-    // Get current subscription
-    // ---------------------------------------------------------
+    // --------------------------------------------------
+    // Get existing subscription
+    // --------------------------------------------------
 
     const existingResult = await db.query(
       `
@@ -1088,19 +1088,15 @@ export const updateSubscription = async (req, res) => {
 
     const existing = existingResult.rows[0];
 
-    // ---------------------------------------------------------
-    // Existing values
-    // ---------------------------------------------------------
+    // --------------------------------------------------
+    // Existing dates
+    // --------------------------------------------------
 
     const existingStartDate =
       String(existing.start_date).slice(0, 10);
 
     const existingEndDate =
       String(existing.end_date).slice(0, 10);
-
-    // ---------------------------------------------------------
-    // Determine new values
-    // ---------------------------------------------------------
 
     let newStartDate = existingStartDate;
     let newEndDate = existingEndDate;
@@ -1111,76 +1107,120 @@ export const updateSubscription = async (req, res) => {
         ? notes
         : existing.notes;
 
-    // =========================================================
+    // --------------------------------------------------
     // EXTEND
-    // =========================================================
+    // --------------------------------------------------
 
     if (action === "extend") {
       if (!endDate) {
         return res.status(400).json({
-          message: "End date is required to extend subscription.",
+          message:
+            "End date is required to extend subscription.",
         });
       }
 
-      newEndDate = endDate;
+      newEndDate = String(endDate).slice(0, 10);
+
       newStatus = "active";
     }
 
-    // =========================================================
+    // --------------------------------------------------
     // STOP
-    // =========================================================
+    // --------------------------------------------------
 
     else if (action === "stop") {
-      newStatus = "cancelled";
-
-      // Keep existing dates.
       newStartDate = existingStartDate;
       newEndDate = existingEndDate;
+
+      newStatus = "cancelled";
     }
 
-    // =========================================================
+    // --------------------------------------------------
     // RESUME
-    // =========================================================
+    // --------------------------------------------------
 
     else if (action === "resume") {
       newStartDate =
-        startDate || existingStartDate;
+        startDate
+          ? String(startDate).slice(0, 10)
+          : existingStartDate;
 
       newEndDate =
-        endDate || existingEndDate;
+        endDate
+          ? String(endDate).slice(0, 10)
+          : existingEndDate;
 
       newStatus = "active";
     }
 
-    // =========================================================
-    // Backward-compatible normal update
-    // =========================================================
+    // --------------------------------------------------
+    // BACKWARD COMPATIBILITY
+    // --------------------------------------------------
 
     else {
       newStartDate =
-        startDate || existingStartDate;
+        startDate
+          ? String(startDate).slice(0, 10)
+          : existingStartDate;
 
       newEndDate =
-        endDate || existingEndDate;
+        endDate
+          ? String(endDate).slice(0, 10)
+          : existingEndDate;
 
       newStatus =
         status || existing.status;
     }
 
-    // ---------------------------------------------------------
-    // Validate dates
-    // ---------------------------------------------------------
+    // --------------------------------------------------
+    // Validate date format
+    // --------------------------------------------------
 
-    if (!isDateRangeValid(newStartDate, newEndDate)) {
+    const dateRegex =
+      /^\d{4}-\d{2}-\d{2}$/;
+
+    if (
+      !dateRegex.test(newStartDate) ||
+      !dateRegex.test(newEndDate)
+    ) {
       return res.status(400).json({
         message:
           "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
       });
     }
 
-    // ---------------------------------------------------------
+    // --------------------------------------------------
+    // Validate actual dates
+    // --------------------------------------------------
+
+    const start = new Date(
+      `${newStartDate}T00:00:00`
+    );
+
+    const end = new Date(
+      `${newEndDate}T00:00:00`
+    );
+
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime())
+    ) {
+      return res.status(400).json({
+        message:
+          "Invalid dates. Please provide valid calendar dates.",
+      });
+    }
+
+    if (end < start) {
+      return res.status(400).json({
+        message:
+          "End date cannot be before start date.",
+      });
+    }
+
+    // --------------------------------------------------
     // Validate status
-    // ---------------------------------------------------------
+    // --------------------------------------------------
 
     const allowedStatuses = [
       "active",
@@ -1188,16 +1228,18 @@ export const updateSubscription = async (req, res) => {
       "cancelled",
     ];
 
-    if (!allowedStatuses.includes(newStatus)) {
+    if (
+      !allowedStatuses.includes(newStatus)
+    ) {
       return res.status(400).json({
         message:
           "Invalid status. Allowed values: active, expired, cancelled",
       });
     }
 
-    // ---------------------------------------------------------
+    // --------------------------------------------------
     // Update subscription
-    // ---------------------------------------------------------
+    // --------------------------------------------------
 
     const result = await db.query(
       `
@@ -1231,8 +1273,20 @@ export const updateSubscription = async (req, res) => {
       ]
     );
 
+    // --------------------------------------------------
+    // Response
+    // --------------------------------------------------
+
     return res.status(200).json({
-      message: "Subscription updated successfully",
+      message:
+        action === "extend"
+          ? "Subscription extended successfully"
+          : action === "stop"
+          ? "Subscription stopped successfully"
+          : action === "resume"
+          ? "Subscription resumed successfully"
+          : "Subscription updated successfully",
+
       subscription: result.rows[0],
     });
   } catch (error) {
@@ -1242,7 +1296,8 @@ export const updateSubscription = async (req, res) => {
     );
 
     return res.status(500).json({
-      message: "Failed to update subscription",
+      message:
+        "Failed to update subscription",
       error: error.message,
     });
   }
