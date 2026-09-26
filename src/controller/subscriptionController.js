@@ -77,7 +77,15 @@ export const getSubscriptionStatus = async (req, res) => {
           created_at,
           updated_at,
           created_by,
-          notes
+          notes,
+
+          CASE
+            WHEN status = 'cancelled' THEN 'cancelled'
+            WHEN CURRENT_DATE < start_date THEN 'not_started'
+            WHEN CURRENT_DATE > end_date THEN 'expired'
+            ELSE 'active'
+          END AS calculated_status
+
         FROM company_subscriptions
         WHERE company_id = $1
         LIMIT 1
@@ -99,14 +107,11 @@ export const getSubscriptionStatus = async (req, res) => {
 
     const subscription = result.rows[0];
 
-    const startDate = String(subscription.start_date).slice(0, 10);
-    const endDate = String(subscription.end_date).slice(0, 10);
+    // ---------------------------------------------------------
+    // Calculate current subscription status
+    // ---------------------------------------------------------
 
-    const currentStatus = getSubscriptionStatusFromDates(
-      startDate,
-      endDate,
-      subscription.status
-    );
+    const currentStatus = subscription.calculated_status;
 
     const hasAccess = currentStatus === "active";
 
@@ -146,6 +151,10 @@ export const getSubscriptionStatus = async (req, res) => {
       );
     }
 
+    // ---------------------------------------------------------
+    // Response
+    // ---------------------------------------------------------
+
     return res.status(200).json({
       hasAccess,
       status: currentStatus,
@@ -163,7 +172,10 @@ export const getSubscriptionStatus = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get subscription status error:", error);
+    console.error(
+      "Get subscription status error:",
+      error
+    );
 
     return res.status(500).json({
       message: "Failed to get subscription status",
