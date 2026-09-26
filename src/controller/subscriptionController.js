@@ -1,4 +1,4 @@
-import pool from "../config/db.js";
+import { db } from "../db.js";
 
 // =========================================================
 // 1. GET SUBSCRIPTION STATUS
@@ -15,7 +15,7 @@ export const getSubscriptionStatus = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       SELECT
         subscription_id,
@@ -75,7 +75,7 @@ export const getSubscriptionStatus = async (req, res) => {
 
       // Keep database status synchronized
       if (subscription.status !== "expired") {
-        await pool.query(
+        await db.query(
           `
           UPDATE company_subscriptions
           SET
@@ -95,7 +95,7 @@ export const getSubscriptionStatus = async (req, res) => {
 
       // Keep database status synchronized
       if (subscription.status !== "active") {
-        await pool.query(
+        await db.query(
           `
           UPDATE company_subscriptions
           SET
@@ -148,7 +148,7 @@ export const getMySubscription = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       SELECT
         subscription_id,
@@ -234,7 +234,7 @@ export const requestSubscription = async (req, res) => {
     }
 
     // Check for an existing pending request
-    const pendingRequest = await pool.query(
+    const pendingRequest = await db.query(
       `
       SELECT
         request_id,
@@ -255,7 +255,7 @@ export const requestSubscription = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       INSERT INTO subscription_requests (
         company_id,
@@ -303,7 +303,7 @@ export const getMySubscriptionRequest = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       SELECT
         request_id,
@@ -382,7 +382,7 @@ export const getSubscriptionRequests = async (req, res) => {
       ORDER BY sr.requested_at DESC
     `;
 
-    const result = await pool.query(query, values);
+    const result = await db.query(query, values);
 
     return res.status(200).json({
       requests: result.rows,
@@ -408,7 +408,7 @@ export const getCompanySubscription = async (req, res) => {
   try {
     const { companyId } = req.params;
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       SELECT
         cs.subscription_id,
@@ -485,7 +485,7 @@ export const createSubscription = async (req, res) => {
     }
 
     // Verify company exists
-    const companyResult = await pool.query(
+    const companyResult = await db.query(
       `
       SELECT company_id
       FROM company
@@ -501,7 +501,7 @@ export const createSubscription = async (req, res) => {
     }
 
     // Check if subscription already exists
-    const existingSubscription = await pool.query(
+    const existingSubscription = await db.query(
       `
       SELECT subscription_id
       FROM company_subscriptions
@@ -520,7 +520,7 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       INSERT INTO company_subscriptions (
         company_id,
@@ -583,7 +583,7 @@ export const approveSubscriptionRequest = async (
   req,
   res
 ) => {
-  const client = await pool.connect();
+  const client = await db.connect();
 
   try {
     const { requestId } = req.params;
@@ -801,7 +801,7 @@ export const rejectSubscriptionRequest = async (
 
     const superAdminId = req.user.user_id;
 
-    const requestResult = await pool.query(
+    const requestResult = await db.query(
       `
       SELECT
         request_id,
@@ -825,7 +825,7 @@ export const rejectSubscriptionRequest = async (
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       UPDATE subscription_requests
       SET
@@ -892,7 +892,7 @@ export const updateSubscription = async (
     const superAdminId = req.user.user_id;
 
     // Get current subscription
-    const existingResult = await pool.query(
+    const existingResult = await db.query(
       `
       SELECT
         subscription_id,
@@ -953,7 +953,7 @@ export const updateSubscription = async (
       });
     }
 
-    const result = await pool.query(
+    const result = await db.query(
       `
       UPDATE company_subscriptions
       SET
