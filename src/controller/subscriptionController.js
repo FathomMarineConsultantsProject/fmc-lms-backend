@@ -73,13 +73,20 @@ export const getSubscriptionStatus = async (req, res) => {
             SELECT
                 subscription_id,
                 company_id,
-                start_date,
-                end_date,
+
+                -- Return PostgreSQL DATE as YYYY-MM-DD string
+                start_date::text AS start_date,
+                end_date::text AS end_date,
+
                 status,
                 created_at,
                 updated_at,
                 created_by,
-                notes
+                notes,
+
+                -- Use database current date
+                CURRENT_DATE::text AS current_date
+
             FROM company_subscriptions
             WHERE company_id = $1
             LIMIT 1
@@ -102,12 +109,12 @@ export const getSubscriptionStatus = async (req, res) => {
         const subscription = result.rows[0];
 
         // ---------------------------------------------------------
-        // NORMALIZE DATES
+        // NORMALIZE VALUES
         // ---------------------------------------------------------
 
-        const today = new Date()
-            .toISOString()
-            .slice(0, 10);
+        const today = String(
+            subscription.current_date
+        ).slice(0, 10);
 
         const startDate = String(
             subscription.start_date
@@ -131,14 +138,17 @@ export const getSubscriptionStatus = async (req, res) => {
         if (today > endDate) {
             currentStatus = "expired";
         }
+
         // Manually paused
         else if (databaseStatus === "paused") {
             currentStatus = "paused";
         }
+
         // Already marked expired
         else if (databaseStatus === "expired") {
             currentStatus = "expired";
         }
+
         // Otherwise active
         else {
             currentStatus = "active";
@@ -174,18 +184,18 @@ export const getSubscriptionStatus = async (req, res) => {
         }
 
         // ---------------------------------------------------------
-        // DEBUG LOG
+        // DEBUG
         // ---------------------------------------------------------
 
-        console.log("SUBSCRIPTION STATUS CHECK:", {
-            companyId,
-            today,
-            startDate,
-            endDate,
-            databaseStatus,
-            currentStatus,
-            hasAccess,
-        });
+        console.log("=== SUBSCRIPTION STATUS CHECK ===");
+        console.log("Company ID:", companyId);
+        console.log("Today:", today);
+        console.log("Start Date:", startDate);
+        console.log("End Date:", endDate);
+        console.log("Database Status:", databaseStatus);
+        console.log("Current Status:", currentStatus);
+        console.log("Has Access:", hasAccess);
+        console.log("=================================");
 
         // ---------------------------------------------------------
         // RESPONSE
