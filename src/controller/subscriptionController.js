@@ -5,48 +5,50 @@ import { db } from "../db.js";
 // =========================================================
 
 const isValidDate = (date) => {
-  if (!date || typeof date !== "string") {
-    return false;
-  }
+    if (!date || typeof date !== "string") {
+        return false;
+    }
 
-  // Expected format: YYYY-MM-DD
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return false;
-  }
+    // Expected format: YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return false;
+    }
 
-  const parsed = new Date(`${date}T00:00:00Z`);
+    const parsed = new Date(`${date}T00:00:00Z`);
 
-  return !Number.isNaN(parsed.getTime());
+    return !Number.isNaN(parsed.getTime());
 };
 
 const isDateRangeValid = (startDate, endDate) => {
-  if (!isValidDate(startDate) || !isValidDate(endDate)) {
-    return false;
-  }
+    if (!isValidDate(startDate) || !isValidDate(endDate)) {
+        return false;
+    }
 
-  return startDate <= endDate;
+    return startDate <= endDate;
 };
 
 const getSubscriptionStatusFromDates = (
-  startDate,
-  endDate,
-  databaseStatus
+    startDate,
+    endDate,
+    databaseStatus
 ) => {
-  if (databaseStatus === "cancelled") {
-    return "cancelled";
-  }
+    const today = new Date().toISOString().slice(0, 10);
 
-  const today = new Date().toISOString().slice(0, 10);
+    // Date expiration has highest priority
+    if (today > endDate) {
+        return "expired";
+    }
 
-  if (today < startDate) {
-    return "not_started";
-  }
+    // Explicit database states
+    if (databaseStatus === "expired") {
+        return "expired";
+    }
 
-  if (today > endDate) {
-    return "expired";
-  }
+    if (databaseStatus === "paused") {
+        return "paused";
+    }
 
-  return "active";
+    return "active";
 };
 
 // =========================================================
@@ -55,19 +57,19 @@ const getSubscriptionStatusFromDates = (
 // =========================================================
 
 export const getSubscriptionStatus = async (req, res) => {
-  try {
-    const companyId = req.user?.company_id
-      ? String(req.user.company_id)
-      : null;
+    try {
+        const companyId = req.user?.company_id
+            ? String(req.user.company_id)
+            : null;
 
-    if (!companyId) {
-      return res.status(400).json({
-        message: "Company ID not found",
-      });
-    }
+        if (!companyId) {
+            return res.status(400).json({
+                message: "Company ID not found",
+            });
+        }
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         SELECT
           subscription_id,
           company_id,
@@ -80,9 +82,9 @@ export const getSubscriptionStatus = async (req, res) => {
           notes,
 
           CASE
-            WHEN status = 'cancelled' THEN 'cancelled'
-            WHEN CURRENT_DATE < start_date THEN 'not_started'
             WHEN CURRENT_DATE > end_date THEN 'expired'
+            WHEN status = 'expired' THEN 'expired'
+            WHEN status = 'paused' THEN 'paused'
             ELSE 'active'
           END AS calculated_status
 
@@ -90,98 +92,90 @@ export const getSubscriptionStatus = async (req, res) => {
         WHERE company_id = $1
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    // ---------------------------------------------------------
-    // No subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // No subscription
+        // ---------------------------------------------------------
 
-    if (result.rows.length === 0) {
-      return res.status(200).json({
-        hasAccess: false,
-        status: "not_subscribed",
-        subscription: null,
-      });
-    }
+        if (result.rows.length === 0) {
+            return res.status(200).json({
+                hasAccess: false,
+                status: "not_subscribed",
+                subscription: null,
+            });
+        }
 
-    const subscription = result.rows[0];
+        const subscription = result.rows[0];
 
-    // ---------------------------------------------------------
-    // Calculate current subscription status
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Calculate current subscription status
+        // ---------------------------------------------------------
 
-    const currentStatus = subscription.calculated_status;
+        const currentStatus = subscription.calculated_status;
 
-    const hasAccess = currentStatus === "active";
+        const today = new Date().toISOString().slice(0, 10);
 
-    // ---------------------------------------------------------
-    // Keep database status synchronized
-    // ---------------------------------------------------------
+        const startDate = String(subscription.start_date).slice(0, 10);
+        const endDate = String(subscription.end_date).slice(0, 10);
 
-    if (
-      currentStatus === "expired" &&
-      subscription.status !== "expired"
-    ) {
-      await db.query(
-        `
+        const hasAccess =
+            currentStatus === "active" &&
+            today >= startDate &&
+            today <= endDate;
+
+        // ---------------------------------------------------------
+        // Keep expired status synchronized
+        // ---------------------------------------------------------
+
+        if (
+            currentStatus === "expired" &&
+            subscription.status !== "expired"
+        ) {
+            await db.query(
+                `
           UPDATE company_subscriptions
           SET
             status = 'expired',
             updated_at = NOW()
           WHERE subscription_id = $1
         `,
-        [subscription.subscription_id]
-      );
+                [subscription.subscription_id]
+            );
+        }
+
+        // ---------------------------------------------------------
+        // Response
+        // ---------------------------------------------------------
+
+        return res.status(200).json({
+            hasAccess,
+            status: currentStatus,
+
+            subscription: {
+                subscriptionId: subscription.subscription_id,
+                companyId: subscription.company_id,
+                startDate: subscription.start_date,
+                endDate: subscription.end_date,
+                status: currentStatus,
+                createdAt: subscription.created_at,
+                updatedAt: subscription.updated_at,
+                createdBy: subscription.created_by,
+                notes: subscription.notes,
+            },
+        });
+    } catch (error) {
+        console.error(
+            "Get subscription status error:",
+            error
+        );
+
+        return res.status(500).json({
+            message: "Failed to get subscription status",
+            error: error.message,
+        });
     }
-
-    if (
-      currentStatus === "active" &&
-      subscription.status === "expired"
-    ) {
-      await db.query(
-        `
-          UPDATE company_subscriptions
-          SET
-            status = 'active',
-            updated_at = NOW()
-          WHERE subscription_id = $1
-        `,
-        [subscription.subscription_id]
-      );
-    }
-
-    // ---------------------------------------------------------
-    // Response
-    // ---------------------------------------------------------
-
-    return res.status(200).json({
-      hasAccess,
-      status: currentStatus,
-
-      subscription: {
-        subscriptionId: subscription.subscription_id,
-        companyId: subscription.company_id,
-        startDate: subscription.start_date,
-        endDate: subscription.end_date,
-        status: currentStatus,
-        createdAt: subscription.created_at,
-        updatedAt: subscription.updated_at,
-        createdBy: subscription.created_by,
-        notes: subscription.notes,
-      },
-    });
-  } catch (error) {
-    console.error(
-      "Get subscription status error:",
-      error
-    );
-
-    return res.status(500).json({
-      message: "Failed to get subscription status",
-      error: error.message,
-    });
-  }
 };
 
 // =========================================================
@@ -190,19 +184,19 @@ export const getSubscriptionStatus = async (req, res) => {
 // =========================================================
 
 export const getMySubscription = async (req, res) => {
-  try {
-    const companyId = req.user?.company_id
-      ? String(req.user.company_id)
-      : null;
+    try {
+        const companyId = req.user?.company_id
+            ? String(req.user.company_id)
+            : null;
 
-    if (!companyId) {
-      return res.status(400).json({
-        message: "Company ID not found",
-      });
-    }
+        if (!companyId) {
+            return res.status(400).json({
+                message: "Company ID not found",
+            });
+        }
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         SELECT
           subscription_id,
           company_id,
@@ -217,64 +211,64 @@ export const getMySubscription = async (req, res) => {
         WHERE company_id = $1
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (result.rows.length === 0) {
-      return res.status(200).json({
-        subscription: null,
-      });
-    }
+        if (result.rows.length === 0) {
+            return res.status(200).json({
+                subscription: null,
+            });
+        }
 
-    const subscription = result.rows[0];
+        const subscription = result.rows[0];
 
-    const startDate = String(subscription.start_date).slice(0, 10);
-    const endDate = String(subscription.end_date).slice(0, 10);
+        const startDate = String(subscription.start_date).slice(0, 10);
+        const endDate = String(subscription.end_date).slice(0, 10);
 
-    const currentStatus = getSubscriptionStatusFromDates(
-      startDate,
-      endDate,
-      subscription.status
-    );
+        const currentStatus = getSubscriptionStatusFromDates(
+            startDate,
+            endDate,
+            subscription.status
+        );
 
-    // Keep expired status synchronized
-    if (
-      currentStatus === "expired" &&
-      subscription.status !== "expired"
-    ) {
-      await db.query(
-        `
+        // Keep expired status synchronized
+        if (
+            currentStatus === "expired" &&
+            subscription.status !== "expired"
+        ) {
+            await db.query(
+                `
           UPDATE company_subscriptions
           SET
             status = 'expired',
             updated_at = NOW()
           WHERE subscription_id = $1
         `,
-        [subscription.subscription_id]
-      );
+                [subscription.subscription_id]
+            );
+        }
+
+        return res.status(200).json({
+            subscription: {
+                subscriptionId: subscription.subscription_id,
+                companyId: subscription.company_id,
+                startDate: subscription.start_date,
+                endDate: subscription.end_date,
+                status: currentStatus,
+                createdAt: subscription.created_at,
+                updatedAt: subscription.updated_at,
+                createdBy: subscription.created_by,
+                notes: subscription.notes,
+            },
+        });
+    } catch (error) {
+        console.error("Get my subscription error:", error);
+
+        return res.status(500).json({
+            message: "Failed to get subscription",
+            error: error.message,
+        });
     }
-
-    return res.status(200).json({
-      subscription: {
-        subscriptionId: subscription.subscription_id,
-        companyId: subscription.company_id,
-        startDate: subscription.start_date,
-        endDate: subscription.end_date,
-        status: currentStatus,
-        createdAt: subscription.created_at,
-        updatedAt: subscription.updated_at,
-        createdBy: subscription.created_by,
-        notes: subscription.notes,
-      },
-    });
-  } catch (error) {
-    console.error("Get my subscription error:", error);
-
-    return res.status(500).json({
-      message: "Failed to get subscription",
-      error: error.message,
-    });
-  }
 };
 
 // =========================================================
@@ -283,31 +277,31 @@ export const getMySubscription = async (req, res) => {
 // =========================================================
 
 export const requestSubscription = async (req, res) => {
-  try {
-    const companyId = req.user?.company_id
-      ? String(req.user.company_id)
-      : null;
+    try {
+        const companyId = req.user?.company_id
+            ? String(req.user.company_id)
+            : null;
 
-    const userId = req.user?.user_id;
+        const userId = req.user?.user_id;
 
-    if (!companyId) {
-      return res.status(400).json({
-        message: "Company ID not found",
-      });
-    }
+        if (!companyId) {
+            return res.status(400).json({
+                message: "Company ID not found",
+            });
+        }
 
-    if (!userId) {
-      return res.status(400).json({
-        message: "User ID not found",
-      });
-    }
+        if (!userId) {
+            return res.status(400).json({
+                message: "User ID not found",
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Check existing pending request
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Check existing pending request
+        // ---------------------------------------------------------
 
-    const pendingRequest = await db.query(
-      `
+        const pendingRequest = await db.query(
+            `
         SELECT
           request_id,
           company_id,
@@ -319,22 +313,22 @@ export const requestSubscription = async (req, res) => {
           AND status = 'pending'
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (pendingRequest.rows.length > 0) {
-      return res.status(409).json({
-        message: "A subscription request is already pending",
-        request: pendingRequest.rows[0],
-      });
-    }
+        if (pendingRequest.rows.length > 0) {
+            return res.status(409).json({
+                message: "A subscription request is already pending",
+                request: pendingRequest.rows[0],
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Create request
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Create request
+        // ---------------------------------------------------------
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         INSERT INTO subscription_requests (
           company_id,
           requested_by,
@@ -348,21 +342,21 @@ export const requestSubscription = async (req, res) => {
           requested_at,
           status
       `,
-      [companyId, userId]
-    );
+            [companyId, userId]
+        );
 
-    return res.status(201).json({
-      message: "Subscription renewal request submitted successfully",
-      request: result.rows[0],
-    });
-  } catch (error) {
-    console.error("Request subscription error:", error);
+        return res.status(201).json({
+            message: "Subscription renewal request submitted successfully",
+            request: result.rows[0],
+        });
+    } catch (error) {
+        console.error("Request subscription error:", error);
 
-    return res.status(500).json({
-      message: "Failed to submit subscription request",
-      error: error.message,
-    });
-  }
+        return res.status(500).json({
+            message: "Failed to submit subscription request",
+            error: error.message,
+        });
+    }
 };
 
 // =========================================================
@@ -371,19 +365,19 @@ export const requestSubscription = async (req, res) => {
 // =========================================================
 
 export const getMySubscriptionRequest = async (req, res) => {
-  try {
-    const companyId = req.user?.company_id
-      ? String(req.user.company_id)
-      : null;
+    try {
+        const companyId = req.user?.company_id
+            ? String(req.user.company_id)
+            : null;
 
-    if (!companyId) {
-      return res.status(400).json({
-        message: "Company ID not found",
-      });
-    }
+        if (!companyId) {
+            return res.status(400).json({
+                message: "Company ID not found",
+            });
+        }
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         SELECT
           request_id,
           company_id,
@@ -400,26 +394,29 @@ export const getMySubscriptionRequest = async (req, res) => {
         ORDER BY requested_at DESC
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (result.rows.length === 0) {
-      return res.status(200).json({
-        request: null,
-      });
+        if (result.rows.length === 0) {
+            return res.status(200).json({
+                request: null,
+            });
+        }
+
+        return res.status(200).json({
+            request: result.rows[0],
+        });
+    } catch (error) {
+        console.error(
+            "Get my subscription request error:",
+            error
+        );
+
+        return res.status(500).json({
+            message: "Failed to get subscription request",
+            error: error.message,
+        });
     }
-
-    return res.status(200).json({
-      request: result.rows[0],
-    });
-  } catch (error) {
-    console.error("Get my subscription request error:", error);
-
-    return res.status(500).json({
-      message: "Failed to get subscription request",
-      error: error.message,
-    });
-  }
 };
 
 // =========================================================
@@ -429,23 +426,23 @@ export const getMySubscriptionRequest = async (req, res) => {
 // =========================================================
 
 export const getSubscriptionRequests = async (req, res) => {
-  try {
-    const { status } = req.query;
+    try {
+        const { status } = req.query;
 
-    const allowedStatuses = [
-      "pending",
-      "approved",
-      "rejected",
-    ];
+        const allowedStatuses = [
+            "pending",
+            "approved",
+            "rejected",
+        ];
 
-    if (status && !allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message:
-          "Invalid status. Allowed values: pending, approved, rejected",
-      });
-    }
+        if (status && !allowedStatuses.includes(status)) {
+            return res.status(400).json({
+                message:
+                    "Invalid status. Allowed values: pending, approved, rejected",
+            });
+        }
 
-    let query = `
+        let query = `
       SELECT
         sr.request_id,
         sr.company_id,
@@ -463,30 +460,33 @@ export const getSubscriptionRequests = async (req, res) => {
         ON c.company_id = sr.company_id
     `;
 
-    const values = [];
+        const values = [];
 
-    if (status) {
-      query += ` WHERE sr.status = $1`;
-      values.push(status);
-    }
+        if (status) {
+            query += ` WHERE sr.status = $1`;
+            values.push(status);
+        }
 
-    query += `
+        query += `
       ORDER BY sr.requested_at DESC
     `;
 
-    const result = await db.query(query, values);
+        const result = await db.query(query, values);
 
-    return res.status(200).json({
-      requests: result.rows,
-    });
-  } catch (error) {
-    console.error("Get subscription requests error:", error);
+        return res.status(200).json({
+            requests: result.rows,
+        });
+    } catch (error) {
+        console.error(
+            "Get subscription requests error:",
+            error
+        );
 
-    return res.status(500).json({
-      message: "Failed to get subscription requests",
-      error: error.message,
-    });
-  }
+        return res.status(500).json({
+            message: "Failed to get subscription requests",
+            error: error.message,
+        });
+    }
 };
 
 // =========================================================
@@ -496,17 +496,17 @@ export const getSubscriptionRequests = async (req, res) => {
 // =========================================================
 
 export const getCompanySubscription = async (req, res) => {
-  try {
-    const { companyId } = req.params;
+    try {
+        const { companyId } = req.params;
 
-    if (!companyId) {
-      return res.status(400).json({
-        message: "Company ID is required",
-      });
-    }
+        if (!companyId) {
+            return res.status(400).json({
+                message: "Company ID is required",
+            });
+        }
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         SELECT
           cs.subscription_id,
           cs.company_id,
@@ -524,40 +524,43 @@ export const getCompanySubscription = async (req, res) => {
         WHERE cs.company_id = $1
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        message: "Subscription not found",
-      });
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Subscription not found",
+            });
+        }
+
+        const subscription = result.rows[0];
+
+        const startDate = String(subscription.start_date).slice(0, 10);
+        const endDate = String(subscription.end_date).slice(0, 10);
+
+        const currentStatus = getSubscriptionStatusFromDates(
+            startDate,
+            endDate,
+            subscription.status
+        );
+
+        return res.status(200).json({
+            subscription: {
+                ...subscription,
+                status: currentStatus,
+            },
+        });
+    } catch (error) {
+        console.error(
+            "Get company subscription error:",
+            error
+        );
+
+        return res.status(500).json({
+            message: "Failed to get company subscription",
+            error: error.message,
+        });
     }
-
-    const subscription = result.rows[0];
-
-    const startDate = String(subscription.start_date).slice(0, 10);
-    const endDate = String(subscription.end_date).slice(0, 10);
-
-    const currentStatus = getSubscriptionStatusFromDates(
-      startDate,
-      endDate,
-      subscription.status
-    );
-
-    return res.status(200).json({
-      subscription: {
-        ...subscription,
-        status: currentStatus,
-      },
-    });
-  } catch (error) {
-    console.error("Get company subscription error:", error);
-
-    return res.status(500).json({
-      message: "Failed to get company subscription",
-      error: error.message,
-    });
-  }
 };
 
 // =========================================================
@@ -567,78 +570,78 @@ export const getCompanySubscription = async (req, res) => {
 // =========================================================
 
 export const createSubscription = async (req, res) => {
-  try {
-    const {
-      companyId,
-      startDate,
-      endDate,
-      notes,
-    } = req.body;
+    try {
+        const {
+            companyId,
+            startDate,
+            endDate,
+            notes,
+        } = req.body;
 
-    const superAdminId = req.user?.user_id;
+        const superAdminId = req.user?.user_id;
 
-    if (!companyId || !startDate || !endDate) {
-      return res.status(400).json({
-        message:
-          "companyId, startDate and endDate are required",
-      });
-    }
+        if (!companyId || !startDate || !endDate) {
+            return res.status(400).json({
+                message:
+                    "companyId, startDate and endDate are required",
+            });
+        }
 
-    if (!isDateRangeValid(startDate, endDate)) {
-      return res.status(400).json({
-        message:
-          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
-      });
-    }
+        if (!isDateRangeValid(startDate, endDate)) {
+            return res.status(400).json({
+                message:
+                    "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Verify company exists
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Verify company exists
+        // ---------------------------------------------------------
 
-    const companyResult = await db.query(
-      `
+        const companyResult = await db.query(
+            `
         SELECT company_id
         FROM company
         WHERE company_id = $1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (companyResult.rows.length === 0) {
-      return res.status(404).json({
-        message: "Company not found",
-      });
-    }
+        if (companyResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Company not found",
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Check existing subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Check existing subscription
+        // ---------------------------------------------------------
 
-    const existingSubscription = await db.query(
-      `
+        const existingSubscription = await db.query(
+            `
         SELECT subscription_id
         FROM company_subscriptions
         WHERE company_id = $1
         LIMIT 1
       `,
-      [companyId]
-    );
+            [companyId]
+        );
 
-    if (existingSubscription.rows.length > 0) {
-      return res.status(409).json({
-        message:
-          "Subscription already exists for this company. Use the update/extend API.",
-        subscriptionId:
-          existingSubscription.rows[0].subscription_id,
-      });
-    }
+        if (existingSubscription.rows.length > 0) {
+            return res.status(409).json({
+                message:
+                    "Subscription already exists for this company. Use the update/extend API.",
+                subscriptionId:
+                    existingSubscription.rows[0].subscription_id,
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Create subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Create subscription
+        // ---------------------------------------------------------
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         INSERT INTO company_subscriptions (
           company_id,
           start_date,
@@ -666,35 +669,38 @@ export const createSubscription = async (req, res) => {
           created_by,
           notes
       `,
-      [
-        companyId,
-        startDate,
-        endDate,
-        superAdminId,
-        notes || null,
-      ]
-    );
+            [
+                companyId,
+                startDate,
+                endDate,
+                superAdminId,
+                notes || null,
+            ]
+        );
 
-    return res.status(201).json({
-      message: "Subscription created successfully",
-      subscription: result.rows[0],
-    });
-  } catch (error) {
-    console.error("Create subscription error:", error);
+        return res.status(201).json({
+            message: "Subscription created successfully",
+            subscription: result.rows[0],
+        });
+    } catch (error) {
+        console.error(
+            "Create subscription error:",
+            error
+        );
 
-    // PostgreSQL unique violation
-    if (error.code === "23505") {
-      return res.status(409).json({
-        message:
-          "A subscription already exists for this company.",
-      });
+        // PostgreSQL unique violation
+        if (error.code === "23505") {
+            return res.status(409).json({
+                message:
+                    "A subscription already exists for this company.",
+            });
+        }
+
+        return res.status(500).json({
+            message: "Failed to create subscription",
+            error: error.message,
+        });
     }
-
-    return res.status(500).json({
-      message: "Failed to create subscription",
-      error: error.message,
-    });
-  }
 };
 
 // =========================================================
@@ -704,46 +710,46 @@ export const createSubscription = async (req, res) => {
 // =========================================================
 
 export const approveSubscriptionRequest = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  const client = await db.connect();
+    const client = await db.connect();
 
-  let transactionStarted = false;
+    let transactionStarted = false;
 
-  try {
-    const { requestId } = req.params;
+    try {
+        const { requestId } = req.params;
 
-    const {
-      startDate,
-      endDate,
-      adminNotes,
-    } = req.body;
+        const {
+            startDate,
+            endDate,
+            adminNotes,
+        } = req.body;
 
-    const superAdminId = req.user?.user_id;
+        const superAdminId = req.user?.user_id;
 
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        message: "Start date and end date are required",
-      });
-    }
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                message: "Start date and end date are required",
+            });
+        }
 
-    if (!isDateRangeValid(startDate, endDate)) {
-      return res.status(400).json({
-        message:
-          "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
-      });
-    }
+        if (!isDateRangeValid(startDate, endDate)) {
+            return res.status(400).json({
+                message:
+                    "Invalid dates. Dates must use YYYY-MM-DD format and end date cannot be before start date.",
+            });
+        }
 
-    await client.query("BEGIN");
-    transactionStarted = true;
+        await client.query("BEGIN");
+        transactionStarted = true;
 
-    // ---------------------------------------------------------
-    // Lock and get request
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Lock and get request
+        // ---------------------------------------------------------
 
-    const requestResult = await client.query(
-      `
+        const requestResult = await client.query(
+            `
         SELECT
           request_id,
           company_id,
@@ -752,54 +758,54 @@ export const approveSubscriptionRequest = async (
         WHERE request_id = $1
         FOR UPDATE
       `,
-      [requestId]
-    );
+            [requestId]
+        );
 
-    if (requestResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-      transactionStarted = false;
+        if (requestResult.rows.length === 0) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
 
-      return res.status(404).json({
-        message: "Subscription request not found",
-      });
-    }
+            return res.status(404).json({
+                message: "Subscription request not found",
+            });
+        }
 
-    const request = requestResult.rows[0];
+        const request = requestResult.rows[0];
 
-    if (request.status !== "pending") {
-      await client.query("ROLLBACK");
-      transactionStarted = false;
+        if (request.status !== "pending") {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
 
-      return res.status(409).json({
-        message:
-          "This subscription request has already been processed",
-      });
-    }
+            return res.status(409).json({
+                message:
+                    "This subscription request has already been processed",
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Lock existing subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Lock existing subscription
+        // ---------------------------------------------------------
 
-    const existingSubscription = await client.query(
-      `
+        const existingSubscription = await client.query(
+            `
         SELECT
           subscription_id
         FROM company_subscriptions
         WHERE company_id = $1
         FOR UPDATE
       `,
-      [request.company_id]
-    );
+            [request.company_id]
+        );
 
-    let subscription;
+        let subscription;
 
-    // ---------------------------------------------------------
-    // Update existing subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Update existing subscription
+        // ---------------------------------------------------------
 
-    if (existingSubscription.rows.length > 0) {
-      const updateResult = await client.query(
-        `
+        if (existingSubscription.rows.length > 0) {
+            const updateResult = await client.query(
+                `
           UPDATE company_subscriptions
           SET
             start_date = $1,
@@ -820,25 +826,25 @@ export const approveSubscriptionRequest = async (
             created_by,
             notes
         `,
-        [
-          startDate,
-          endDate,
-          superAdminId,
-          adminNotes || null,
-          request.company_id,
-        ]
-      );
+                [
+                    startDate,
+                    endDate,
+                    superAdminId,
+                    adminNotes || null,
+                    request.company_id,
+                ]
+            );
 
-      subscription = updateResult.rows[0];
-    }
+            subscription = updateResult.rows[0];
+        }
 
-    // ---------------------------------------------------------
-    // Create new subscription
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Create new subscription
+        // ---------------------------------------------------------
 
-    else {
-      const insertResult = await client.query(
-        `
+        else {
+            const insertResult = await client.query(
+                `
           INSERT INTO company_subscriptions (
             company_id,
             start_date,
@@ -866,24 +872,24 @@ export const approveSubscriptionRequest = async (
             created_by,
             notes
         `,
-        [
-          request.company_id,
-          startDate,
-          endDate,
-          superAdminId,
-          adminNotes || null,
-        ]
-      );
+                [
+                    request.company_id,
+                    startDate,
+                    endDate,
+                    superAdminId,
+                    adminNotes || null,
+                ]
+            );
 
-      subscription = insertResult.rows[0];
-    }
+            subscription = insertResult.rows[0];
+        }
 
-    // ---------------------------------------------------------
-    // Mark request as approved
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Mark request as approved
+        // ---------------------------------------------------------
 
-    await client.query(
-      `
+        await client.query(
+            `
         UPDATE subscription_requests
         SET
           status = 'approved',
@@ -894,55 +900,55 @@ export const approveSubscriptionRequest = async (
           admin_notes = $4
         WHERE request_id = $5
       `,
-      [
-        superAdminId,
-        startDate,
-        endDate,
-        adminNotes || null,
-        requestId,
-      ]
-    );
-
-    await client.query("COMMIT");
-    transactionStarted = false;
-
-    return res.status(200).json({
-      message:
-        "Subscription request approved successfully",
-      subscription,
-    });
-  } catch (error) {
-    if (transactionStarted) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error(
-          "Rollback error:",
-          rollbackError
+            [
+                superAdminId,
+                startDate,
+                endDate,
+                adminNotes || null,
+                requestId,
+            ]
         );
-      }
+
+        await client.query("COMMIT");
+        transactionStarted = false;
+
+        return res.status(200).json({
+            message:
+                "Subscription request approved successfully",
+            subscription,
+        });
+    } catch (error) {
+        if (transactionStarted) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                console.error(
+                    "Rollback error:",
+                    rollbackError
+                );
+            }
+        }
+
+        console.error(
+            "Approve subscription request error:",
+            error
+        );
+
+        if (error.code === "23505") {
+            return res.status(409).json({
+                message:
+                    "A subscription already exists for this company.",
+            });
+        }
+
+        return res.status(500).json({
+            message:
+                "Failed to approve subscription request",
+            error: error.message,
+        });
+    } finally {
+        client.release();
     }
-
-    console.error(
-      "Approve subscription request error:",
-      error
-    );
-
-    if (error.code === "23505") {
-      return res.status(409).json({
-        message:
-          "A subscription already exists for this company.",
-      });
-    }
-
-    return res.status(500).json({
-      message:
-        "Failed to approve subscription request",
-      error: error.message,
-    });
-  } finally {
-    client.release();
-  }
 };
 
 // =========================================================
@@ -952,22 +958,22 @@ export const approveSubscriptionRequest = async (
 // =========================================================
 
 export const rejectSubscriptionRequest = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  try {
-    const { requestId } = req.params;
+    try {
+        const { requestId } = req.params;
 
-    const { adminNotes } = req.body;
+        const { adminNotes } = req.body;
 
-    const superAdminId = req.user?.user_id;
+        const superAdminId = req.user?.user_id;
 
-    // ---------------------------------------------------------
-    // Check request
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Check request
+        // ---------------------------------------------------------
 
-    const requestResult = await db.query(
-      `
+        const requestResult = await db.query(
+            `
         SELECT
           request_id,
           company_id,
@@ -975,28 +981,28 @@ export const rejectSubscriptionRequest = async (
         FROM subscription_requests
         WHERE request_id = $1
       `,
-      [requestId]
-    );
+            [requestId]
+        );
 
-    if (requestResult.rows.length === 0) {
-      return res.status(404).json({
-        message: "Subscription request not found",
-      });
-    }
+        if (requestResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Subscription request not found",
+            });
+        }
 
-    if (requestResult.rows[0].status !== "pending") {
-      return res.status(409).json({
-        message:
-          "This subscription request has already been processed",
-      });
-    }
+        if (requestResult.rows[0].status !== "pending") {
+            return res.status(409).json({
+                message:
+                    "This subscription request has already been processed",
+            });
+        }
 
-    // ---------------------------------------------------------
-    // Reject request
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
+        // Reject request
+        // ---------------------------------------------------------
 
-    const result = await db.query(
-      `
+        const result = await db.query(
+            `
         UPDATE subscription_requests
         SET
           status = 'rejected',
@@ -1012,30 +1018,30 @@ export const rejectSubscriptionRequest = async (
           processed_at,
           admin_notes
       `,
-      [
-        superAdminId,
-        adminNotes || null,
-        requestId,
-      ]
-    );
+            [
+                superAdminId,
+                adminNotes || null,
+                requestId,
+            ]
+        );
 
-    return res.status(200).json({
-      message:
-        "Subscription request rejected successfully",
-      request: result.rows[0],
-    });
-  } catch (error) {
-    console.error(
-      "Reject subscription request error:",
-      error
-    );
+        return res.status(200).json({
+            message:
+                "Subscription request rejected successfully",
+            request: result.rows[0],
+        });
+    } catch (error) {
+        console.error(
+            "Reject subscription request error:",
+            error
+        );
 
-    return res.status(500).json({
-      message:
-        "Failed to reject subscription request",
-      error: error.message,
-    });
-  }
+        return res.status(500).json({
+            message:
+                "Failed to reject subscription request",
+            error: error.message,
+        });
+    }
 };
 
 // =========================================================
@@ -1045,35 +1051,36 @@ export const rejectSubscriptionRequest = async (
 // =========================================================
 
 export const updateSubscription = async (req, res) => {
-  try {
-    const { subscriptionId } = req.params;
+    try {
+        const { subscriptionId } = req.params;
 
-    const {
-      action,
-      startDate,
-      endDate,
-      notes,
-    } = req.body;
+        const {
+            action,
+            startDate,
+            endDate,
+            notes,
+        } = req.body;
 
-    const allowedActions = [
-      "pause",
-      "resume",
-      "timespan",
-    ];
+        const allowedActions = [
+            "pause",
+            "resume",
+            "timespan",
+        ];
 
-    if (!allowedActions.includes(action)) {
-      return res.status(400).json({
-        message:
-          "Invalid action. Allowed actions: pause, resume, timespan",
-      });
-    }
+        if (!allowedActions.includes(action)) {
+            return res.status(400).json({
+                message:
+                    "Invalid action. Allowed actions: pause, resume, timespan",
+            });
+        }
 
-    // ================================
-    // PAUSE
-    // ================================
-    if (action === "pause") {
-      const result = await db.query(
-        `
+        // =========================================================
+        // PAUSE
+        // =========================================================
+
+        if (action === "pause") {
+            const result = await db.query(
+                `
           UPDATE company_subscriptions
           SET
             status = 'paused',
@@ -1092,31 +1099,32 @@ export const updateSubscription = async (req, res) => {
             created_by,
             notes
         `,
-        [
-          subscriptionId,
-          req.user?.user_id ?? null,
-          notes ?? null,
-        ]
-      );
+                [
+                    subscriptionId,
+                    req.user?.user_id ?? null,
+                    notes ?? null,
+                ]
+            );
 
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          message: "Subscription not found",
-        });
-      }
+            if (result.rows.length === 0) {
+                return res.status(404).json({
+                    message: "Subscription not found",
+                });
+            }
 
-      return res.status(200).json({
-        message: "Subscription paused successfully",
-        subscription: result.rows[0],
-      });
-    }
+            return res.status(200).json({
+                message: "Subscription paused successfully",
+                subscription: result.rows[0],
+            });
+        }
 
-    // ================================
-    // RESUME
-    // ================================
-    if (action === "resume") {
-      const result = await db.query(
-        `
+        // =========================================================
+        // RESUME
+        // =========================================================
+
+        if (action === "resume") {
+            const result = await db.query(
+                `
           UPDATE company_subscriptions
           SET
             status = 'active',
@@ -1135,45 +1143,46 @@ export const updateSubscription = async (req, res) => {
             created_by,
             notes
         `,
-        [
-          subscriptionId,
-          req.user?.user_id ?? null,
-          notes ?? null,
-        ]
-      );
+                [
+                    subscriptionId,
+                    req.user?.user_id ?? null,
+                    notes ?? null,
+                ]
+            );
 
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          message: "Subscription not found",
-        });
-      }
+            if (result.rows.length === 0) {
+                return res.status(404).json({
+                    message: "Subscription not found",
+                });
+            }
 
-      return res.status(200).json({
-        message: "Subscription resumed successfully",
-        subscription: result.rows[0],
-      });
-    }
+            return res.status(200).json({
+                message: "Subscription resumed successfully",
+                subscription: result.rows[0],
+            });
+        }
 
-    // ================================
-    // TIMESPAN
-    // ================================
-    if (action === "timespan") {
-      if (!startDate || !endDate) {
-        return res.status(400).json({
-          message:
-            "startDate and endDate are required for timespan",
-        });
-      }
+        // =========================================================
+        // TIMESPAN
+        // =========================================================
 
-      if (!isDateRangeValid(startDate, endDate)) {
-        return res.status(400).json({
-          message:
-            "Invalid dates. Use YYYY-MM-DD and ensure endDate is greater than or equal to startDate.",
-        });
-      }
+        if (action === "timespan") {
+            if (!startDate || !endDate) {
+                return res.status(400).json({
+                    message:
+                        "startDate and endDate are required for timespan",
+                });
+            }
 
-      const result = await db.query(
-        `
+            if (!isDateRangeValid(startDate, endDate)) {
+                return res.status(400).json({
+                    message:
+                        "Invalid dates. Use YYYY-MM-DD and ensure endDate is greater than or equal to startDate.",
+                });
+            }
+
+            const result = await db.query(
+                `
           UPDATE company_subscriptions
           SET
             start_date = $2,
@@ -1194,36 +1203,36 @@ export const updateSubscription = async (req, res) => {
             created_by,
             notes
         `,
-        [
-          subscriptionId,
-          startDate,
-          endDate,
-          req.user?.user_id ?? null,
-          notes ?? null,
-        ]
-      );
+                [
+                    subscriptionId,
+                    startDate,
+                    endDate,
+                    req.user?.user_id ?? null,
+                    notes ?? null,
+                ]
+            );
 
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          message: "Subscription not found",
+            if (result.rows.length === 0) {
+                return res.status(404).json({
+                    message: "Subscription not found",
+                });
+            }
+
+            return res.status(200).json({
+                message:
+                    "Subscription timespan updated successfully",
+                subscription: result.rows[0],
+            });
+        }
+    } catch (error) {
+        console.error(
+            "Update subscription error:",
+            error
+        );
+
+        return res.status(500).json({
+            message: "Failed to update subscription",
+            error: error.message,
         });
-      }
-
-      return res.status(200).json({
-        message:
-          "Subscription timespan updated successfully",
-        subscription: result.rows[0],
-      });
     }
-  } catch (error) {
-    console.error(
-      "Update subscription error:",
-      error
-    );
-
-    return res.status(500).json({
-      message: "Failed to update subscription",
-      error: error.message,
-    });
-  }
 };
