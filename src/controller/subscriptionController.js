@@ -70,33 +70,25 @@ export const getSubscriptionStatus = async (req, res) => {
 
         const result = await db.query(
             `
-        SELECT
-          subscription_id,
-          company_id,
-          start_date,
-          end_date,
-          status,
-          created_at,
-          updated_at,
-          created_by,
-          notes,
-
-          CASE
-            WHEN CURRENT_DATE > end_date THEN 'expired'
-            WHEN status = 'expired' THEN 'expired'
-            WHEN status = 'paused' THEN 'paused'
-            ELSE 'active'
-          END AS calculated_status
-
-        FROM company_subscriptions
-        WHERE company_id = $1
-        LIMIT 1
-      `,
+            SELECT
+                subscription_id,
+                company_id,
+                start_date,
+                end_date,
+                status,
+                created_at,
+                updated_at,
+                created_by,
+                notes
+            FROM company_subscriptions
+            WHERE company_id = $1
+            LIMIT 1
+            `,
             [companyId]
         );
 
         // ---------------------------------------------------------
-        // No subscription
+        // NO SUBSCRIPTION
         // ---------------------------------------------------------
 
         if (result.rows.length === 0) {
@@ -110,15 +102,51 @@ export const getSubscriptionStatus = async (req, res) => {
         const subscription = result.rows[0];
 
         // ---------------------------------------------------------
-        // Calculate current subscription status
+        // NORMALIZE DATES
         // ---------------------------------------------------------
 
-        const currentStatus = subscription.calculated_status;
+        const today = new Date()
+            .toISOString()
+            .slice(0, 10);
 
-        const today = new Date().toISOString().slice(0, 10);
+        const startDate = String(
+            subscription.start_date
+        ).slice(0, 10);
 
-        const startDate = String(subscription.start_date).slice(0, 10);
-        const endDate = String(subscription.end_date).slice(0, 10);
+        const endDate = String(
+            subscription.end_date
+        ).slice(0, 10);
+
+        const databaseStatus = String(
+            subscription.status
+        ).toLowerCase();
+
+        // ---------------------------------------------------------
+        // CALCULATE CURRENT STATUS
+        // ---------------------------------------------------------
+
+        let currentStatus;
+
+        // Expiration always has priority
+        if (today > endDate) {
+            currentStatus = "expired";
+        }
+        // Manually paused
+        else if (databaseStatus === "paused") {
+            currentStatus = "paused";
+        }
+        // Already marked expired
+        else if (databaseStatus === "expired") {
+            currentStatus = "expired";
+        }
+        // Otherwise active
+        else {
+            currentStatus = "active";
+        }
+
+        // ---------------------------------------------------------
+        // CALCULATE ACCESS
+        // ---------------------------------------------------------
 
         const hasAccess =
             currentStatus === "active" &&
@@ -126,27 +154,41 @@ export const getSubscriptionStatus = async (req, res) => {
             today <= endDate;
 
         // ---------------------------------------------------------
-        // Keep expired status synchronized
+        // KEEP DATABASE STATUS SYNCHRONIZED
         // ---------------------------------------------------------
 
         if (
             currentStatus === "expired" &&
-            subscription.status !== "expired"
+            databaseStatus !== "expired"
         ) {
             await db.query(
                 `
-          UPDATE company_subscriptions
-          SET
-            status = 'expired',
-            updated_at = NOW()
-          WHERE subscription_id = $1
-        `,
+                UPDATE company_subscriptions
+                SET
+                    status = 'expired',
+                    updated_at = NOW()
+                WHERE subscription_id = $1
+                `,
                 [subscription.subscription_id]
             );
         }
 
         // ---------------------------------------------------------
-        // Response
+        // DEBUG LOG
+        // ---------------------------------------------------------
+
+        console.log("SUBSCRIPTION STATUS CHECK:", {
+            companyId,
+            today,
+            startDate,
+            endDate,
+            databaseStatus,
+            currentStatus,
+            hasAccess,
+        });
+
+        // ---------------------------------------------------------
+        // RESPONSE
         // ---------------------------------------------------------
 
         return res.status(200).json({
@@ -154,15 +196,31 @@ export const getSubscriptionStatus = async (req, res) => {
             status: currentStatus,
 
             subscription: {
-                subscriptionId: subscription.subscription_id,
-                companyId: subscription.company_id,
-                startDate: subscription.start_date,
-                endDate: subscription.end_date,
+                subscriptionId:
+                    subscription.subscription_id,
+
+                companyId:
+                    subscription.company_id,
+
+                startDate:
+                    subscription.start_date,
+
+                endDate:
+                    subscription.end_date,
+
                 status: currentStatus,
-                createdAt: subscription.created_at,
-                updatedAt: subscription.updated_at,
-                createdBy: subscription.created_by,
-                notes: subscription.notes,
+
+                createdAt:
+                    subscription.created_at,
+
+                updatedAt:
+                    subscription.updated_at,
+
+                createdBy:
+                    subscription.created_by,
+
+                notes:
+                    subscription.notes,
             },
         });
     } catch (error) {
@@ -172,8 +230,11 @@ export const getSubscriptionStatus = async (req, res) => {
         );
 
         return res.status(500).json({
-            message: "Failed to get subscription status",
-            error: error.message,
+            message:
+                "Failed to get subscription status",
+
+            error:
+                error.message,
         });
     }
 };
