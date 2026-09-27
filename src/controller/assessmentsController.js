@@ -669,9 +669,12 @@ export const updateAssessmentQuestions = async (req, res) => {
 
     await client.query(
       `
-      DELETE FROM assessment_questions
-      WHERE assessment_id = $1
-      `,
+    UPDATE assessment_questions
+    SET is_deleted = true,
+        updated_at = NOW()
+    WHERE assessment_id = $1
+      AND is_deleted = false
+  `,
       [assessmentId]
     );
 
@@ -1092,6 +1095,7 @@ export const startAssessment = async (req, res) => {
 
     const assessmentResult = await db.query(query, params);
 
+    // Assessment not found
     if (assessmentResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -1101,12 +1105,13 @@ export const startAssessment = async (req, res) => {
 
     const assessment = assessmentResult.rows[0];
 
+    // Get previous attempts of this user
     const previousAttempts = await db.query(
       `
       SELECT COUNT(*)::INTEGER AS count
       FROM assessment_attempts
       WHERE assessment_id = $1
-      AND user_id = $2
+        AND user_id = $2
       `,
       [assessmentId, userId]
     );
@@ -1118,10 +1123,17 @@ export const startAssessment = async (req, res) => {
       SELECT COUNT(*)::INTEGER AS total_questions
       FROM assessment_questions
       WHERE assessment_id = $1
-      AND is_deleted = false
+        AND is_deleted = false
       `,
       [assessmentId]
     );
+
+    const totalQuestions =
+      questionCountResult.rows[0].total_questions;
+
+    // =====================================================
+    // CREATE NEW ATTEMPT
+    // =====================================================
 
     const attemptResult = await db.query(
       `
@@ -1132,24 +1144,30 @@ export const startAssessment = async (req, res) => {
         total_questions,
         attempt_number
       )
-      VALUES ($1,$2,'in_progress',$3,$4)
+      VALUES ($1, $2, 'in_progress', $3, $4)
       RETURNING *
       `,
       [
         assessmentId,
         userId,
-        questionCountResult.rows[0].total_questions,
+        totalQuestions,
         attemptCount + 1,
       ]
     );
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.status(201).json({
       success: true,
       message: "Assessment started",
       data: attemptResult.rows[0],
     });
+
   } catch (error) {
     console.error("Start assessment error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to start assessment",
@@ -2891,7 +2909,6 @@ export const getAssessmentAttemptQuestions = async (
         ON aq.question_id = aaq.question_id
       WHERE aaq.attempt_id = $1
         AND aq.assessment_id = $2
-        AND aq.is_deleted = false
       ORDER BY aaq.question_order ASC
       `,
       [attemptId, assessmentId]
@@ -3013,7 +3030,6 @@ export const checkAssessmentAttemptAnswer = async (
       WHERE aaq.attempt_id = $1
         AND aaq.question_id = $2
         AND aq.assessment_id = $3
-        AND aq.is_deleted = false
       `,
       [
         attemptId,
