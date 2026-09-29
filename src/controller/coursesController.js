@@ -675,16 +675,164 @@ export async function getCoursesByUserId(req, res) {
   }
 }
 
+// export async function updateCourse(req, res) {
+//   const client = await db.connect();
+
+//   try {
+//     const courseId = Number(req.params.id);
+
+//     if (!courseId || Number.isNaN(courseId)) {
+//       return res.status(400).json({ message: "Invalid course id" });
+//     }
+
+//     const checkParams = [courseId];
+
+//     let checkQuery = `
+//       SELECT c.id
+//       FROM courses c
+//       WHERE c.id = $1
+//         AND c.deleted_at IS NULL
+//     `;
+
+//     checkQuery += addScopeWhere(req, "c", checkParams);
+
+//     const existingCourse = await client.query(checkQuery, checkParams);
+
+//     if (!existingCourse.rowCount) {
+//       return res.status(404).json({ message: "Course not found" });
+//     }
+
+//     const { errors, payload } = validateCoursePayload(req.body, true);
+
+//     if (errors.length) {
+//       return res.status(400).json({
+//         message: "Validation failed",
+//         errors,
+//       });
+//     }
+
+//     const authUserId = getAuthUserId(req);
+
+//     await client.query("BEGIN");
+
+//     const bodyHasPredefinedCourseTitle =
+//       Object.prototype.hasOwnProperty.call(req.body, "predefined_course_title");
+
+//     await client.query(
+//       `
+//       UPDATE courses
+//       SET
+//         title = COALESCE($1, title),
+//         description = COALESCE($2, description),
+//         department = COALESCE($3, department),
+//         predefined_course_title = CASE
+//           WHEN $4::boolean THEN $5
+//           ELSE predefined_course_title
+//         END,
+//         content_mode = COALESCE($6, content_mode),
+//         updated_by = $7,
+//         updated_at = CURRENT_TIMESTAMP,
+//         ranks = COALESCE($9, ranks),
+//         ship_types = COALESCE($10, ship_types)
+//       WHERE id = $8
+//       `,
+//       [
+//         payload.title,
+//         payload.description,
+//         payload.department,
+//         bodyHasPredefinedCourseTitle,
+//         payload.predefined_course_title,
+//         payload.content_mode,
+//         authUserId,
+//         courseId,
+//         payload.ranks,
+//         payload.ship_types
+//       ]
+//     );
+
+//     if (Array.isArray(req.body.contents)) {
+//       await client.query(`DELETE FROM course_contents WHERE course_id = $1`, [courseId]);
+
+//       for (let i = 0; i < payload.contents.length; i++) {
+//         const item = payload.contents[i];
+
+//         await client.query(
+//           `
+//           INSERT INTO course_contents (
+//             course_id,
+//             content_title,
+//             content_description,
+//             content_type,
+//             youtube_url,
+//             sort_order
+//           )
+//           VALUES ($1, $2, $3, $4, $5, $6)
+//           `,
+//           [
+//             courseId,
+//             normalizeString(item.content_title),
+//             normalizeString(item.content_description),
+//             normalizeString(item.content_type),
+//             normalizeString(item.youtube_url),
+//             Number(item.sort_order ?? i + 1),
+//           ]
+//         );
+//       }
+//     }
+
+//     await client.query("COMMIT");
+
+//     const course = await fetchCourseWithContents(courseId);
+
+//     return res.json({
+//       message: "Course updated successfully",
+//       course,
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("updateCourse error:", error);
+//     return res.status(500).json({
+//       message: "Failed to update course",
+//       error: error.message,
+//     });
+//   } finally {
+//     client.release();
+//   }
+// }
+
 export async function updateCourse(req, res) {
   const client = await db.connect();
 
+  // S3 objects that belong to media which becomes orphaned
+  // because its content was removed.
+  const s3ObjectsToDelete = [];
+
+  let transactionStarted = false;
+
   try {
+    // =========================================================
+    // 1. COURSE ID
+    // URL:
+    // PUT /api/courses/:id
+    //
+    // req.params.id = COURSE ID
+    // =========================================================
     const courseId = Number(req.params.id);
 
-    if (!courseId || Number.isNaN(courseId)) {
-      return res.status(400).json({ message: "Invalid course id" });
+    if (!Number.isSafeInteger(courseId) || courseId < 1) {
+      return res.status(400).json({
+        message: "Invalid course id",
+      });
     }
 
+    // =========================================================
+    // 2. CHECK COURSE ACCESS
+    //
+    // Keep your existing scope rules.
+    // Superadmin can access all courses.
+    // Admin can access courses belonging to their company.
+    // Global courses (company_id = NULL) remain superadmin-only.
+    // =========================================================
     const checkParams = [courseId];
 
     let checkQuery = `
@@ -696,13 +844,24 @@ export async function updateCourse(req, res) {
 
     checkQuery += addScopeWhere(req, "c", checkParams);
 
-    const existingCourse = await client.query(checkQuery, checkParams);
+    const existingCourse = await client.query(
+      checkQuery,
+      checkParams
+    );
 
     if (!existingCourse.rowCount) {
-      return res.status(404).json({ message: "Course not found" });
+      return res.status(404).json({
+        message: "Course not found",
+      });
     }
 
-    const { errors, payload } = validateCoursePayload(req.body, true);
+    // =========================================================
+    // 3. VALIDATE REQUEST
+    // =========================================================
+    const { errors, payload } = validateCoursePayload(
+      req.body,
+      true
+    );
 
     if (errors.length) {
       return res.status(400).json({
@@ -713,11 +872,21 @@ export async function updateCourse(req, res) {
 
     const authUserId = getAuthUserId(req);
 
-    await client.query("BEGIN");
-
     const bodyHasPredefinedCourseTitle =
-      Object.prototype.hasOwnProperty.call(req.body, "predefined_course_title");
+      Object.prototype.hasOwnProperty.call(
+        req.body,
+        "predefined_course_title"
+      );
 
+    // =========================================================
+    // 4. START TRANSACTION
+    // =========================================================
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    // =========================================================
+    // 5. UPDATE COURSE
+    // =========================================================
     await client.query(
       `
       UPDATE courses
@@ -725,72 +894,473 @@ export async function updateCourse(req, res) {
         title = COALESCE($1, title),
         description = COALESCE($2, description),
         department = COALESCE($3, department),
+
         predefined_course_title = CASE
           WHEN $4::boolean THEN $5
           ELSE predefined_course_title
         END,
+
         content_mode = COALESCE($6, content_mode),
+
         updated_by = $7,
         updated_at = CURRENT_TIMESTAMP,
+
         ranks = COALESCE($9, ranks),
         ship_types = COALESCE($10, ship_types)
+
       WHERE id = $8
       `,
       [
-        payload.title,
-        payload.description,
-        payload.department,
+        payload.title ?? null,
+        payload.description ?? null,
+        payload.department ?? null,
+
         bodyHasPredefinedCourseTitle,
-        payload.predefined_course_title,
-        payload.content_mode,
+        payload.predefined_course_title ?? null,
+
+        req.body.content_mode !== undefined
+          ? normalizeString(req.body.content_mode)
+          : null,
+
         authUserId,
         courseId,
-        payload.ranks,
-        payload.ship_types
+
+        Array.isArray(payload.ranks)
+          ? payload.ranks
+          : null,
+
+        Array.isArray(payload.ship_types)
+          ? payload.ship_types
+          : null,
       ]
     );
 
+    // =========================================================
+    // 6. UPDATE COURSE CONTENTS
+    //
+    // Frontend sends:
+    //
+    // {
+    //   contents: [
+    //     { id: "1586", ... },
+    //     { id: "1587", ... }
+    //   ]
+    // }
+    //
+    // item.id = CONTENT ID
+    // courseId = COURSE ID
+    // =========================================================
     if (Array.isArray(req.body.contents)) {
-      await client.query(`DELETE FROM course_contents WHERE course_id = $1`, [courseId]);
+      // -------------------------------------------------------
+      // Get current contents
+      // -------------------------------------------------------
+      const existingContentsResult = await client.query(
+        `
+        SELECT
+          id,
+          course_id,
+          content_type
+        FROM course_contents
+        WHERE course_id = $1
+        FOR UPDATE
+        `,
+        [courseId]
+      );
 
+      const existingContents =
+        existingContentsResult.rows;
+
+      // -------------------------------------------------------
+      // Map existing content IDs
+      // -------------------------------------------------------
+      const existingContentMap = new Map();
+
+      for (const row of existingContents) {
+        existingContentMap.set(
+          Number(row.id),
+          row
+        );
+      }
+
+      const existingContentIds = new Set(
+        existingContents.map((row) => Number(row.id))
+      );
+
+      // IDs received from frontend
+      const incomingContentIds = new Set();
+
+      // =======================================================
+      // 7. PROCESS EACH CONTENT
+      // =======================================================
       for (let i = 0; i < payload.contents.length; i++) {
         const item = payload.contents[i];
 
+        const contentTitle = normalizeString(
+          item.content_title
+        );
+
+        const contentDescription = normalizeString(
+          item.content_description
+        );
+
+        const contentType = normalizeString(
+          item.content_type
+        );
+
+        const youtubeUrl = normalizeString(
+          item.youtube_url
+        );
+
+        const sortOrder = Number(
+          item.sort_order ?? i + 1
+        );
+
+        const hasContentId =
+          item.id !== undefined &&
+          item.id !== null &&
+          item.id !== "";
+
+        // =====================================================
+        // EXISTING CONTENT
+        // =====================================================
+        if (hasContentId) {
+          const contentId = Number(item.id);
+
+          if (
+            !Number.isSafeInteger(contentId) ||
+            contentId < 1
+          ) {
+            throw new Error(
+              `Invalid content id at contents[${i}]`
+            );
+          }
+
+          // ---------------------------------------------------
+          // Prevent duplicate content IDs
+          // ---------------------------------------------------
+          if (incomingContentIds.has(contentId)) {
+            throw new Error(
+              `Duplicate content id ${contentId} in request`
+            );
+          }
+
+          // ---------------------------------------------------
+          // Make sure content belongs to this course
+          // ---------------------------------------------------
+          const existingContent =
+            existingContentMap.get(contentId);
+
+          if (!existingContent) {
+            throw new Error(
+              `Content ${contentId} does not belong to course ${courseId}`
+            );
+          }
+
+          incomingContentIds.add(contentId);
+
+          // ---------------------------------------------------
+          // Check whether content type is changing
+          // while media is attached.
+          // ---------------------------------------------------
+          if (
+            existingContent.content_type !== contentType
+          ) {
+            const mediaCheck = await client.query(
+              `
+              SELECT 1
+              FROM course_content_media
+              WHERE course_content_id = $1
+              LIMIT 1
+              `,
+              [contentId]
+            );
+
+            if (mediaCheck.rowCount > 0) {
+              throw new Error(
+                `Cannot change content type for content ${contentId} while media files are attached.`
+              );
+            }
+          }
+
+          // ---------------------------------------------------
+          // UPDATE EXISTING CONTENT
+          //
+          // IMPORTANT:
+          // We do NOT delete the row.
+          // The ID stays the same.
+          // ---------------------------------------------------
+          await client.query(
+            `
+            UPDATE course_contents
+            SET
+              content_title = $1,
+              content_description = $2,
+              content_type = $3,
+              youtube_url = $4,
+              sort_order = $5,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $6
+              AND course_id = $7
+            `,
+            [
+              contentTitle,
+              contentDescription,
+              contentType,
+              contentType === "youtube"
+                ? youtubeUrl
+                : null,
+              sortOrder,
+              contentId,
+              courseId,
+            ]
+          );
+        }
+
+        // =====================================================
+        // NEW CONTENT
+        // =====================================================
+        else {
+          const insertResult = await client.query(
+            `
+            INSERT INTO course_contents (
+              course_id,
+              content_title,
+              content_description,
+              content_type,
+              youtube_url,
+              sort_order
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+            `,
+            [
+              courseId,
+              contentTitle,
+              contentDescription,
+              contentType,
+              contentType === "youtube"
+                ? youtubeUrl
+                : null,
+              sortOrder,
+            ]
+          );
+
+          const newContentId = Number(
+            insertResult.rows[0].id
+          );
+
+          incomingContentIds.add(newContentId);
+        }
+      }
+
+      // =======================================================
+      // 8. FIND CONTENTS REMOVED FROM FRONTEND
+      //
+      // Example:
+      //
+      // Existing:
+      // 1586, 1587, 1588
+      //
+      // Frontend sends:
+      // 1586, 1588
+      //
+      // 1587 = removed
+      // =======================================================
+      const removedContentIds = [
+        ...existingContentIds,
+      ].filter(
+        (existingId) =>
+          !incomingContentIds.has(existingId)
+      );
+
+      // =======================================================
+      // 9. REMOVE DELETED CONTENTS + THEIR MEDIA
+      // =======================================================
+      if (removedContentIds.length > 0) {
+        // -----------------------------------------------------
+        // Find media attached to removed contents
+        // -----------------------------------------------------
+        const mediaResult = await client.query(
+          `
+          SELECT DISTINCT
+            mf.id AS media_file_id,
+            ms3.bucket_name,
+            ms3.object_key
+          FROM course_content_media ccm
+          JOIN media_files mf
+            ON mf.id = ccm.media_file_id
+          LEFT JOIN media_storage_s3 ms3
+            ON ms3.media_file_id = mf.id
+          WHERE ccm.course_content_id = ANY($1::bigint[])
+          `,
+          [removedContentIds]
+        );
+
+        const mediaFileIds =
+          mediaResult.rows.map(
+            (row) => Number(row.media_file_id)
+          );
+
+        // -----------------------------------------------------
+        // Remove course_content_media relationship
+        // -----------------------------------------------------
         await client.query(
           `
-          INSERT INTO course_contents (
-            course_id,
-            content_title,
-            content_description,
-            content_type,
-            youtube_url,
-            sort_order
-          )
-          VALUES ($1, $2, $3, $4, $5, $6)
+          DELETE FROM course_content_media
+          WHERE course_content_id = ANY($1::bigint[])
           `,
-          [
-            courseId,
-            normalizeString(item.content_title),
-            normalizeString(item.content_description),
-            normalizeString(item.content_type),
-            normalizeString(item.youtube_url),
-            Number(item.sort_order ?? i + 1),
-          ]
+          [removedContentIds]
+        );
+
+        // -----------------------------------------------------
+        // Determine which media files are now orphaned
+        // -----------------------------------------------------
+        if (mediaFileIds.length > 0) {
+          const stillUsedResult =
+            await client.query(
+              `
+              SELECT DISTINCT media_file_id
+              FROM course_content_media
+              WHERE media_file_id = ANY($1::bigint[])
+              `,
+              [mediaFileIds]
+            );
+
+          const stillUsedIds = new Set(
+            stillUsedResult.rows.map(
+              (row) => Number(row.media_file_id)
+            )
+          );
+
+          const orphanMediaIds =
+            mediaFileIds.filter(
+              (mediaId) =>
+                !stillUsedIds.has(mediaId)
+            );
+
+          if (orphanMediaIds.length > 0) {
+            // -------------------------------------------------
+            // Get S3 objects for only orphan media
+            // -------------------------------------------------
+            const orphanMediaResult =
+              await client.query(
+                `
+                SELECT
+                  ms3.bucket_name,
+                  ms3.object_key
+                FROM media_storage_s3 ms3
+                WHERE ms3.media_file_id = ANY($1::bigint[])
+                `,
+                [orphanMediaIds]
+              );
+
+            for (
+              const row of orphanMediaResult.rows
+            ) {
+              if (
+                row.bucket_name &&
+                row.object_key
+              ) {
+                s3ObjectsToDelete.push({
+                  bucket: row.bucket_name,
+                  key: row.object_key,
+                });
+              }
+            }
+
+            // -------------------------------------------------
+            // Delete S3 metadata
+            // -------------------------------------------------
+            await client.query(
+              `
+              DELETE FROM media_storage_s3
+              WHERE media_file_id = ANY($1::bigint[])
+              `,
+              [orphanMediaIds]
+            );
+
+            // -------------------------------------------------
+            // Delete media records
+            // -------------------------------------------------
+            await client.query(
+              `
+              DELETE FROM media_files
+              WHERE id = ANY($1::bigint[])
+              `,
+              [orphanMediaIds]
+            );
+          }
+        }
+
+        // -----------------------------------------------------
+        // Delete the removed content rows
+        // -----------------------------------------------------
+        await client.query(
+          `
+          DELETE FROM course_contents
+          WHERE id = ANY($1::bigint[])
+            AND course_id = $2
+          `,
+          [removedContentIds, courseId]
         );
       }
     }
 
+    // =========================================================
+    // 10. COMMIT
+    // =========================================================
     await client.query("COMMIT");
+    transactionStarted = false;
 
-    const course = await fetchCourseWithContents(courseId);
+    // =========================================================
+    // 11. DELETE ORPHANED S3 OBJECTS
+    //     AFTER DB COMMIT
+    // =========================================================
+    for (const object of s3ObjectsToDelete) {
+      try {
+        await s3.send(
+          new DeleteObjectCommand({
+            Bucket: object.bucket,
+            Key: object.key,
+          })
+        );
+      } catch (s3Error) {
+        console.error(
+          "Failed to delete S3 object:",
+          object.key,
+          s3Error
+        );
+      }
+    }
+
+    // =========================================================
+    // 12. FETCH COMPLETE UPDATED COURSE
+    //
+    // This gives the frontend:
+    // course + contents + media
+    // =========================================================
+    const course =
+      await fetchCourseWithContents(courseId);
 
     return res.json({
       message: "Course updated successfully",
       course,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("updateCourse error:", error);
+    // =========================================================
+    // ROLLBACK
+    // =========================================================
+    if (transactionStarted) {
+      await client
+        .query("ROLLBACK")
+        .catch(() => {});
+    }
+
+    console.error(
+      "updateCourse error:",
+      error
+    );
+
     return res.status(500).json({
       message: "Failed to update course",
       error: error.message,
