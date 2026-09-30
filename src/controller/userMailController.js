@@ -11,7 +11,7 @@ import { decryptPassword } from "../utils/cryptoPasswords.js";
 // If you don't have this file, create it and move decrypt logic there.
 
 // Prevent sending creds for these roles
-const DISALLOWED_TARGET_ROLES = new Set([1, 2]); // allow 3 & 4
+const DISALLOWED_TARGET_ROLES = new Set([1]);
 
 const assertCanAccessUser = (requester, targetUser) => {
   const role = Number(requester.role_id);
