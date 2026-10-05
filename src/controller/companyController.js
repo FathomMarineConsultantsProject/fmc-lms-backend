@@ -546,99 +546,338 @@ export const getCompanyOptions = async (req, res) => {
 };
 
 // -------------------- PATCH /companies/edit/:id --------------------
+// export const editCompany = async (req, res) => {
+//   const id = String(req.params.id || "").trim();
+
+//   //  UUID validation
+//   if (!isUuid(id)) return res.status(400).json({ error: "company_id must be a valid UUID" });
+//   if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
+//   if (!ensureCompanyScope(req, res, id)) return;
+
+//   const {
+//     company_name, code, email_domain, is_active, metadata_json,
+//     ships_count, role, regional_address, ism_address, type,
+//     contact_person_name, phone_no, email, username, password,
+//   } = req.body;
+
+//   try {
+//     //  Fetch the existing admin username first
+//     const existingAdminRes = await db.query(
+//       `SELECT username FROM users WHERE company_id = $1 AND role_id = 2 LIMIT 1`,
+//       [id]
+//     );
+//     const existingUsername = existingAdminRes.rows[0]?.username || null;
+
+//     let newUsername = username ?? null;
+
+//     //  Only generate unique name if it actually changed
+//     if (username && username !== existingUsername) {
+//       newUsername = await makeUniqueUsername(username);
+//     } else if (username === existingUsername) {
+//       newUsername = existingUsername;
+//     }
+
+//     const newPasswordHash = password ? hashPassword(password) : null;
+//     const newPasswordEnc = password ? encryptPassword(password) : null;
+
+//     const { rowCount } = await db.query(
+//       `UPDATE company
+//        SET
+//          company_name        = COALESCE($1, company_name),
+//          code                = COALESCE($2, code),
+//          email_domain        = COALESCE($3, email_domain),
+//          is_active           = COALESCE($4, is_active),
+//          metadata_json       = COALESCE($5, metadata_json),
+//          ships_count         = COALESCE($6, ships_count),
+//          role                = COALESCE($7, role),
+//          regional_address    = COALESCE($8, regional_address),
+//          ism_address         = COALESCE($9, ism_address),
+//          type                = COALESCE($10, type),
+//          contact_person_name = COALESCE($11, contact_person_name),
+//          phone_no            = COALESCE($12, phone_no),
+//          email               = COALESCE($13, email),
+//          username            = COALESCE($14, username),
+//          password_hash       = COALESCE($15, password_hash),
+//          updated_at          = NOW()
+//        WHERE company_id = $16`,
+//       [
+//         company_name ?? null, code ?? null, email_domain ?? null, is_active ?? null,
+//         metadata_json ?? null, ships_count ?? null, role ?? null,
+//         regional_address ?? null, ism_address ?? null, type ?? null,
+//         contact_person_name ?? null, phone_no ?? null, email ?? null,
+//         newUsername, newPasswordHash, id,
+//       ]
+//     );
+
+//     if (!rowCount) return res.status(404).json({ error: "Company not found" });
+
+//     // Sync company admin user
+//     if (newUsername || newPasswordHash || newPasswordEnc || email || company_name) {
+//       await db.query(
+//         `UPDATE users
+//          SET
+//            username = COALESCE($1, username),
+//            password_hash = COALESCE($2, password_hash),
+//            password_enc = COALESCE($3, password_enc),
+//            email = COALESCE($4, email),
+//            full_name = COALESCE($5, full_name),
+//            status = 'Onboard',
+//            ship_id = NULL,
+//            updated_at = NOW()
+//          WHERE company_id = $6 AND role_id = 2`,
+//         [
+//           newUsername,
+//           newPasswordHash,
+//           newPasswordEnc,
+//           email ?? null,
+//           company_name ? `${company_name} Admin` : null,
+//           id,
+//         ]
+//       );
+//     }
+
+//     return res.json({ message: "Company updated", username: newUsername ?? undefined });
+//   } catch (err) {
+//     console.error("Error updating company:", err);
+//     return res.status(500).json({ error: "Failed to update company" });
+//   }
+// };
+
 export const editCompany = async (req, res) => {
-  const id = String(req.params.id || "").trim();
-
-  //  UUID validation
-  if (!isUuid(id)) return res.status(400).json({ error: "company_id must be a valid UUID" });
-  if (!ensureRole(req, res, [ROLE_SUPERADMIN, ROLE_ADMIN])) return;
-  if (!ensureCompanyScope(req, res, id)) return;
-
-  const {
-    company_name, code, email_domain, is_active, metadata_json,
-    ships_count, role, regional_address, ism_address, type,
-    contact_person_name, phone_no, email, username, password,
-  } = req.body;
+  const client = await db.connect();
 
   try {
-    //  Fetch the existing admin username first
-    const existingAdminRes = await db.query(
-      `SELECT username FROM users WHERE company_id = $1 AND role_id = 2 LIMIT 1`,
-      [id]
-    );
-    const existingUsername = existingAdminRes.rows[0]?.username || null;
+    const role = Number(req.user.role_id);
 
-    let newUsername = username ?? null;
-
-    //  Only generate unique name if it actually changed
-    if (username && username !== existingUsername) {
-      newUsername = await makeUniqueUsername(username);
-    } else if (username === existingUsername) {
-      newUsername = existingUsername;
+    // Only Super Admin
+    if (role !== 1) {
+      return res.status(403).json({
+        error: "Only Super Admin can edit companies",
+      });
     }
 
-    const newPasswordHash = password ? hashPassword(password) : null;
-    const newPasswordEnc = password ? encryptPassword(password) : null;
+    const { id } = req.params;
 
-    const { rowCount } = await db.query(
-      `UPDATE company
-       SET
-         company_name        = COALESCE($1, company_name),
-         code                = COALESCE($2, code),
-         email_domain        = COALESCE($3, email_domain),
-         is_active           = COALESCE($4, is_active),
-         metadata_json       = COALESCE($5, metadata_json),
-         ships_count         = COALESCE($6, ships_count),
-         role                = COALESCE($7, role),
-         regional_address    = COALESCE($8, regional_address),
-         ism_address         = COALESCE($9, ism_address),
-         type                = COALESCE($10, type),
-         contact_person_name = COALESCE($11, contact_person_name),
-         phone_no            = COALESCE($12, phone_no),
-         email               = COALESCE($13, email),
-         username            = COALESCE($14, username),
-         password_hash       = COALESCE($15, password_hash),
-         updated_at          = NOW()
-       WHERE company_id = $16`,
+    const {
+      company_name,
+      regional_address,
+      ism_address,
+      role: company_role,
+      type,
+      contact_person_name,
+      phone_no,
+      email,
+      username,
+      password,
+    } = req.body;
+
+    // ============================================================
+    // GET CURRENT COMPANY ADMIN
+    // ============================================================
+
+    const existingAdminRes = await client.query(
+      `
+      SELECT
+        user_id,
+        username
+      FROM users
+      WHERE company_id = $1
+        AND role_id = 2
+        AND ship_id IS NULL
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    const existingAdmin = existingAdminRes.rows[0];
+
+    const existingUsername = existingAdmin?.username || null;
+    const existingAdminUserId = existingAdmin?.user_id || null;
+
+    // ============================================================
+    // USERNAME
+    // ============================================================
+
+    let newUsername = null;
+
+    if (username !== undefined && username !== null && username !== "") {
+      const cleanUsername = String(username)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, "");
+
+      if (!cleanUsername) {
+        return res.status(400).json({
+          error: "Invalid username",
+        });
+      }
+
+      // Same username as the current company admin
+      if (cleanUsername === String(existingUsername || "").toLowerCase()) {
+        newUsername = existingUsername;
+      } else {
+        // Check whether another user already owns this username
+        const conflictRes = await client.query(
+          `
+          SELECT user_id
+          FROM users
+          WHERE username = $1
+            AND user_id <> $2
+          LIMIT 1
+          `,
+          [
+            cleanUsername,
+            existingAdminUserId || 0,
+          ]
+        );
+
+        if (conflictRes.rows.length > 0) {
+          return res.status(409).json({
+            error: "Username already exists",
+            message: `The username "${cleanUsername}" is already being used.`,
+          });
+        }
+
+        newUsername = cleanUsername;
+      }
+    }
+
+    // ============================================================
+    // PASSWORD
+    // ============================================================
+
+    const newPasswordHash = password
+      ? hashPassword(password)
+      : null;
+
+    const newPasswordEnc = password
+      ? encryptPassword(password)
+      : null;
+
+    // ============================================================
+    // START TRANSACTION
+    // ============================================================
+
+    await client.query("BEGIN");
+
+    // ============================================================
+    // UPDATE COMPANY
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE company
+      SET
+        company_name = COALESCE($1, company_name),
+        regional_address = COALESCE($2, regional_address),
+        ism_address = COALESCE($3, ism_address),
+        role = COALESCE($4, role),
+        type = COALESCE($5, type),
+        contact_person_name = COALESCE($6, contact_person_name),
+        phone_no = COALESCE($7, phone_no),
+        email = COALESCE($8, email),
+        username = COALESCE($9, username),
+        password_hash = COALESCE($10, password_hash),
+        updated_at = NOW()
+      WHERE company_id = $11
+      `,
       [
-        company_name ?? null, code ?? null, email_domain ?? null, is_active ?? null,
-        metadata_json ?? null, ships_count ?? null, role ?? null,
-        regional_address ?? null, ism_address ?? null, type ?? null,
-        contact_person_name ?? null, phone_no ?? null, email ?? null,
-        newUsername, newPasswordHash, id,
+        company_name ?? null,
+        regional_address ?? null,
+        ism_address ?? null,
+        company_role ?? null,
+        type ?? null,
+        contact_person_name ?? null,
+        phone_no ?? null,
+        email ?? null,
+        newUsername,
+        newPasswordHash,
+        id,
       ]
     );
 
-    if (!rowCount) return res.status(404).json({ error: "Company not found" });
+    // ============================================================
+    // UPDATE COMPANY ADMIN USER
+    // ============================================================
 
-    // Sync company admin user
-    if (newUsername || newPasswordHash || newPasswordEnc || email || company_name) {
-      await db.query(
-        `UPDATE users
-         SET
-           username = COALESCE($1, username),
-           password_hash = COALESCE($2, password_hash),
-           password_enc = COALESCE($3, password_enc),
-           email = COALESCE($4, email),
-           full_name = COALESCE($5, full_name),
-           status = 'Onboard',
-           ship_id = NULL,
-           updated_at = NOW()
-         WHERE company_id = $6 AND role_id = 2`,
+    if (
+      newUsername ||
+      newPasswordHash ||
+      newPasswordEnc ||
+      email ||
+      company_name
+    ) {
+      const userUpdateRes = await client.query(
+        `
+        UPDATE users
+        SET
+          username = COALESCE($1, username),
+          password_hash = COALESCE($2, password_hash),
+          password_enc = COALESCE($3, password_enc),
+          email = COALESCE($4, email),
+          full_name = COALESCE($5, full_name),
+          status = 'Onboard',
+          ship_id = NULL,
+          updated_at = NOW()
+        WHERE company_id = $6
+          AND role_id = 2
+          AND ship_id IS NULL
+        `,
         [
           newUsername,
           newPasswordHash,
           newPasswordEnc,
           email ?? null,
-          company_name ? `${company_name} Admin` : null,
+          company_name
+            ? `${company_name} Admin`
+            : null,
           id,
         ]
       );
+
+      console.log(
+        "Company admin users updated:",
+        userUpdateRes.rowCount
+      );
     }
 
-    return res.json({ message: "Company updated", username: newUsername ?? undefined });
+    // ============================================================
+    // COMMIT
+    // ============================================================
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Company updated",
+      username: newUsername ?? undefined,
+    });
+
   } catch (err) {
+    // ============================================================
+    // ROLLBACK
+    // ============================================================
+
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Rollback failed:", rollbackError);
+    }
+
     console.error("Error updating company:", err);
-    return res.status(500).json({ error: "Failed to update company" });
+
+    // Handle duplicate username safely
+    if (err?.code === "23505") {
+      return res.status(409).json({
+        error: "Username already exists",
+        message: "This username is already being used by another user.",
+      });
+    }
+
+    return res.status(500).json({
+      error: "Failed to update company",
+    });
+
+  } finally {
+    client.release();
   }
 };
