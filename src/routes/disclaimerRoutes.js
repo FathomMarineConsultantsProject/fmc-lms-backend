@@ -3,7 +3,7 @@ import express from "express";
 import {
     acceptDisclaimer,
     getDisclaimerAcceptances
-} from "../controllers/disclaimerController.js";
+} from "../controller/disclaimerController"
 
 
 const router = express.Router();
