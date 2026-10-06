@@ -107,7 +107,7 @@ app.use("/api/training", dashboardRoutes);
 app.use("/integrations", integrationRoutes);
 
 
-router.use("/disclaimer", disclaimerRoutes);
+app.use("/disclaimer", disclaimerRoutes);
 //chat 
 app.use("/chat", chatRoutes);
 //chatbot
