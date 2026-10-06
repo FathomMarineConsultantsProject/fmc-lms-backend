@@ -27,6 +27,8 @@ import aiAssistant from './routes/aiRoutes.js'
 import dashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import disclaimerRoutes from "./routes/disclaimerRoutes.js"
+
 const app = express();
 
 app.set("trust proxy", 1);
@@ -104,6 +106,8 @@ app.use("/api/training", dashboardRoutes);
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 
+
+router.use("/disclaimer", disclaimerRoutes);
 //chat 
 app.use("/chat", chatRoutes);
 //chatbot
