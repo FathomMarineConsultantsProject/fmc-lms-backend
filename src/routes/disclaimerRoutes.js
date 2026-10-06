@@ -1,5 +1,5 @@
 import express from "express";
-
+import { requireAuth } from "../middleware/requireAuth.js";
 import {
     acceptDisclaimer,
     getDisclaimerAcceptances
@@ -10,13 +10,13 @@ const router = express.Router();
 
 // User accepts disclaimer
 router.post(
-    "/accept",
+    "/accept",requireAuth,
     acceptDisclaimer
 );
 
 // Role 1 only - view all disclaimer acceptance records
 router.get(
-    "/acceptances",
+    "/acceptances",requireAuth,
     getDisclaimerAcceptances
 );
 
