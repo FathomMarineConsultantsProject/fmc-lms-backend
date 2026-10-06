@@ -1,5 +1,6 @@
 import { db } from "../db.js";
 import xlsx from "xlsx";
+import { awardAssessmentSeaMiles } from "./seamilesController.js";
 
 const isAdminRole = (roleId) => [1, 2, 3].includes(Number(roleId));
 
@@ -3290,6 +3291,159 @@ export const checkAssessmentAttemptAnswer = async (
 // SUBMIT ASSESSMENT ATTEMPT
 // ======================================================
 
+// export const submitAssessmentAttempt = async (
+//   req,
+//   res
+// ) => {
+//   const client = await db.connect();
+
+//   try {
+//     const { assessmentId, attemptId } = req.params;
+
+//     const userId = getUserId(req);
+
+//     await client.query("BEGIN");
+
+//     const attemptResult = await client.query(
+//       `
+//       SELECT
+//         aa.*,
+//         a.passing_percentage,
+//         a.total_marks,
+//         a.assessment_type
+//       FROM assessment_attempts aa
+//       JOIN assessments a
+//         ON a.assessment_id = aa.assessment_id
+//       WHERE aa.attempt_id = $1
+//         AND aa.assessment_id = $2
+//         AND aa.user_id = $3
+//         AND aa.status = 'in_progress'
+//       `,
+//       [
+//         attemptId,
+//         assessmentId,
+//         userId,
+//       ]
+//     );
+
+//     if (attemptResult.rows.length === 0) {
+//       await client.query("ROLLBACK");
+
+//       return res.status(404).json({
+//         success: false,
+//         message: "Valid in-progress attempt not found",
+//       });
+//     }
+
+//     const attempt = attemptResult.rows[0];
+
+//     const scoreResult = await client.query(
+//       `
+//       SELECT
+//         COALESCE(
+//           SUM(marks_awarded),
+//           0
+//         ) AS score_obtained,
+
+//         COUNT(*) FILTER (
+//           WHERE is_correct = true
+//         ) AS correct_answers_count,
+
+//         COUNT(*) FILTER (
+//           WHERE is_correct IS NULL
+//         ) AS pending_answers
+
+//       FROM assessment_answers
+//       WHERE attempt_id = $1
+//       `,
+//       [attemptId]
+//     );
+
+//     const scoreData = scoreResult.rows[0];
+
+//     const scoreObtained = Number(
+//       scoreData.score_obtained
+//     );
+
+//     const correctAnswersCount = Number(
+//       scoreData.correct_answers_count
+//     );
+
+//     const pendingAnswers = Number(
+//       scoreData.pending_answers
+//     );
+
+//     const percentage = calculatePercentage(
+//       scoreObtained,
+//       attempt.total_marks
+//     );
+
+//     const subjectivePendingReview =
+//       pendingAnswers > 0;
+
+//     const isPassed = subjectivePendingReview
+//       ? null
+//       : percentage >=
+//       Number(attempt.passing_percentage);
+
+//     const finalStatus =
+//       subjectivePendingReview
+//         ? "submitted"
+//         : "evaluated";
+
+//     const updatedAttempt = await client.query(
+//       `
+//       UPDATE assessment_attempts
+//       SET
+//         submitted_at = NOW(),
+//         status = $1,
+//         score_obtained = $2,
+//         percentage = $3,
+//         is_passed = $4,
+//         correct_answers_count = $5,
+//         subjective_pending_review = $6,
+//         updated_at = NOW()
+//       WHERE attempt_id = $7
+//       RETURNING *
+//       `,
+//       [
+//         finalStatus,
+//         scoreObtained,
+//         percentage,
+//         isPassed,
+//         correctAnswersCount,
+//         subjectivePendingReview,
+//         attemptId,
+//       ]
+//     );
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       success: true,
+//       message: subjectivePendingReview
+//         ? "Assessment submitted. Subjective answers are pending review."
+//         : "Assessment submitted and evaluated successfully",
+//       data: updatedAttempt.rows[0],
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+
+//     console.error(
+//       "Submit assessment attempt error:",
+//       error
+//     );
+
+//     return res.status(500).json({
+//       success: false,
+//       message:
+//         error.message ||
+//         "Failed to submit assessment",
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
 export const submitAssessmentAttempt = async (
   req,
   res
@@ -3383,7 +3537,7 @@ export const submitAssessmentAttempt = async (
     const isPassed = subjectivePendingReview
       ? null
       : percentage >=
-      Number(attempt.passing_percentage);
+        Number(attempt.passing_percentage);
 
     const finalStatus =
       subjectivePendingReview
@@ -3416,6 +3570,18 @@ export const submitAssessmentAttempt = async (
       ]
     );
 
+    // ==========================================
+    // SEAMILES
+    // Passed linked assessment = +0.5
+    // ==========================================
+    if (isPassed === true) {
+      await awardAssessmentSeaMiles(
+        client,
+        userId,
+        assessmentId
+      );
+    }
+
     await client.query("COMMIT");
 
     return res.json({
@@ -3443,7 +3609,6 @@ export const submitAssessmentAttempt = async (
     client.release();
   }
 };
-
 // ======================================================
 // GET ASSESSMENT ATTEMPT RESULT
 // ======================================================
@@ -3573,5 +3738,380 @@ export const getAssessmentAttemptResult = async (
       success: false,
       message: "Failed to fetch attempt result",
     });
+  }
+};
+
+// ================= CREATE COURSE-LINKED ASSESSMENT =================
+
+export const createCourseAssessment = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const userId = getUserId(req);
+    const roleId = getRoleId(req);
+
+    const { courseId } = req.params;
+
+    // =====================================================
+    // 1. VALIDATE COURSE ID
+    // =====================================================
+
+    if (!courseId || !/^\d+$/.test(String(courseId))) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid courseId is required",
+      });
+    }
+
+    const numericCourseId = Number(courseId);
+
+    // =====================================================
+    // 2. GET COURSE + VERIFY IT EXISTS
+    // =====================================================
+
+    const courseResult = await client.query(
+      `
+      SELECT
+        id,
+        title,
+        company_id,
+        ship_id
+      FROM courses
+      WHERE id = $1
+        AND deleted_at IS NULL
+      `,
+      [numericCourseId]
+    );
+
+    if (courseResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Course not found",
+      });
+    }
+
+    const course = courseResult.rows[0];
+
+    // =====================================================
+    // 3. CHECK USER ACCESS TO THIS COURSE
+    // =====================================================
+
+    if (roleId !== 1) {
+      // Company must match
+      if (
+        course.company_id !== null &&
+        String(course.company_id) !== String(req.user.company_id)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "You do not have access to this course",
+        });
+      }
+
+      // For ship-level users, ship must match
+      if (
+        (roleId === 3 || roleId === 4) &&
+        course.ship_id !== null &&
+        Number(course.ship_id) !== Number(req.user.ship_id)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "You do not have access to this course",
+        });
+      }
+    }
+
+    // =====================================================
+    // 4. GET ASSESSMENT DATA
+    // =====================================================
+
+    const {
+      title,
+      description,
+      assessment_type,
+      category,
+      difficulty_level,
+      passing_percentage,
+      duration_minutes,
+      instructions,
+      is_published,
+      allow_multiple_attempts,
+      max_attempts,
+      randomize_questions,
+      show_result_immediately,
+      questions = [],
+    } = req.body;
+
+    // =====================================================
+    // 5. VALIDATE BASIC FIELDS
+    // =====================================================
+
+    if (!title || !assessment_type) {
+      return res.status(400).json({
+        success: false,
+        message: "title and assessment_type are required",
+      });
+    }
+
+    if (!ASSESSMENT_TYPES.includes(assessment_type)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "assessment_type must be mcq_single, mcq_multiple or subjective",
+      });
+    }
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one question is required",
+      });
+    }
+
+    // =====================================================
+    // 6. VALIDATE QUESTIONS
+    // =====================================================
+
+    let totalMarks = 0;
+
+    for (const q of questions) {
+      totalMarks += Number(q.marks || 1);
+
+      if (!ASSESSMENT_TYPES.includes(q.question_type)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid question_type",
+        });
+      }
+
+      if (q.question_type !== assessment_type) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "All question_type values must match assessment_type",
+        });
+      }
+
+      if (MCQ_TYPES.includes(assessment_type)) {
+        if (!Array.isArray(q.options) || q.options.length < 2) {
+          return res.status(400).json({
+            success: false,
+            message: "MCQ questions must have at least 2 options",
+          });
+        }
+
+        const correctCount = q.options.filter(
+          (opt) => opt.is_correct === true
+        ).length;
+
+        if (
+          assessment_type === "mcq_single" &&
+          correctCount !== 1
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "mcq_single questions must have exactly one correct option",
+          });
+        }
+
+        if (
+          assessment_type === "mcq_multiple" &&
+          correctCount < 1
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "mcq_multiple questions must have at least one correct option",
+          });
+        }
+      }
+
+      if (
+        assessment_type === "subjective" &&
+        q.options?.length
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Subjective questions cannot have options",
+        });
+      }
+    }
+
+    // =====================================================
+    // 7. BEGIN TRANSACTION
+    // =====================================================
+
+    await client.query("BEGIN");
+
+    // =====================================================
+    // 8. DETERMINE SCOPE FROM COURSE
+    // =====================================================
+
+    // IMPORTANT:
+    // We take company_id / ship_id from the course itself.
+    // The frontend cannot override them.
+
+    const companyId = course.company_id || null;
+    const shipId = course.ship_id || null;
+
+    // =====================================================
+    // 9. CREATE ASSESSMENT
+    // =====================================================
+
+    const assessmentResult = await client.query(
+      `
+      INSERT INTO assessments (
+        title,
+        description,
+        assessment_type,
+        category,
+        difficulty_level,
+        passing_percentage,
+        duration_minutes,
+        total_marks,
+        instructions,
+        is_published,
+        allow_multiple_attempts,
+        max_attempts,
+        randomize_questions,
+        show_result_immediately,
+        training_id,
+        company_id,
+        ship_id,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+        $11,$12,$13,$14,$15,$16,$17,$18,$19
+      )
+      RETURNING *
+      `,
+      [
+        title,
+        description || null,
+        assessment_type,
+        category || null,
+        difficulty_level || null,
+        passing_percentage || 0,
+        duration_minutes || null,
+        totalMarks,
+        instructions || null,
+
+        normalizeBool(is_published, false),
+        normalizeBool(allow_multiple_attempts, true),
+        max_attempts || null,
+        normalizeBool(randomize_questions, false),
+        normalizeBool(show_result_immediately, true),
+
+        // COURSE LINK
+        numericCourseId,
+
+        // INHERITED FROM COURSE
+        companyId,
+        shipId,
+
+        userId,
+        userId,
+      ]
+    );
+
+    const assessment = assessmentResult.rows[0];
+
+    // =====================================================
+    // 10. CREATE QUESTIONS
+    // =====================================================
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+
+      const questionResult = await client.query(
+        `
+        INSERT INTO assessment_questions (
+          assessment_id,
+          question_text,
+          question_type,
+          marks,
+          question_order,
+          explanation,
+          is_required
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *
+        `,
+        [
+          assessment.assessment_id,
+          q.question_text,
+          q.question_type,
+          q.marks || 1,
+          q.question_order || i + 1,
+          q.explanation || null,
+          q.is_required !== false,
+        ]
+      );
+
+      const question = questionResult.rows[0];
+
+      // ===================================================
+      // 11. CREATE OPTIONS
+      // ===================================================
+
+      if (MCQ_TYPES.includes(assessment_type)) {
+        for (let j = 0; j < q.options.length; j++) {
+          const opt = q.options[j];
+
+          await client.query(
+            `
+            INSERT INTO assessment_options (
+              question_id,
+              option_text,
+              is_correct,
+              option_order
+            )
+            VALUES ($1,$2,$3,$4)
+            `,
+            [
+              question.question_id,
+              opt.option_text,
+              normalizeBool(opt.is_correct, false),
+              opt.option_order || j + 1,
+            ]
+          );
+        }
+      }
+    }
+
+    // =====================================================
+    // 12. COMMIT
+    // =====================================================
+
+    await client.query("COMMIT");
+
+    // =====================================================
+    // 13. RESPONSE
+    // =====================================================
+
+    return res.status(201).json({
+      success: true,
+      message: "Course-linked assessment created successfully",
+      data: assessment,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error(
+      "Create course assessment error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Failed to create course-linked assessment",
+    });
+  } finally {
+    client.release();
   }
 };

@@ -1,4 +1,5 @@
 import { db } from "../db.js";
+import { awardCertificateSeaMiles } from "./seamilesController.js";
 
 const ROLE_SUPERADMIN = 1;
 const ROLE_ADMIN = 2;
@@ -490,6 +491,286 @@ export const issueCertificate = async (req, res) => {
 };
 
 // POST /certificates/generate
+// export const generateCertificate = async (req, res) => {
+//   const client = await db.connect();
+
+//   try {
+//     const requestType = normalizeType(req.body?.type);
+//     const userId = Number(req.user.user_id);
+
+//     const courseId =
+//       req.body?.course_id != null && req.body?.course_id !== ""
+//         ? Number(req.body.course_id)
+//         : null;
+
+//     const assessmentId =
+//       req.body?.assessment_id != null && String(req.body.assessment_id).trim() !== ""
+//         ? String(req.body.assessment_id).trim()
+//         : null;
+
+//     if (!["course", "assessment"].includes(requestType)) {
+//       return res.status(400).json({
+//         error: "type must be one of: course, assessment",
+//       });
+//     }
+
+//     const providedCount = (courseId != null ? 1 : 0) + (assessmentId ? 1 : 0);
+//     if (providedCount !== 1) {
+//       return res.status(400).json({
+//         error: "Exactly one of course_id or assessment_id is required",
+//       });
+//     }
+
+//     const targetUser = await getUserById(userId);
+//     if (!targetUser) {
+//       return res.status(404).json({ error: "User not found" });
+//     }
+
+//     let completion = null;
+//     let activeIssue = null;
+//     let finalCertificateType = null;
+//     let sourceCourseId = null;
+//     let sourceAssessmentId = null;
+//     let prefix = null;
+//     let metadata = {};
+
+//     if (requestType === "course") {
+//       if (!isPositiveInt(courseId)) {
+//         return res.status(400).json({ error: "Valid course_id is required for type=course" });
+//       }
+
+//       const { rows } = await client.query(
+//         `
+//   SELECT
+//     ce.user_id,
+//     ce.course_id,
+//     ce.completed_at,
+//     ce.completion_status,
+//     ce.certificate_issued,
+//     c.title AS item_title,
+//     c.content_mode,
+//     c.certificate_prefix
+//   FROM course_enrollments ce
+//   INNER JOIN courses c
+//     ON c.id = ce.course_id
+//   WHERE ce.user_id = $1
+//     AND ce.course_id = $2
+//     AND LOWER(COALESCE(ce.completion_status, '')) = 'completed'
+//     AND c.deleted_at IS NULL
+//   LIMIT 1
+//   `,
+//         [userId, courseId]
+//       );
+
+//       completion = rows[0] || null;
+//       if (!completion) {
+//         return res.status(400).json({
+//           error: "Completed course/training record not found for this user",
+//         });
+//       }
+
+//       const contentMode = normalizeType(completion.content_mode);
+//       if (!COURSE_CONTENT_MODES.includes(contentMode)) {
+//         return res.status(400).json({
+//           error: "This course does not support certificate generation",
+//         });
+//       }
+
+//       finalCertificateType = contentMode === "single_training" ? "training" : "course";
+//       sourceCourseId = courseId;
+//       prefix = completion.certificate_prefix;
+//       activeIssue = await getActiveIssueForCourse(client, courseId, req.user);
+
+//       metadata = {
+//         source_table: "courses",
+//         content_mode: completion.content_mode,
+//       };
+//     } else {
+//       if (!assessmentId) {
+//         return res.status(400).json({ error: "assessment_id is required for type=assessment" });
+//       }
+
+//       const { rows } = await client.query(
+//         `
+//   SELECT
+//     aa.user_id,
+//     aa.assessment_id,
+//     COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) AS completed_at,
+//     aa.score,
+//     aa.grade,
+//     a.title AS item_title,
+//     a.certificate_prefix
+//   FROM assessment_attempts aa
+//   INNER JOIN assessments a
+//     ON a.assessment_id = aa.assessment_id
+//   WHERE aa.user_id = $1
+//     AND aa.assessment_id = $2
+//     AND LOWER(COALESCE(aa.status, '')) IN ('completed', 'submitted', 'passed')
+//   ORDER BY COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) DESC
+//   LIMIT 1
+//   `,
+//         [userId, assessmentId]
+//       );
+
+//       completion = rows[0] || null;
+//       if (!completion) {
+//         return res.status(400).json({
+//           error: "Completed assessment record not found for this user",
+//         });
+//       }
+
+//       finalCertificateType = "assessment";
+//       sourceAssessmentId = assessmentId;
+//       prefix = completion.certificate_prefix;
+//       activeIssue = await getActiveIssueForAssessment(client, assessmentId, req.user);
+
+//       metadata = {
+//         source_table: "assessments",
+//       };
+//     }
+
+//     if (!activeIssue) {
+//       return res.status(400).json({
+//         error: "No active certificate issue found for this source",
+//       });
+//     }
+
+//     const cleanPrefix = normalizePrefix(prefix);
+//     if (cleanPrefix.length !== 4) {
+//       return res.status(400).json({
+//         error: "certificate_prefix is missing or invalid on the source item",
+//       });
+//     }
+
+//     const certificateCompanyId =
+//       targetUser.company_id ?? activeIssue.company_id ?? null;
+
+//     const certificateShipId =
+//       targetUser.ship_id ?? activeIssue.ship_id ?? null;
+
+//     await client.query("BEGIN");
+
+//     const existing = await findExistingCertificate(
+//       client,
+//       finalCertificateType,
+//       userId,
+//       sourceCourseId,
+//       sourceAssessmentId
+//     );
+
+//     if (existing) {
+//       await client.query("ROLLBACK");
+//       return res.status(409).json({
+//         error: "Certificate already generated",
+//         data: existing,
+//       });
+//     }
+
+//     const certificateUid = await generateCertificateUid(client, cleanPrefix);
+
+//     const insertResult = await client.query(
+//       `
+//       INSERT INTO certificates (
+//         certificate_uid,
+//         certificate_type,
+//         certificate_name,
+//         certificate_description,
+//         user_id,
+//         company_id,
+//         ship_id,
+//         course_id,
+//         assessment_id,
+//         full_name_snapshot,
+//         seafarer_id_snapshot,
+//         company_name_snapshot,
+//         ship_name_snapshot,
+//         item_title_snapshot,
+//         completion_date,
+//         issue_date,
+//         expiry_date,
+//         status,
+//         score,
+//         grade,
+//         notes,
+//         issuing_authority,
+//         issued_by_user_id,
+//         issued_by_name_snapshot,
+//         file_url,
+//         metadata,
+//         created_at,
+//         updated_at
+//       )
+//       VALUES (
+//         $1, $2, $3, $4, $5, $6, $7,
+//         $8, $9, $10, $11, $12, $13,
+//         $14, $15, NOW(), $16, 'active', $17,
+//         $18, $19, $20, $21, $22, NULL, $23, NOW(), NOW()
+//       )
+//       RETURNING *
+//       `,
+//       [
+//         certificateUid,
+//         finalCertificateType,
+//         activeIssue.certificate_name,
+//         activeIssue.certificate_description,
+//         userId,
+//         certificateCompanyId,
+//         certificateShipId,
+//         sourceCourseId,
+//         sourceAssessmentId,
+//         targetUser.full_name,
+//         targetUser.seafarer_id,
+//         targetUser.company_name,
+//         targetUser.ship_name,
+//         completion.item_title,
+//         completion.completed_at,
+//         activeIssue.expiry_date,
+//         finalCertificateType === "assessment" ? completion.score : null,
+//         finalCertificateType === "assessment" ? completion.grade : null,
+//         activeIssue.notes,
+//         activeIssue.issuing_authority,
+//         activeIssue.issued_by_user_id,
+//         activeIssue.issued_by_name_snapshot,
+//         JSON.stringify({
+//           ...metadata,
+//           certificate_issue_id: activeIssue.issue_id,
+//         }),
+//       ]
+//     );
+
+//     if (requestType === "course") {
+//       await client.query(
+//         `
+//         UPDATE course_enrollments
+//         SET certificate_issued = true,
+//             updated_at = NOW()
+//         WHERE user_id = $1
+//           AND course_id = $2
+//         `,
+//         [userId, courseId]
+//       );
+//     }
+
+//     await client.query("COMMIT");
+
+//     return res.status(201).json({
+//       message: "Certificate generated successfully",
+//       data: insertResult.rows[0],
+//     });
+//   } catch (err) {
+//     try {
+//       await client.query("ROLLBACK");
+//     } catch (_) { }
+
+//     console.error("generateCertificate error:", err);
+//     return res.status(500).json({
+//       error: "Failed to generate certificate",
+//       details: err.message,
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
 export const generateCertificate = async (req, res) => {
   const client = await db.connect();
 
@@ -503,9 +784,14 @@ export const generateCertificate = async (req, res) => {
         : null;
 
     const assessmentId =
-      req.body?.assessment_id != null && String(req.body.assessment_id).trim() !== ""
+      req.body?.assessment_id != null &&
+      String(req.body.assessment_id).trim() !== ""
         ? String(req.body.assessment_id).trim()
         : null;
+
+    // =====================================================
+    // VALIDATE REQUEST TYPE
+    // =====================================================
 
     if (!["course", "assessment"].includes(requestType)) {
       return res.status(400).json({
@@ -513,16 +799,31 @@ export const generateCertificate = async (req, res) => {
       });
     }
 
-    const providedCount = (courseId != null ? 1 : 0) + (assessmentId ? 1 : 0);
+    // =====================================================
+    // EXACTLY ONE SOURCE IS REQUIRED
+    // =====================================================
+
+    const providedCount =
+      (courseId != null ? 1 : 0) +
+      (assessmentId ? 1 : 0);
+
     if (providedCount !== 1) {
       return res.status(400).json({
-        error: "Exactly one of course_id or assessment_id is required",
+        error:
+          "Exactly one of course_id or assessment_id is required",
       });
     }
 
+    // =====================================================
+    // GET USER
+    // =====================================================
+
     const targetUser = await getUserById(userId);
+
     if (!targetUser) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({
+        error: "User not found",
+      });
     }
 
     let completion = null;
@@ -533,121 +834,205 @@ export const generateCertificate = async (req, res) => {
     let prefix = null;
     let metadata = {};
 
+    // =====================================================
+    // COURSE / TRAINING CERTIFICATE
+    // =====================================================
+
     if (requestType === "course") {
       if (!isPositiveInt(courseId)) {
-        return res.status(400).json({ error: "Valid course_id is required for type=course" });
+        return res.status(400).json({
+          error:
+            "Valid course_id is required for type=course",
+        });
       }
 
       const { rows } = await client.query(
         `
-  SELECT
-    ce.user_id,
-    ce.course_id,
-    ce.completed_at,
-    ce.completion_status,
-    ce.certificate_issued,
-    c.title AS item_title,
-    c.content_mode,
-    c.certificate_prefix
-  FROM course_enrollments ce
-  INNER JOIN courses c
-    ON c.id = ce.course_id
-  WHERE ce.user_id = $1
-    AND ce.course_id = $2
-    AND LOWER(COALESCE(ce.completion_status, '')) = 'completed'
-    AND c.deleted_at IS NULL
-  LIMIT 1
-  `,
+        SELECT
+          ce.user_id,
+          ce.course_id,
+          ce.completed_at,
+          ce.completion_status,
+          ce.certificate_issued,
+          c.title AS item_title,
+          c.content_mode,
+          c.certificate_prefix
+        FROM course_enrollments ce
+        INNER JOIN courses c
+          ON c.id = ce.course_id
+        WHERE ce.user_id = $1
+          AND ce.course_id = $2
+          AND LOWER(
+            COALESCE(ce.completion_status, '')
+          ) = 'completed'
+          AND c.deleted_at IS NULL
+        LIMIT 1
+        `,
         [userId, courseId]
       );
 
       completion = rows[0] || null;
+
       if (!completion) {
         return res.status(400).json({
-          error: "Completed course/training record not found for this user",
+          error:
+            "Completed course/training record not found for this user",
         });
       }
 
-      const contentMode = normalizeType(completion.content_mode);
+      const contentMode = normalizeType(
+        completion.content_mode
+      );
+
       if (!COURSE_CONTENT_MODES.includes(contentMode)) {
         return res.status(400).json({
-          error: "This course does not support certificate generation",
+          error:
+            "This course does not support certificate generation",
         });
       }
 
-      finalCertificateType = contentMode === "single_training" ? "training" : "course";
+      finalCertificateType =
+        contentMode === "single_training"
+          ? "training"
+          : "course";
+
       sourceCourseId = courseId;
+
       prefix = completion.certificate_prefix;
-      activeIssue = await getActiveIssueForCourse(client, courseId, req.user);
+
+      activeIssue = await getActiveIssueForCourse(
+        client,
+        courseId,
+        req.user
+      );
 
       metadata = {
         source_table: "courses",
         content_mode: completion.content_mode,
       };
-    } else {
+    }
+
+    // =====================================================
+    // ASSESSMENT CERTIFICATE
+    // =====================================================
+
+    else {
       if (!assessmentId) {
-        return res.status(400).json({ error: "assessment_id is required for type=assessment" });
+        return res.status(400).json({
+          error:
+            "assessment_id is required for type=assessment",
+        });
       }
 
       const { rows } = await client.query(
         `
-  SELECT
-    aa.user_id,
-    aa.assessment_id,
-    COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) AS completed_at,
-    aa.score,
-    aa.grade,
-    a.title AS item_title,
-    a.certificate_prefix
-  FROM assessment_attempts aa
-  INNER JOIN assessments a
-    ON a.assessment_id = aa.assessment_id
-  WHERE aa.user_id = $1
-    AND aa.assessment_id = $2
-    AND LOWER(COALESCE(aa.status, '')) IN ('completed', 'submitted', 'passed')
-  ORDER BY COALESCE(aa.completed_at, aa.submitted_at, aa.created_at) DESC
-  LIMIT 1
-  `,
+        SELECT
+          aa.user_id,
+          aa.assessment_id,
+          COALESCE(
+            aa.completed_at,
+            aa.submitted_at,
+            aa.created_at
+          ) AS completed_at,
+          aa.score,
+          aa.grade,
+          a.title AS item_title,
+          a.certificate_prefix
+        FROM assessment_attempts aa
+        INNER JOIN assessments a
+          ON a.assessment_id = aa.assessment_id
+        WHERE aa.user_id = $1
+          AND aa.assessment_id = $2
+          AND LOWER(
+            COALESCE(aa.status, '')
+          ) IN (
+            'completed',
+            'submitted',
+            'passed'
+          )
+        ORDER BY COALESCE(
+          aa.completed_at,
+          aa.submitted_at,
+          aa.created_at
+        ) DESC
+        LIMIT 1
+        `,
         [userId, assessmentId]
       );
 
       completion = rows[0] || null;
+
       if (!completion) {
         return res.status(400).json({
-          error: "Completed assessment record not found for this user",
+          error:
+            "Completed assessment record not found for this user",
         });
       }
 
       finalCertificateType = "assessment";
+
       sourceAssessmentId = assessmentId;
+
       prefix = completion.certificate_prefix;
-      activeIssue = await getActiveIssueForAssessment(client, assessmentId, req.user);
+
+      activeIssue = await getActiveIssueForAssessment(
+        client,
+        assessmentId,
+        req.user
+      );
 
       metadata = {
         source_table: "assessments",
       };
     }
 
+    // =====================================================
+    // CHECK ACTIVE CERTIFICATE ISSUE
+    // =====================================================
+
     if (!activeIssue) {
       return res.status(400).json({
-        error: "No active certificate issue found for this source",
+        error:
+          "No active certificate issue found for this source",
       });
     }
+
+    // =====================================================
+    // VALIDATE CERTIFICATE PREFIX
+    // =====================================================
 
     const cleanPrefix = normalizePrefix(prefix);
+
     if (cleanPrefix.length !== 4) {
       return res.status(400).json({
-        error: "certificate_prefix is missing or invalid on the source item",
+        error:
+          "certificate_prefix is missing or invalid on the source item",
       });
     }
 
+    // =====================================================
+    // DETERMINE COMPANY / SHIP
+    // =====================================================
+
     const certificateCompanyId =
-      targetUser.company_id ?? activeIssue.company_id ?? null;
+      targetUser.company_id ??
+      activeIssue.company_id ??
+      null;
 
     const certificateShipId =
-      targetUser.ship_id ?? activeIssue.ship_id ?? null;
+      targetUser.ship_id ??
+      activeIssue.ship_id ??
+      null;
+
+    // =====================================================
+    // START TRANSACTION
+    // =====================================================
 
     await client.query("BEGIN");
+
+    // =====================================================
+    // CHECK DUPLICATE CERTIFICATE
+    // =====================================================
 
     const existing = await findExistingCertificate(
       client,
@@ -659,13 +1044,26 @@ export const generateCertificate = async (req, res) => {
 
     if (existing) {
       await client.query("ROLLBACK");
+
       return res.status(409).json({
         error: "Certificate already generated",
         data: existing,
       });
     }
 
-    const certificateUid = await generateCertificateUid(client, cleanPrefix);
+    // =====================================================
+    // GENERATE CERTIFICATE UID
+    // =====================================================
+
+    const certificateUid =
+      await generateCertificateUid(
+        client,
+        cleanPrefix
+      );
+
+    // =====================================================
+    // INSERT CERTIFICATE
+    // =====================================================
 
     const insertResult = await client.query(
       `
@@ -700,10 +1098,34 @@ export const generateCertificate = async (req, res) => {
         updated_at
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10, $11, $12, $13,
-        $14, $15, NOW(), $16, 'active', $17,
-        $18, $19, $20, $21, $22, NULL, $23, NOW(), NOW()
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        $12,
+        $13,
+        $14,
+        $15,
+        NOW(),
+        $16,
+        'active',
+        $17,
+        $18,
+        $19,
+        $20,
+        $21,
+        $22,
+        NULL,
+        $23,
+        NOW(),
+        NOW()
       )
       RETURNING *
       `,
@@ -724,25 +1146,35 @@ export const generateCertificate = async (req, res) => {
         completion.item_title,
         completion.completed_at,
         activeIssue.expiry_date,
-        finalCertificateType === "assessment" ? completion.score : null,
-        finalCertificateType === "assessment" ? completion.grade : null,
+        finalCertificateType === "assessment"
+          ? completion.score
+          : null,
+        finalCertificateType === "assessment"
+          ? completion.grade
+          : null,
         activeIssue.notes,
         activeIssue.issuing_authority,
         activeIssue.issued_by_user_id,
         activeIssue.issued_by_name_snapshot,
         JSON.stringify({
           ...metadata,
-          certificate_issue_id: activeIssue.issue_id,
+          certificate_issue_id:
+            activeIssue.issue_id,
         }),
       ]
     );
+
+    // =====================================================
+    // MARK COURSE CERTIFICATE AS ISSUED
+    // =====================================================
 
     if (requestType === "course") {
       await client.query(
         `
         UPDATE course_enrollments
-        SET certificate_issued = true,
-            updated_at = NOW()
+        SET
+          certificate_issued = true,
+          updated_at = NOW()
         WHERE user_id = $1
           AND course_id = $2
         `,
@@ -750,27 +1182,47 @@ export const generateCertificate = async (req, res) => {
       );
     }
 
+    // =====================================================
+    // SEAMILES
+    // CERTIFICATE GENERATED = +1.00
+    // =====================================================
+
+    await awardCertificateSeaMiles(
+      client,
+      userId,
+      insertResult.rows[0].certificate_id
+    );
+
+    // =====================================================
+    // COMMIT
+    // =====================================================
+
     await client.query("COMMIT");
 
     return res.status(201).json({
       message: "Certificate generated successfully",
       data: insertResult.rows[0],
     });
+
   } catch (err) {
     try {
       await client.query("ROLLBACK");
-    } catch (_) { }
+    } catch (_) {}
 
-    console.error("generateCertificate error:", err);
+    console.error(
+      "generateCertificate error:",
+      err
+    );
+
     return res.status(500).json({
       error: "Failed to generate certificate",
       details: err.message,
     });
+
   } finally {
     client.release();
   }
 };
-
 // POST /certificates/filter
 export const filterCertificates = async (req, res) => {
   try {

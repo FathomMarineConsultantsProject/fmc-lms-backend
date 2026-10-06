@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { s3, S3_BUCKET, AWS_REGION, SIGNED_URL_EXPIRES } from "../config/s3.js";
+import { awardTrainingSeaMiles } from "./seamilesController.js";
 
 const VALID_CONTENT_MODES = new Set(["single_training", "course"]);
 const VALID_CONTENT_TYPES = new Set([
@@ -1772,6 +1773,121 @@ export async function reorderCourseContents(req, res) {
   }
 }
 
+// export async function completeCourseByLoggedInUser(req, res) {
+//   const client = await db.connect();
+
+//   try {
+//     const courseId = Number(req.params.courseId);
+//     const userId = getAuthUserId(req);
+
+//     if (!userId) {
+//       return res.status(401).json({ message: "Unauthorized" });
+//     }
+
+//     if (!courseId || Number.isNaN(courseId)) {
+//       return res.status(400).json({ message: "Invalid course id" });
+//     }
+
+//     const courseCheck = await client.query(
+//       `
+//       SELECT id, title, deleted_at
+//       FROM courses
+//       WHERE id = $1
+//         AND deleted_at IS NULL
+//       LIMIT 1
+//       `,
+//       [courseId]
+//     );
+
+//     const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
+
+//     if (!allowed) {
+//       return res.status(404).json({ message: "Course not found" });
+//     }
+
+//     if (!courseCheck.rowCount) {
+//       return res.status(404).json({ message: "Course not found" });
+//     }
+
+//     await client.query("BEGIN");
+
+//     const existingEnrollment = await client.query(
+//       `
+//       SELECT user_id, course_id, status, completion_status, completed_at
+//       FROM course_enrollments
+//       WHERE user_id = $1
+//         AND course_id = $2
+//       LIMIT 1
+//       `,
+//       [userId, courseId]
+//     );
+
+//     if (existingEnrollment.rowCount) {
+//       await client.query(
+//         `
+//         UPDATE course_enrollments
+//         SET
+//           status = 'completed',
+//           completion_status = 'completed',
+//           completed_at = NOW(),
+//           updated_at = NOW()
+//         WHERE user_id = $1
+//           AND course_id = $2
+//         `,
+//         [userId, courseId]
+//       );
+//     } else {
+//       await client.query(
+//         `
+//         INSERT INTO course_enrollments (
+//           user_id,
+//           course_id,
+//           status,
+//           enrolled_at,
+//           completion_status,
+//           completed_at,
+//           updated_at
+//         )
+//         VALUES ($1, $2, 'completed', NOW(), 'completed', NOW(), NOW())
+//         `,
+//         [userId, courseId]
+//       );
+//     }
+
+//     await client.query(
+//       `
+//       INSERT INTO course_completion_history (
+//         user_id,
+//         course_id,
+//         completed_at,
+//         created_at
+//       )
+//       VALUES ($1, $2, NOW(), NOW())
+//       `,
+//       [userId, courseId]
+//     );
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       message: "Course marked as completed successfully",
+//       user_id: userId,
+//       course_id: courseId,
+//       completed_at: new Date().toISOString(),
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("completeCourseByLoggedInUser error:", error);
+//     return res.status(500).json({
+//       message: "Failed to mark course as completed",
+//       error: error.message,
+//     });
+//   } finally {
+//     client.release();
+//   }
+// }
+
+
 export async function completeCourseByLoggedInUser(req, res) {
   const client = await db.connect();
 
@@ -1798,21 +1914,35 @@ export async function completeCourseByLoggedInUser(req, res) {
       [courseId]
     );
 
-    const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
+    const allowed = await checkCourseScope(
+      req,
+      courseId,
+      client,
+      { includeGlobal: true }
+    );
 
     if (!allowed) {
-      return res.status(404).json({ message: "Course not found" });
+      return res.status(404).json({
+        message: "Course not found",
+      });
     }
 
     if (!courseCheck.rowCount) {
-      return res.status(404).json({ message: "Course not found" });
+      return res.status(404).json({
+        message: "Course not found",
+      });
     }
 
     await client.query("BEGIN");
 
     const existingEnrollment = await client.query(
       `
-      SELECT user_id, course_id, status, completion_status, completed_at
+      SELECT
+        user_id,
+        course_id,
+        status,
+        completion_status,
+        completed_at
       FROM course_enrollments
       WHERE user_id = $1
         AND course_id = $2
@@ -1847,7 +1977,15 @@ export async function completeCourseByLoggedInUser(req, res) {
           completed_at,
           updated_at
         )
-        VALUES ($1, $2, 'completed', NOW(), 'completed', NOW(), NOW())
+        VALUES (
+          $1,
+          $2,
+          'completed',
+          NOW(),
+          'completed',
+          NOW(),
+          NOW()
+        )
         `,
         [userId, courseId]
       );
@@ -1861,9 +1999,23 @@ export async function completeCourseByLoggedInUser(req, res) {
         completed_at,
         created_at
       )
-      VALUES ($1, $2, NOW(), NOW())
+      VALUES (
+        $1,
+        $2,
+        NOW(),
+        NOW()
+      )
       `,
       [userId, courseId]
+    );
+
+    // ==========================================
+    // SEAMILES: TRAINING COMPLETED = +0.5
+    // ==========================================
+    await awardTrainingSeaMiles(
+      client,
+      userId,
+      courseId
     );
 
     await client.query("COMMIT");
@@ -1876,7 +2028,12 @@ export async function completeCourseByLoggedInUser(req, res) {
     });
   } catch (error) {
     await client.query("ROLLBACK");
-    console.error("completeCourseByLoggedInUser error:", error);
+
+    console.error(
+      "completeCourseByLoggedInUser error:",
+      error
+    );
+
     return res.status(500).json({
       message: "Failed to mark course as completed",
       error: error.message,
@@ -1885,6 +2042,8 @@ export async function completeCourseByLoggedInUser(req, res) {
     client.release();
   }
 }
+
+
 
 export async function getMyCourseCompletionStatus(req, res) {
   try {

@@ -29,6 +29,7 @@ import {
   checkAssessmentAttemptAnswer,
   submitAssessmentAttempt,
   getAssessmentAttemptResult,
+  createCourseAssessment,
 } from "../controller/assessmentsController.js";
 import { uploadExcel } from "../middleware/uploadExcel.js";
 
@@ -119,6 +120,11 @@ router.post(
 router.get(
   "/attempt-results/:attemptId",
   getAssessmentAttemptResult
+);
+
+router.post(
+  "/courses/:courseId/assessments",
+  createCourseAssessment
 );
 
 export default router;
