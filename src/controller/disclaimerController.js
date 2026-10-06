@@ -4,23 +4,17 @@ import { db } from "../db.js";
 // DISCLAIMER CONTROLLERS
 // ==========================================
 
-// Record disclaimer acceptance
-// Available to every logged-in user
+// User accepts disclaimer
 export const acceptDisclaimer = async (req, res) => {
     try {
-        const userId = req.user?.user_id || req.user?.id;
+        const userId = req.user?.user_id;
+
+        console.log("REQ.USER:", req.user);
+        console.log("USER ID:", userId);
 
         if (!userId) {
             return res.status(401).json({
                 error: "Unauthorized: User ID not found."
-            });
-        }
-
-        const parsedUserId = parseInt(userId, 10);
-
-        if (isNaN(parsedUserId)) {
-            return res.status(400).json({
-                error: "Invalid user ID."
             });
         }
 
@@ -33,7 +27,7 @@ export const acceptDisclaimer = async (req, res) => {
                 user_id,
                 accepted_at
             `,
-            [parsedUserId]
+            [userId]
         );
 
         return res.status(201).json({
@@ -53,7 +47,7 @@ export const acceptDisclaimer = async (req, res) => {
 
 // ==========================================
 // GET DISCLAIMER ACCEPTANCE HISTORY
-// Only Role 1 can access this
+// ROLE 1 ONLY
 // ==========================================
 
 export const getDisclaimerAcceptances = async (req, res) => {
