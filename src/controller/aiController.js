@@ -174,12 +174,14 @@ export const handleChatBotQuery = async (req, res) => {
         return res.json({ reply });
 
     } catch (error) {
-        console.error("Chatbot Error:", error);
+    console.error("Chatbot Error:", error);
 
-        return res.status(500).json({
-            error: "AI server is busy. Please try again later"
-        });
-    }
+    return res.status(500).json({
+        error: error.message,
+        stack: process.env.NODE_ENV !== "production"
+            ? error.stack
+            : undefined
+    });
 };
 
 
