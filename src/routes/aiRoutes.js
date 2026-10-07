@@ -7,7 +7,7 @@ const router = Router();
 
 router.use(requireAuth);
 
-router.post('/chat',requireAuth, handleChatBotQuery);
+router.post('/chat', handleChatBotQuery);
 router.post('/generate-description', generateCourseDescription);
 router.post('/generate-toc', generateTableOfContents);
 
