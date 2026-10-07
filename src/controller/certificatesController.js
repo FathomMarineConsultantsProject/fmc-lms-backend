@@ -925,40 +925,29 @@ export const generateCertificate = async (req, res) => {
       }
 
       const { rows } = await client.query(
-        `
-        SELECT
-          aa.user_id,
-          aa.assessment_id,
-          COALESCE(
-            aa.completed_at,
-            aa.submitted_at,
-            aa.created_at
-          ) AS completed_at,
-          aa.score,
-          aa.grade,
-          a.title AS item_title,
-          a.certificate_prefix
-        FROM assessment_attempts aa
-        INNER JOIN assessments a
-          ON a.assessment_id = aa.assessment_id
-        WHERE aa.user_id = $1
-          AND aa.assessment_id = $2
-          AND LOWER(
-            COALESCE(aa.status, '')
-          ) IN (
-            'completed',
-            'submitted',
-            'passed'
-          )
-        ORDER BY COALESCE(
-          aa.completed_at,
-          aa.submitted_at,
-          aa.created_at
-        ) DESC
-        LIMIT 1
-        `,
-        [userId, assessmentId]
-      );
+  `
+  SELECT
+    aa.user_id,
+    aa.assessment_id,
+    aa.submitted_at AS completed_at,
+    aa.score_obtained,
+    aa.percentage,
+    aa.is_passed,
+    aa.status,
+    a.title AS item_title,
+    a.certificate_prefix
+  FROM assessment_attempts aa
+  INNER JOIN assessments a
+    ON a.assessment_id = aa.assessment_id
+  WHERE aa.user_id = $1
+    AND aa.assessment_id = $2
+    AND LOWER(COALESCE(aa.status, '')) = 'evaluated'
+    AND aa.is_passed = true
+  ORDER BY aa.submitted_at DESC
+  LIMIT 1
+  `,
+  [userId, assessmentId]
+);
 
       completion = rows[0] || null;
 
@@ -1147,11 +1136,10 @@ export const generateCertificate = async (req, res) => {
         completion.completed_at,
         activeIssue.expiry_date,
         finalCertificateType === "assessment"
-          ? completion.score
-          : null,
-        finalCertificateType === "assessment"
-          ? completion.grade
-          : null,
+  ? completion.percentage
+  : null,
+
+null,
         activeIssue.notes,
         activeIssue.issuing_authority,
         activeIssue.issued_by_user_id,
