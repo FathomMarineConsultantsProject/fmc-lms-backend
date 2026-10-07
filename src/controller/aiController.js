@@ -105,15 +105,19 @@ export async function generateIncidentDashboard(incidentData) {
 export const handleChatBotQuery = async (req, res) => {
   const { message } = req.body;
 
+  console.log("CHAT API HIT");
+  console.log("User:", req.user);
+  console.log("Message:", message);
+
   if (!message) {
     return res.status(400).json({
       error: "Message is required"
     });
   }
 
-  const client = await db.connect();
-
   try {
+    console.log("Creating Gemini model...");
+
     const model = genAI.getGenerativeModel({
       model: "gemini-3.6-flash",
 
@@ -134,14 +138,15 @@ export const handleChatBotQuery = async (req, res) => {
       `
     });
 
+    console.log("Calling Gemini...");
+
     const result = await model.generateContent(message);
+
+    console.log("Gemini response received");
+
     const reply = result.response.text();
 
-    // Gemini response was successful → deduct 1 SeaMile
-    await awardAIUsageSeaMiles(
-      client,
-      req.user.user_id
-    );
+    console.log("Reply:", reply);
 
     return res.json({ reply });
 
@@ -151,9 +156,6 @@ export const handleChatBotQuery = async (req, res) => {
     return res.status(500).json({
       error: "AI server is busy. Please try after some time"
     });
-
-  } finally {
-    client.release();
   }
 };
 
