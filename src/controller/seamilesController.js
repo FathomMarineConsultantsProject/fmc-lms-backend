@@ -269,3 +269,52 @@ export const awardAIUsageSeaMiles = async (client, userId) => {
     ]
   );
 };
+
+// =====================================================
+// GET CURRENT USER SEAMILES
+// =====================================================
+
+export const getMySeaMiles = async (req, res) => {
+    try {
+        const userId = req.user?.user_id;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "User not authenticated",
+            });
+        }
+
+        const result = await db.query(
+            `
+            SELECT
+                COALESCE(SUM(seamiles), 0) AS total_seamiles
+            FROM seamiles_ledger
+            WHERE user_id = $1
+            `,
+            [userId]
+        );
+
+        const totalSeaMiles = Number(
+            result.rows[0]?.total_seamiles || 0
+        );
+
+        return res.status(200).json({
+            success: true,
+            user_id: userId,
+            total_seamiles: totalSeaMiles,
+        });
+
+    } catch (error) {
+        console.error(
+            "getMySeaMiles error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch SeaMiles",
+            error: error.message,
+        });
+    }
+};

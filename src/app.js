@@ -28,7 +28,7 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import disclaimerRoutes from "./routes/disclaimerRoutes.js"
-
+import seamilesRoutes from "./routes/seamilesRoutes.js";
 const app = express();
 
 app.set("trust proxy", 1);
@@ -118,7 +118,7 @@ app.use("/api/users", userExportRoutes);
 app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
-
+app.use("/api/seamiles", seamilesRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 /**
  * Unity course progress APIs
