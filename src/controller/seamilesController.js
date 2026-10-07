@@ -218,3 +218,54 @@ export const awardCertificateSeaMiles = async (
     ]
   );
 };
+
+export const awardAIUsageSeaMiles = async (client, userId) => {
+  const userResult = await client.query(
+    `
+    SELECT
+      company_id,
+      ship_id
+    FROM users
+    WHERE user_id = $1
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  if (!userResult.rowCount) {
+    return;
+  }
+
+  const { company_id, ship_id } = userResult.rows[0];
+
+  await client.query(
+    `
+    INSERT INTO seamiles_ledger (
+      user_id,
+      company_id,
+      ship_id,
+      event_type,
+      seamiles,
+      reference_type,
+      metadata
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      'AI_USED',
+      -1.00,
+      'AI_USAGE',
+      $4
+    )
+    `,
+    [
+      userId,
+      company_id,
+      ship_id,
+      JSON.stringify({
+        action: "chatbot_query"
+      })
+    ]
+  );
+};
