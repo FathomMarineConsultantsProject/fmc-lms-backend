@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-import { awardAIUsageSeaMiles } from "./seamilesController.js";
+import { awardAIUsageSeaMiles } from "./seamilesController.js"
 
 // Define the exact structure the AI must return
 const dashboardSchema = {
@@ -103,60 +103,78 @@ export async function generateIncidentDashboard(incidentData) {
 
 //chatbot
 export const handleChatBotQuery = async (req, res) => {
-  const { message } = req.body;
+    const { message } = req.body;
 
-  console.log("CHAT API HIT");
-  console.log("User:", req.user);
-  console.log("Message:", message);
+    console.log("CHAT API HIT");
+    console.log("User:", req.user);
+    console.log("Message:", message);
 
-  if (!message) {
-    return res.status(400).json({
-      error: "Message is required"
-    });
-  }
+    if (!message) {
+        return res.status(400).json({
+            error: "Message is required"
+        });
+    }
 
-  try {
-    console.log("Creating Gemini model...");
+    try {
+        console.log("Creating Gemini model...");
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.6-flash",
+        const model = genAI.getGenerativeModel({
+            model: "gemini-3.6-flash",
 
-      systemInstruction: `
-        You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS).
+            systemInstruction: `
+                You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS).
 
-        Your sole purpose is to answer questions related to maritime operations, ships,
-        crew management, marine safety, navigation, and how to use this LMS platform.
+                Your sole purpose is to answer questions related to maritime operations, ships,
+                crew management, marine safety, navigation, and how to use this LMS platform.
 
-        Keep the answer short and precise.
+                Keep the answer short and precise.
 
-        If a user asks you a question about programming, cooking, history,
-        general knowledge, or ANYTHING unrelated to maritime operations or the LMS,
-        you must politely refuse.
+                If a user asks you a question about programming, cooking, history,
+                general knowledge, or ANYTHING unrelated to maritime operations or the LMS,
+                you must politely refuse.
 
-        Reply with:
-        "I am a specialized Maritime LMS assistant. I can only answer questions related to marine operations and shipping."
-      `
-    });
+                Reply with:
+                "I am a specialized Maritime LMS assistant. I can only answer questions related to marine operations and shipping."
+            `
+        });
 
-    console.log("Calling Gemini...");
+        console.log("Calling Gemini...");
 
-    const result = await model.generateContent(message);
+        const result = await model.generateContent(message);
 
-    console.log("Gemini response received");
+        console.log("Gemini response received");
 
-    const reply = result.response.text();
+        const reply = result.response.text();
 
-    console.log("Reply:", reply);
+        console.log("Reply:", reply);
 
-    return res.json({ reply });
+        // Deduct 1 SeaMile only after successful AI response
+        if (req.user?.user_id) {
+            const client = await db.connect();
 
-  } catch (error) {
-    console.error("Gemini API Error:", error);
+            try {
+                await awardAIUsageSeaMiles(
+                    client,
+                    req.user.user_id
+                );
 
-    return res.status(500).json({
-      error: "AI server is busy. Please try after some time"
-    });
-  }
+                console.log("AI SeaMile deducted: -1.00");
+            } finally {
+                client.release();
+            }
+        } else {
+            console.log("No logged-in user found. SeaMile not deducted.");
+        }
+
+        return res.json({ reply });
+
+    } catch (error) {
+        console.error("Gemini API Error:", error);
+
+        return res.status(500).json({
+            error: "AI server is busy. Please try again later"
+        });
+    }
 };
 
 
