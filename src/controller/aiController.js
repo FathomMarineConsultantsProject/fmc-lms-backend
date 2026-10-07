@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 import { awardAIUsageSeaMiles } from "./seamilesController.js"
-
+import { db } from "../db.js";
 // Define the exact structure the AI must return
 const dashboardSchema = {
     type: SchemaType.OBJECT,
@@ -182,6 +182,7 @@ export const handleChatBotQuery = async (req, res) => {
             ? error.stack
             : undefined
     });
+}
 };
 
 
