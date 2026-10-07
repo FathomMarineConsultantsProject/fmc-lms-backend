@@ -116,8 +116,6 @@ export const handleChatBotQuery = async (req, res) => {
     }
 
     try {
-        console.log("Creating Gemini model...");
-
         const model = genAI.getGenerativeModel({
             model: "gemini-3.6-flash",
 
@@ -148,28 +146,35 @@ export const handleChatBotQuery = async (req, res) => {
 
         console.log("Reply:", reply);
 
-        // Deduct 1 SeaMile only after successful AI response
-        if (req.user?.user_id) {
-            const client = await db.connect();
+        // Deduct SeaMile after successful AI response
+        const userId = req.user?.user_id;
 
-            try {
-                await awardAIUsageSeaMiles(
-                    client,
-                    req.user.user_id
-                );
+        console.log("User ID:", userId);
 
-                console.log("AI SeaMile deducted: -1.00");
-            } finally {
-                client.release();
-            }
-        } else {
-            console.log("No logged-in user found. SeaMile not deducted.");
+        if (!userId) {
+            console.error("User ID not found");
+            return res.status(401).json({
+                error: "User not authenticated"
+            });
+        }
+
+        const client = await db.connect();
+
+        try {
+            await awardAIUsageSeaMiles(
+                client,
+                userId
+            );
+
+            console.log("AI SeaMile deducted successfully");
+        } finally {
+            client.release();
         }
 
         return res.json({ reply });
 
     } catch (error) {
-        console.error("Gemini API Error:", error);
+        console.error("Chatbot Error:", error);
 
         return res.status(500).json({
             error: "AI server is busy. Please try again later"
