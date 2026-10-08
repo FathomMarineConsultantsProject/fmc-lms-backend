@@ -20,7 +20,7 @@ const isOnboard = (s) => normalizeStatus(s) === 'onboard';
 
 // ✅ Admin roles are "Onboard" by default (status doesn't matter for login)
 const isAdminRole = (roleId) =>
-  [ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN].includes(Number(roleId));
+  Number(roleId) === ROLE_SUPERADMIN;
 
 // sha256 hash (your current approach)
 const hashPassword = (plain) =>
