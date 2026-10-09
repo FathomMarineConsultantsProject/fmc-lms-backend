@@ -141,7 +141,6 @@ export const getAllCompanies = async (req, res) => {
           c.*,
           u.user_id,
           u.status AS user_status,
-          (LOWER(u.status) = 'onboard') AS is_active,
           u.username AS admin_username,
           u.password_enc AS admin_password_enc
         FROM company c
