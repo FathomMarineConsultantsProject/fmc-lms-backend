@@ -21,6 +21,16 @@ export const createTransporter = () => {
   });
 };
 
+
+const getTransporter = () => {
+  if (!cachedTransporter) {
+    cachedTransporter = createTransporter();
+  }
+
+  return cachedTransporter;
+};
+
+
 export const sendEmail = async ({
   to,
   cc,
