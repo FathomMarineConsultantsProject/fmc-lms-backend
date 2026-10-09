@@ -21,12 +21,13 @@ export const createTransporter = () => {
   });
 };
 
-const getTransporter = () => {
-  if (!cachedTransporter) cachedTransporter = createTransporter();
-  return cachedTransporter;
-};
-
-export const sendEmail = async ({ to, subject, html }) => {
+export const sendEmail = async ({
+  to,
+  cc,
+  bcc,
+  subject,
+  html,
+}) => {
   const fromName = process.env.MAIL_FROM_NAME || "Fathom Marine";
   const fromEmail = process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER;
 
@@ -35,6 +36,8 @@ export const sendEmail = async ({ to, subject, html }) => {
   return transporter.sendMail({
     from: `${fromName} <${fromEmail}>`,
     to,
+    ...(cc ? { cc } : {}),
+    ...(bcc ? { bcc } : {}),
     subject,
     html,
   });
