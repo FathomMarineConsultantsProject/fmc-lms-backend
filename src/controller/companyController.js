@@ -136,19 +136,23 @@ export const getAllCompanies = async (req, res) => {
       const total = totalRes.rows[0]?.total ?? 0;
 
       const { rows } = await db.query(
-        `
+        `        
         SELECT
           c.*,
+          u.user_id,
+          u.status AS user_status,
+          (LOWER(u.status) = 'onboard') AS is_active,
           u.username AS admin_username,
           u.password_enc AS admin_password_enc
         FROM company c
         LEFT JOIN users u
           ON u.company_id = c.company_id
-         AND u.role_id = 2
-         AND u.ship_id IS NULL
+        AND u.role_id = 2
+        AND u.ship_id IS NULL
         WHERE ($1 = '' OR c.company_name ILIKE $2 OR c.code ILIKE $2)
         ORDER BY c.company_id
         LIMIT $3 OFFSET $4
+
         `,
         [q, qLike, limit, offset]
       );
