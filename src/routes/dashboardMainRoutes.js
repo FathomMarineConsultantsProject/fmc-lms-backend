@@ -3,25 +3,25 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
 
 import {
-    getRecentUsers,
-    getAllUsers,
+  getRecentUsers,
+  getAllUsers,
 } from "../controller/dashboardMainController.js";
 
 const router = express.Router();
 
 // Super Admin only
 router.get(
-    "/users/recent",
-    requireAuth,
-    allowRoles("superadmin"),
-    getRecentUsers
+  "/users/recent",
+  requireAuth,
+  allowRoles(1),
+  getRecentUsers
 );
 
 router.get(
-    "/users",
-    requireAuth,
-    allowRoles("superadmin"),
-    getAllUsers
+  "/users",
+  requireAuth,
+  allowRoles(1),
+  getAllUsers
 );
 
 export default router;
