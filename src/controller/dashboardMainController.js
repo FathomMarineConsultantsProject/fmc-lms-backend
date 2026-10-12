@@ -8,7 +8,7 @@ const USER_FROM = `
   FROM users u
   LEFT JOIN ships s
     ON s.ship_id = u.ship_id
-  LEFT JOIN companies c
+  LEFT JOIN company c
     ON c.company_id = u.company_id
 `;
 

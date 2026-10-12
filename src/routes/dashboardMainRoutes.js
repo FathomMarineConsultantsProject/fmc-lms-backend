@@ -11,14 +11,14 @@ const router = express.Router();
 
 // Super Admin only
 router.get(
-    "/recent",
+    "/users/recent",
     requireAuth,
     allowRoles("superadmin"),
     getRecentUsers
 );
 
 router.get(
-    "/",
+    "/users",
     requireAuth,
     allowRoles("superadmin"),
     getAllUsers
