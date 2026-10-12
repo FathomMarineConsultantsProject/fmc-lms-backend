@@ -29,6 +29,7 @@ import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import disclaimerRoutes from "./routes/disclaimerRoutes.js"
 import seamilesRoutes from "./routes/seamilesRoutes.js";
+import dashboardMainRoutes from "./routes/dashboardMainRoutes.js"; 
 const app = express();
 
 app.set("trust proxy", 1);
@@ -91,6 +92,7 @@ app.get("/", (req, res) => {
 
 // main routes
 app.use("/auth", authRoutes);
+app.use("/api/dashboard", dashboardMainRoutes);
 app.use("/companies", companyRoutes);
 app.use("/ships", shipRoutes);
 app.use("/users", userRoutes);
