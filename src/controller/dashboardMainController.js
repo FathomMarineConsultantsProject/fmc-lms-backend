@@ -30,33 +30,76 @@ const USER_COLUMNS = `
   ${USER_FROM}
 `;
 
-// GET /api/users/recent?limit=10
+// GET /api/dashboard/users/recent
+// Returns users grouped by registration date for the last 7 calendar days.
+
 export const getRecentUsers = async (req, res) => {
     try {
-        const requestedLimit = Number.parseInt(req.query.limit, 10) || 10;
-        const limit = Math.min(Math.max(requestedLimit, 1), 10);
-
         const query = `
-      ${USER_COLUMNS}
-      ORDER BY
-        u.created_at DESC NULLS LAST,
-        u.user_id DESC
-      LIMIT $1
+      WITH days AS (
+        SELECT generate_series(
+          CURRENT_DATE - INTERVAL '6 days',
+          CURRENT_DATE,
+          INTERVAL '1 day'
+        )::date AS added_date
+      )
+      SELECT
+        TO_CHAR(d.added_date, 'YYYY-MM-DD') AS date,
+        COUNT(u.user_id)::int AS count,
+
+        COALESCE(
+          JSON_AGG(
+            JSON_BUILD_OBJECT(
+              'user_id', u.user_id,
+              'full_name', u.full_name,
+              'seafarer_id', u.seafarer_id,
+              'rank', u.rank,
+              'username', u.username,
+              'email', u.email,
+              'ship_id', u.ship_id,
+              'ship', s.ship_name,
+              'company_id', u.company_id,
+              'company', c.company_name,
+              'role_id', u.role_id,
+              'added_on', u.created_at,
+              'last_updated', u.updated_at
+            )
+            ORDER BY u.created_at DESC
+          ) FILTER (WHERE u.user_id IS NOT NULL),
+          '[]'::json
+        ) AS users
+
+      FROM days d
+      LEFT JOIN users u
+        ON u.created_at >= d.added_date
+        AND u.created_at < d.added_date + INTERVAL '1 day'
+      LEFT JOIN ships s
+        ON s.ship_id = u.ship_id
+      LEFT JOIN company c
+        ON c.company_id = u.company_id
+
+      GROUP BY d.added_date
+      ORDER BY d.added_date DESC;
     `;
 
-        const result = await db.query(query, [limit]);
+        const result = await db.query(query);
+
+        const totalNewUsers = result.rows.reduce(
+            (total, day) => total + day.count,
+            0
+        );
 
         return res.status(200).json({
             success: true,
-            count: result.rows.length,
-            data: result.rows,
+            totalNewUsers,
+            days: result.rows,
         });
     } catch (error) {
-        console.error("Error fetching recent users:", error);
+        console.error("Error fetching day-wise users:", error);
 
         return res.status(500).json({
             success: false,
-            message: "Failed to fetch recent users",
+            message: "Failed to fetch day-wise users",
         });
     }
 };
