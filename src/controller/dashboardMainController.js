@@ -186,3 +186,34 @@ export const getAllUsers = async (req, res) => {
         });
     }
 };
+
+
+// GET /api/dashboard/users/recent/all
+// Returns ALL users added in the last 7 days, without a limit.
+
+export const getNewUsersLast7Days = async (req, res) => {
+  try {
+    const query = `
+      ${USER_COLUMNS}
+      WHERE u.created_at >= NOW() - INTERVAL '7 days'
+      ORDER BY
+        u.created_at DESC NULLS LAST,
+        u.user_id DESC
+    `;
+
+    const result = await db.query(query);
+
+    return res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      data: result.rows,
+    });
+  } catch (error) {
+    console.error("Error fetching new users:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch users added in the last 7 days",
+    });
+  }
+};

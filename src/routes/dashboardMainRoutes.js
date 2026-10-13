@@ -5,6 +5,7 @@ import { allowRoles } from "../middleware/rbac.js";
 import {
   getRecentUsers,
   getAllUsers,
+  getNewUsersLast7Days
 } from "../controller/dashboardMainController.js";
 
 const router = express.Router();
@@ -13,15 +14,22 @@ const router = express.Router();
 router.get(
   "/users/recent",
   requireAuth,
-  allowRoles(1),
+  allowRoles(1,2),
   getRecentUsers
 );
 
 router.get(
   "/users",
   requireAuth,
-  allowRoles(1),
+  allowRoles(1,2),
   getAllUsers
 );
 
+// Super Admin and Admin only
+router.get(
+  "/users/recent/all",
+  requireAuth,
+  allowRoles(1, 2),
+  getNewUsersLast7Days
+);
 export default router;
