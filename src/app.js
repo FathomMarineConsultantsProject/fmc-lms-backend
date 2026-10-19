@@ -27,6 +27,9 @@ import aiAssistant from './routes/aiRoutes.js'
 import dashboardRoutes from "./routes/dashboardRoutes.js";
 import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
 import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import disclaimerRoutes from "./routes/disclaimerRoutes.js"
+import seamilesRoutes from "./routes/seamilesRoutes.js";
+import dashboardMainRoutes from "./routes/dashboardMainRoutes.js"; 
 const app = express();
 
 app.set("trust proxy", 1);
@@ -92,6 +95,7 @@ app.get("/", (req, res) => {
 
 // main routes
 app.use("/auth", authRoutes);
+app.use("/api/dashboard", dashboardMainRoutes);
 app.use("/companies", companyRoutes);
 app.use("/ships", shipRoutes);
 app.use("/users", userRoutes);
@@ -107,6 +111,8 @@ app.use("/api/training", dashboardRoutes);
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 
+
+app.use("/disclaimer", disclaimerRoutes);
 //chat 
 app.use("/chat", chatRoutes);
 //chatbot
@@ -117,7 +123,7 @@ app.use("/api/users", userExportRoutes);
 app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
-
+app.use("/api/seamiles", seamilesRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 /**
  * Unity course progress APIs

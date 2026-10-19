@@ -170,7 +170,8 @@ export const generateAssessmentQuestions = async (req, res) => {
         return res.status(503).json({ error: "AI generation is temporarily unavailable." });
     }
 };
-
+import { awardAIUsageSeaMiles } from "./seamilesController.js"
+import { db } from "../db.js";
 // Define the exact structure the AI must return
 const dashboardSchema = {
     type: SchemaType.OBJECT,
@@ -234,6 +235,8 @@ const dashboardSchema = {
     ]
 };
 
+
+
 const model = genAI.getGenerativeModel({
     model: "gemini-flash-latest",
     generationConfig: {
@@ -269,32 +272,88 @@ export async function generateIncidentDashboard(incidentData) {
 
 
 //chatbot
-export const handleChatBotQuery = async(req,res)=>{
-    const {message} = req.body;
+export const handleChatBotQuery = async (req, res) => {
+    const { message } = req.body;
 
-    if(!message)
-    {
-        return res.status(400).json({error:"Message is required"});
+    console.log("CHAT API HIT");
+    console.log("User:", req.user);
+    console.log("Message:", message);
+
+    if (!message) {
+        return res.status(400).json({
+            error: "Message is required"
+        });
     }
+
     try {
-        const model = genAI.getGenerativeModel({ 
+        const model = genAI.getGenerativeModel({
             model: "gemini-3.6-flash",
-            
-            systemInstruction: `You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS). 
-            Your sole purpose is to answer questions related to maritime operations, ships, crew management, marine safety, navigation, and how to use this LMS platform. Keep the answer short and precise.
-            If a user asks you a question about programming, cooking, history, general knowledge, or ANYTHING unrelated to maritime operations or the LMS, you must politely refuse. 
-            Reply with: "I am a specialized Maritime LMS assistant. I can only answer questions related to marine operations and shipping."`
+
+            systemInstruction: `
+                You are an expert AI assistant embedded inside a Maritime Learning Management System (LMS).
+
+                Your sole purpose is to answer questions related to maritime operations, ships,
+                crew management, marine safety, navigation, and how to use this LMS platform.
+
+                Keep the answer short and precise.
+
+                If a user asks you a question about programming, cooking, history,
+                general knowledge, or ANYTHING unrelated to maritime operations or the LMS,
+                you must politely refuse.
+
+                Reply with:
+                "I am a specialized Maritime LMS assistant. I can only answer questions related to marine operations and shipping."
+            `
         });
 
+        console.log("Calling Gemini...");
+
         const result = await model.generateContent(message);
+
+        console.log("Gemini response received");
+
         const reply = result.response.text();
 
-        return res.json({reply});
+        console.log("Reply:", reply);
+
+        // Deduct SeaMile after successful AI response
+        const userId = req.user?.user_id;
+
+        console.log("User ID:", userId);
+
+        if (!userId) {
+            console.error("User ID not found");
+            return res.status(401).json({
+                error: "User not authenticated"
+            });
+        }
+
+        const client = await db.connect();
+
+        try {
+            await awardAIUsageSeaMiles(
+                client,
+                userId
+            );
+
+            console.log("AI SeaMile deducted successfully");
+        } finally {
+            client.release();
+        }
+
+        return res.json({ reply });
+
     } catch (error) {
-        console.error("Gemini API Error:", error);
-        return res.status(500).json({ error: "AI server is busy.Please try after some time" });
-    }
+    console.error("Chatbot Error:", error);
+
+    return res.status(500).json({
+        error: error.message,
+        stack: process.env.NODE_ENV !== "production"
+            ? error.stack
+            : undefined
+    });
 }
+};
 
 
 // Generate Course Description API
