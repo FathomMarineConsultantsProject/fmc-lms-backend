@@ -716,21 +716,21 @@ export async function getTrainingDashboard(
     const trainingOverdue =
       isOverdue()
         ? rows.filter(
-            isOverdue
-          ).length
+          isOverdue
+        ).length
         : null;
 
 
     const completionPercentage =
       trainingAssigned > 0
         ? Number(
+          (
             (
-              (
-                trainingCompleted /
-                trainingAssigned
-              ) * 100
-            ).toFixed(2)
-          )
+              trainingCompleted /
+              trainingAssigned
+            ) * 100
+          ).toFixed(2)
+        )
         : 0;
 
 
@@ -886,13 +886,13 @@ export async function getTrainingDashboard(
             completion_percentage:
               company.assigned > 0
                 ? Number(
+                  (
                     (
-                      (
-                        company.completed /
-                        company.assigned
-                      ) * 100
-                    ).toFixed(2)
-                  )
+                      company.completed /
+                      company.assigned
+                    ) * 100
+                  ).toFixed(2)
+                )
                 : 0,
           })
         )
@@ -1009,9 +1009,9 @@ export async function getTrainingDashboard(
         if (
           !ship.last_training_activity_date ||
           new Date(activityDate) >
-            new Date(
-              ship.last_training_activity_date
-            )
+          new Date(
+            ship.last_training_activity_date
+          )
         ) {
 
           ship.last_training_activity_date =
@@ -1060,13 +1060,13 @@ export async function getTrainingDashboard(
             completion_percentage:
               ship.training_assigned > 0
                 ? Number(
+                  (
                     (
-                      (
-                        ship.training_completed /
-                        ship.training_assigned
-                      ) * 100
-                    ).toFixed(2)
-                  )
+                      ship.training_completed /
+                      ship.training_assigned
+                    ) * 100
+                  ).toFixed(2)
+                )
                 : 0,
 
             last_training_activity_date:
@@ -1198,13 +1198,13 @@ export async function getTrainingDashboard(
             completion_percentage:
               rankData.training_assigned > 0
                 ? Number(
+                  (
                     (
-                      (
-                        rankData.training_completed /
-                        rankData.training_assigned
-                      ) * 100
-                    ).toFixed(2)
-                  )
+                      rankData.training_completed /
+                      rankData.training_assigned
+                    ) * 100
+                  ).toFixed(2)
+                )
                 : 0,
           })
         )
@@ -1621,13 +1621,13 @@ export async function getShipTrainingDashboard(
     const completionPercentage =
       assigned > 0
         ? Number(
+          (
             (
-              (
-                completed /
-                assigned
-              ) * 100
-            ).toFixed(2)
-          )
+              completed /
+              assigned
+            ) * 100
+          ).toFixed(2)
+        )
         : 0;
 
 
@@ -1745,13 +1745,13 @@ export async function getShipTrainingDashboard(
             completion_percentage:
               person.training_assigned > 0
                 ? Number(
+                  (
                     (
-                      (
-                        person.training_completed /
-                        person.training_assigned
-                      ) * 100
-                    ).toFixed(2)
-                  )
+                      person.training_completed /
+                      person.training_assigned
+                    ) * 100
+                  ).toFixed(2)
+                )
                 : 0,
           })
         );
@@ -2038,11 +2038,10 @@ export async function getSeafarerTrainingDashboard(
 
       WHERE u.user_id = $1
 
-        ${
-          companyScoped
-            ? `AND u.company_id = $2`
-            : ""
-        }
+        ${companyScoped
+        ? `AND u.company_id = $2`
+        : ""
+      }
 
 
       ORDER BY
@@ -2167,7 +2166,7 @@ export async function getSeafarerTrainingDashboard(
           )
             .trim()
             .toLowerCase() ===
-            "completed"
+          "completed"
 
       ).length;
 
@@ -2281,13 +2280,13 @@ export async function getSeafarerTrainingDashboard(
     const completionPercentage =
       assigned > 0
         ? Number(
+          (
             (
-              (
-                completed /
-                assigned
-              ) * 100
-            ).toFixed(2)
-          )
+              completed /
+              assigned
+            ) * 100
+          ).toFixed(2)
+        )
         : 0;
 
 

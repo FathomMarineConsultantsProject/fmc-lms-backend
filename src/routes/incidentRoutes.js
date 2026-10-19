@@ -123,6 +123,6 @@ router.put("/:id", updateIncident);
  *       200: { description: Deleted }
  */
 router.delete("/:id", deleteIncident);
-
+router.patch("/:id/details", updateIncidentDetails);
 //ai
 router.post('/:incident_id/generate-dashboard',requireAuth, generateDashboard);
