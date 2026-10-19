@@ -1484,6 +1484,8 @@ export const getCertificateSourceOptions = async (req, res) => {
     const isSuperAdmin = role === ROLE_SUPERADMIN;
     const isAdmin = role === ROLE_ADMIN;
     const isSubAdmin = role === ROLE_SUBADMIN;
+    const isCrew = role === ROLE_CREW;
+
 
     let courseWhere = [`c.deleted_at IS NULL`];
     let courseParams = [];
@@ -1502,6 +1504,8 @@ export const getCertificateSourceOptions = async (req, res) => {
       // add company filter here later if courses/assessments get company_id
     } else if (isSubAdmin) {
       // add company/ship filter here later if courses/assessments get company_id/ship_id
+    } else if (isCrew) {
+      // Role 4 can fetch course options.
     } else {
       return res.status(403).json({ error: "Forbidden" });
     }
