@@ -10,78 +10,121 @@ const ROLE_CREW = 4;
 
 const isUuid = (v) => validator.isUUID(v + "");
 
-const buildIncidentListQuery = (user) => {
-  const { role_id, company_id, ship_id } = user;
 
-  if (role_id === ROLE_SUPERADMIN) {
+const buildIncidentListQuery = (user) => {
+  const roleId = Number(user.role_id);
+  const companyId = user.company_id;
+
+  // Superadmin can see every non-deleted incident.
+  if (roleId === ROLE_SUPERADMIN) {
     return {
       text: `
-        SELECT *
-        FROM incident_reports
-        WHERE is_deleted IS NOT TRUE
-        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+        SELECT ir.*
+        FROM incident_reports ir
+        WHERE ir.is_deleted IS NOT TRUE
+        ORDER BY ir.occurred_at DESC NULLS LAST, ir.created_at DESC
       `,
       values: [],
     };
   }
 
-  if (role_id === ROLE_ADMIN) {
-    return {
-      text: `
-        SELECT *
-        FROM incident_reports
-        WHERE is_deleted IS NOT TRUE
-          AND company_id = $1
-        ORDER BY occurred_at DESC NULLS LAST, created_at DESC
-      `,
-      values: [company_id],
-    };
-  }
-
+  // Other users see their company's incidents and
+  // incidents created by a Superadmin.
   return {
     text: `
-      SELECT *
-      FROM incident_reports
-      WHERE is_deleted IS NOT TRUE
-        AND company_id = $1
-        AND ship_id = $2
-      ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+      SELECT ir.*
+      FROM incident_reports ir
+      WHERE ir.is_deleted IS NOT TRUE
+        AND (
+          ir.company_id = $1
+          OR EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.user_id = ir.reported_by_user_id
+              AND u.role_id = $2
+          )
+        )
+      ORDER BY ir.occurred_at DESC NULLS LAST, ir.created_at DESC
     `,
-    values: [company_id, ship_id],
+    values: [companyId, ROLE_SUPERADMIN],
   };
 };
 
-const canAccessIncident = (user, incident) => {
-  if (user.role_id === ROLE_SUPERADMIN) return true;
 
-  if (user.role_id === ROLE_ADMIN) {
-    return String(incident.company_id) === String(user.company_id);
+
+const canAccessIncident = (user, incident) => {
+  const roleId = Number(user?.role_id);
+
+  if (roleId === ROLE_SUPERADMIN) {
+    return true;
   }
 
+  const belongsToCompany =
+    user?.company_id != null &&
+    incident?.company_id != null &&
+    String(incident.company_id) === String(user.company_id);
+
+  const createdBySuperadmin =
+    incident?.created_by_superadmin === true;
+
+  return belongsToCompany || createdBySuperadmin;
+};
+
+
+const canModifyIncident = (user, incident) => {
+  const roleId = Number(user?.role_id);
+
+  // Superadmin can edit every incident.
+  if (roleId === ROLE_SUPERADMIN) {
+    return true;
+  }
+
+  // Incidents created by Superadmin are restricted to Superadmin.
+  if (incident?.created_by_superadmin === true) {
+    return false;
+  }
+
+  // Only an Admin from the same company can edit
+  // incidents created by company users.
   return (
-    String(incident.company_id) === String(user.company_id) &&
-    Number(incident.ship_id) === Number(user.ship_id)
+    roleId === ROLE_ADMIN &&
+    user?.company_id != null &&
+    incident?.company_id != null &&
+    String(user.company_id) === String(incident.company_id)
   );
 };
 
-const canModifyIncident = (user, incident) => {
-  if (!canAccessIncident(user, incident)) return false;
 
-  if (user.role_id === ROLE_CREW) {
-    return Number(incident.reported_by_user_id) === Number(user.user_id);
-  }
 
-  return true;
-};
 
 
 export const getAllIncidents = async (req, res) => {
   try {
-    const { role_id, company_id, ship_id } = req.user;
+    const roleId = Number(req.user?.role_id);
+    const companyId = req.user?.company_id;
+
+    if (
+      ![
+        ROLE_SUPERADMIN,
+        ROLE_ADMIN,
+        ROLE_SUBADMIN,
+        ROLE_CREW,
+      ].includes(roleId)
+    ) {
+      return res.status(403).json({
+        error: "Forbidden",
+      });
+    }
 
     let queryText = `
       SELECT
         ir.*,
+        EXISTS (
+          SELECT 1
+          FROM users u
+          WHERE u.user_id = ir.reported_by_user_id
+            AND u.role_id = $1
+        ) AS created_by_superadmin,
         CASE
           WHEN ird.incident_id IS NULL THEN NULL
           ELSE to_jsonb(ird)
@@ -92,27 +135,31 @@ export const getAllIncidents = async (req, res) => {
       WHERE ir.is_deleted IS NOT TRUE
     `;
 
-    const queryValues = [];
+    let queryValues = [ROLE_SUPERADMIN];
 
-    // Superadmin: all incidents.
-    if (role_id === ROLE_SUPERADMIN) {
-      // No additional filter required.
-    } else if (role_id === ROLE_ADMIN) {
-      // Admin: incidents belonging to their company.
-      queryValues.push(company_id);
-      queryText += ` AND ir.company_id = $${queryValues.length}`;
-    } else {
-      // Subadmin and crew: incidents belonging to their company and ship.
-      queryValues.push(company_id, ship_id);
+    // Superadmin sees all non-deleted incidents.
+    // Other users see their company's incidents and
+    // incidents created by a Superadmin.
+    if (roleId !== ROLE_SUPERADMIN) {
+      queryValues.push(companyId);
+
       queryText += `
-        AND ir.company_id = $${queryValues.length - 1}
-        AND ir.ship_id = $${queryValues.length}
+        AND (
+          ir.company_id = $2
+          OR EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.user_id = ir.reported_by_user_id
+              AND u.role_id = $1
+          )
+        )
       `;
     }
 
     queryText += `
-      ORDER BY ir.occurred_at DESC NULLS LAST,
-               ir.created_at DESC
+      ORDER BY
+        ir.occurred_at DESC NULLS LAST,
+        ir.created_at DESC
     `;
 
     const { rows } = await db.query(queryText, queryValues);
@@ -126,6 +173,10 @@ export const getAllIncidents = async (req, res) => {
     });
   }
 };
+
+
+
+
 
 
 export const getIncidentById = async (req, res) => {
@@ -142,6 +193,13 @@ export const getIncidentById = async (req, res) => {
       `
       SELECT
         ir.*,
+        EXISTS (
+          SELECT 1
+          FROM users u
+          WHERE u.user_id = ir.reported_by_user_id
+            AND u.role_id = $2
+        ) AS created_by_superadmin,
+
         ird.incident_id AS details_incident_id,
         ird.vessel_name_snapshot,
         ird.asset_identifier,
@@ -195,7 +253,7 @@ export const getIncidentById = async (req, res) => {
       WHERE ir.incident_id = $1
         AND ir.is_deleted IS NOT TRUE
       `,
-      [incidentId]
+      [incidentId, ROLE_SUPERADMIN]
     );
 
     if (rows.length === 0) {
@@ -206,14 +264,15 @@ export const getIncidentById = async (req, res) => {
 
     const row = rows[0];
 
-    // Preserve existing role-based access control.
+    // Option A: Superadmin sees all incidents.
+    // Other users see their company's incidents or
+    // incidents created by a Superadmin.
     if (!canAccessIncident(req.user, row)) {
       return res.status(403).json({
         error: "Forbidden",
       });
     }
 
-    // Keep questionnaire fields grouped under `details`.
     const {
       details_incident_id,
       vessel_name_snapshot,
@@ -262,61 +321,62 @@ export const getIncidentById = async (req, res) => {
       closure_justification,
       details_created_at,
       details_updated_at,
+      created_by_superadmin,
       ...incident
     } = row;
 
     const details =
-      details_incident_id === null || details_incident_id === undefined
+      details_incident_id == null
         ? null
         : {
-            incident_id: details_incident_id,
-            vessel_name_snapshot,
-            asset_identifier,
-            flag_or_managing_company,
-            reporter_name_snapshot,
-            reporter_rank,
-            department,
-            event_utc_offset,
-            incident_categories,
-            event_chronology,
-            operating_conditions,
-            actual_impacts,
-            potential_impacts,
-            injury_classification,
-            operational_delay_hours,
-            actual_effects_description,
-            credible_worst_outcome,
-            master_notified_at,
-            stabilized_at,
-            ongoing_dangers,
-            emt_convened_status,
-            external_statements_review_status,
-            notifications,
-            evidence_items,
-            vdr_cctv_recording_window,
-            investigation_leads,
-            rca_method,
-            direct_cause,
-            contributing_conditions,
-            immediate_correction,
-            capa_actions,
-            pms_work_order_references,
-            purchase_requisition_references,
-            car_reference,
-            safety_meeting_at,
-            safety_meeting_minutes_reference,
-            fleet_bulletin_lms_training_reference,
-            master_approval,
-            safety_officer_approval,
-            vessel_manager_approval,
-            marine_manager_approval,
-            marine_standards_approval,
-            action_effectiveness_status,
-            fleet_learning_status,
-            closure_justification,
-            created_at: details_created_at,
-            updated_at: details_updated_at,
-          };
+          incident_id: details_incident_id,
+          vessel_name_snapshot,
+          asset_identifier,
+          flag_or_managing_company,
+          reporter_name_snapshot,
+          reporter_rank,
+          department,
+          event_utc_offset,
+          incident_categories,
+          event_chronology,
+          operating_conditions,
+          actual_impacts,
+          potential_impacts,
+          injury_classification,
+          operational_delay_hours,
+          actual_effects_description,
+          credible_worst_outcome,
+          master_notified_at,
+          stabilized_at,
+          ongoing_dangers,
+          emt_convened_status,
+          external_statements_review_status,
+          notifications,
+          evidence_items,
+          vdr_cctv_recording_window,
+          investigation_leads,
+          rca_method,
+          direct_cause,
+          contributing_conditions,
+          immediate_correction,
+          capa_actions,
+          pms_work_order_references,
+          purchase_requisition_references,
+          car_reference,
+          safety_meeting_at,
+          safety_meeting_minutes_reference,
+          fleet_bulletin_lms_training_reference,
+          master_approval,
+          safety_officer_approval,
+          vessel_manager_approval,
+          marine_manager_approval,
+          marine_standards_approval,
+          action_effectiveness_status,
+          fleet_learning_status,
+          closure_justification,
+          created_at: details_created_at,
+          updated_at: details_updated_at,
+        };
 
     return res.status(200).json({
       ...incident,
@@ -333,9 +393,10 @@ export const getIncidentById = async (req, res) => {
 
 
 
+
+
 export const createIncident = async (req, res) => {
   const {
-    ship_id,
     visible_to_ship_only,
     title,
     description,
@@ -354,24 +415,46 @@ export const createIncident = async (req, res) => {
     closed_at,
     reference_code,
     details = {},
-  } = req.body;
+  } = req.body ?? {};
 
-  const shipId = parseInt(ship_id, 10);
+  // Always derive identity and assignments from the authenticated JWT.
+  const {
+    user_id: myUserId,
+    role_id,
+    company_id: myCompanyId,
+    ship_id: myShipId,
+  } = req.user ?? {};
 
-  if (Number.isNaN(shipId)) {
-    return res.status(400).json({
-      error: "ship_id must be a number",
+  const roleId = Number(role_id);
+  const isSuperAdmin = roleId === ROLE_SUPERADMIN;
+
+  if (
+    ![ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN, ROLE_CREW].includes(
+      roleId
+    ) ||
+    myUserId == null
+  ) {
+    return res.status(401).json({
+      error: "Invalid authenticated user",
     });
   }
 
-  if (!title?.trim()) {
+  if (typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+
+  if (typeof description !== "string" || !description.trim()) {
+    return res.status(400).json({ error: "description is required" });
+  }
+
+  if (!occurred_at || Number.isNaN(Date.parse(occurred_at))) {
     return res.status(400).json({
-      error: "title is required",
+      error: "occurred_at must be a valid date and time",
     });
   }
 
   if (
-    details === null ||
+    !details ||
     typeof details !== "object" ||
     Array.isArray(details)
   ) {
@@ -380,12 +463,31 @@ export const createIncident = async (req, res) => {
     });
   }
 
-  const {
-    role_id,
-    company_id: myCompanyId,
-    ship_id: myShipId,
-    user_id: myUserId,
-  } = req.user;
+  // Normal users must have a company in their JWT.
+  // Superadmin is allowed to have no company or ship.
+  if (!isSuperAdmin && myCompanyId == null) {
+    return res.status(400).json({
+      error: "Your account must be associated with a company.",
+    });
+  }
+
+  // Use JWT assignments; ignore IDs submitted by the frontend.
+  const shipId = isSuperAdmin
+    ? null
+    : myShipId == null || myShipId === ""
+      ? null
+      : Number(myShipId);
+
+  const incidentCompanyId = isSuperAdmin ? null : myCompanyId;
+
+  if (
+    shipId !== null &&
+    (!Number.isInteger(shipId) || shipId <= 0)
+  ) {
+    return res.status(400).json({
+      error: "Invalid ship assignment in authenticated user.",
+    });
+  }
 
   const detailColumns = [
     "vessel_name_snapshot",
@@ -443,7 +545,6 @@ export const createIncident = async (req, res) => {
     "capa_actions",
   ]);
 
-  // Reject unknown detail fields instead of silently discarding them.
   const unknownFields = Object.keys(details).filter(
     (key) => !detailColumns.includes(key)
   );
@@ -455,65 +556,66 @@ export const createIncident = async (req, res) => {
     });
   }
 
-  // These fields are JSONB arrays and must contain arrays when provided.
   for (const key of jsonbColumns) {
     if (
-      details[key] !== undefined &&
-      details[key] !== null &&
+      details[key] != null &&
       !Array.isArray(details[key])
     ) {
       return res.status(400).json({
-        error: `${key} must be an array`,
+        error: `${key} must be an array or null`,
       });
     }
   }
 
+  if (
+    details.vessel_name_snapshot != null &&
+    typeof details.vessel_name_snapshot !== "string"
+  ) {
+    return res.status(400).json({
+      error: "vessel_name_snapshot must be a string",
+    });
+  }
+
   const client = await db.connect();
+  let transactionStarted = false;
 
   try {
     await client.query("BEGIN");
+    transactionStarted = true;
 
-    const shipRes = await client.query(
-      `SELECT ship_id, company_id
-       FROM ships
-       WHERE ship_id = $1`,
-      [shipId]
-    );
+    // Validate the ship assigned in the JWT, if present.
+    if (shipId !== null) {
+      const shipResult = await client.query(
+        `SELECT ship_id, company_id
+         FROM ships
+         WHERE ship_id = $1`,
+        [shipId]
+      );
 
-    if (!shipRes.rows.length) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: "Ship not found",
-      });
+      if (shipResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(400).json({
+          error: "The ship assigned to your account was not found.",
+        });
+      }
+
+      const assignedShip = shipResult.rows[0];
+
+      if (
+        String(assignedShip.company_id) !== String(incidentCompanyId)
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(403).json({
+          error: "Your assigned ship does not belong to your company.",
+        });
+      }
     }
 
-    const shipCompanyId = shipRes.rows[0].company_id;
-
-    if (
-      role_id === ROLE_ADMIN &&
-      String(shipCompanyId) !== String(myCompanyId)
-    ) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({
-        error: "Forbidden: ship is outside your company",
-      });
-    }
-
-    if (
-      (role_id === ROLE_SUBADMIN || role_id === ROLE_CREW) &&
-      (
-        String(shipCompanyId) !== String(myCompanyId) ||
-        Number(shipId) !== Number(myShipId)
-      )
-    ) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({
-        error: "Forbidden: ship is outside your scope",
-      });
-    }
-
-    const reporterId = myUserId;
-
+    // Insert the incident using JWT-derived identity and assignments.
     const incidentResult = await client.query(
       `INSERT INTO incident_reports (
         ship_id,
@@ -535,30 +637,24 @@ export const createIncident = async (req, res) => {
         occurred_at,
         reported_at,
         closed_at,
-        reference_code,
-        is_deleted,
-        created_at,
-        updated_at
+        reference_code
       )
       VALUES (
-        $1, $2, $3,
-        COALESCE($4, true),
-        $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15,
-        COALESCE($16, 'Reported'),
-        $17,
-        COALESCE($18, NOW()),
-        $19, $20,
-        false, NOW(), NOW()
+        $1, $2, $3, COALESCE($4, $5),
+        $6, $7, $8, $9, $10, $11,
+        $12, $13, $14, $15, $16,
+        COALESCE($17, 'Reported'),
+        $18, COALESCE($19, NOW()), $20, $21
       )
       RETURNING *`,
       [
         shipId,
-        shipCompanyId,
-        reporterId,
+        incidentCompanyId,
+        myUserId,
         visible_to_ship_only ?? null,
+        shipId !== null,
         title.trim(),
-        description || null,
+        description.trim(),
         incident_type || null,
         severity || null,
         priority || null,
@@ -569,7 +665,7 @@ export const createIncident = async (req, res) => {
         corrective_action || null,
         preventive_action || null,
         status || null,
-        occurred_at || null,
+        occurred_at,
         reported_at || null,
         closed_at || null,
         reference_code || null,
@@ -578,55 +674,68 @@ export const createIncident = async (req, res) => {
 
     const incident = incidentResult.rows[0];
 
-    // Build the details INSERT from the explicit column whitelist.
-    // Omitted columns retain their database defaults.
+    // Insert incident details, including the optional typed vessel name.
     const providedColumns = detailColumns.filter(
       (column) => details[column] !== undefined
     );
 
-    const insertColumns = ["incident_id", ...providedColumns];
+    let savedDetails = null;
 
-    const insertValues = [
-      incident.incident_id,
-      ...providedColumns.map((column) => {
-        const value = details[column];
+    if (providedColumns.length > 0) {
+      const insertColumns = ["incident_id", ...providedColumns];
 
-        if (jsonbColumns.has(column) && value !== null) {
-          return JSON.stringify(value);
-        }
+      const insertValues = [
+        incident.incident_id,
+        ...providedColumns.map((column) => {
+          const value = details[column];
 
-        return value;
-      }),
-    ];
+          return jsonbColumns.has(column) && value !== null
+            ? JSON.stringify(value)
+            : value;
+        }),
+      ];
 
-    const placeholders = insertColumns.map((column, index) => {
-      const placeholder = `$${index + 1}`;
+      const placeholders = insertColumns.map((column, index) => {
+        const placeholder = `$${index + 1}`;
 
-      return jsonbColumns.has(column)
-        ? `${placeholder}::jsonb`
-        : placeholder;
-    });
+        return jsonbColumns.has(column)
+          ? `${placeholder}::jsonb`
+          : placeholder;
+      });
 
-    const detailsResult = await client.query(
-      `INSERT INTO incident_report_details (
-        ${insertColumns.join(", ")}
-      )
-      VALUES (${placeholders.join(", ")})
-      RETURNING *`,
-      insertValues
-    );
+      const detailsResult = await client.query(
+        `INSERT INTO incident_report_details (
+          ${insertColumns.join(", ")}
+        )
+        VALUES (${placeholders.join(", ")})
+        RETURNING *`,
+        insertValues
+      );
+
+      savedDetails = detailsResult.rows[0];
+    }
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(201).json({
       message: "Incident created successfully",
       incident: {
         ...incident,
-        details: detailsResult.rows[0],
+        details: savedDetails,
       },
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Incident creation rollback failed:",
+          rollbackError
+        );
+      }
+    }
 
     console.error("Error creating incident:", error);
 
@@ -639,6 +748,9 @@ export const createIncident = async (req, res) => {
 };
 
 
+
+
+
 export const updateIncident = async (req, res) => {
   const incidentId = req.params.id;
 
@@ -648,159 +760,6 @@ export const updateIncident = async (req, res) => {
     });
   }
 
-  const {
-    ship_id,
-    company_id,
-    reported_by_user_id,
-    details,
-    ...body
-  } = req.body;
-
-  // These fields cannot be changed through this endpoint.
-  if (
-    ship_id !== undefined ||
-    company_id !== undefined ||
-    reported_by_user_id !== undefined
-  ) {
-    return res.status(400).json({
-      error:
-        "ship_id, company_id and reported_by_user_id cannot be changed",
-    });
-  }
-
-  if (
-    details !== undefined &&
-    (details === null ||
-      typeof details !== "object" ||
-      Array.isArray(details))
-  ) {
-    return res.status(400).json({
-      error: "details must be an object",
-    });
-  }
-
-  const mainFields = [
-    "visible_to_ship_only",
-    "title",
-    "description",
-    "incident_type",
-    "severity",
-    "priority",
-    "location_on_ship",
-    "immediate_action",
-    "root_cause",
-    "lesson_learned",
-    "corrective_action",
-    "preventive_action",
-    "status",
-    "occurred_at",
-    "reported_at",
-    "closed_at",
-    "reference_code",
-  ];
-
-  const detailFields = [
-    "vessel_name_snapshot",
-    "asset_identifier",
-    "flag_or_managing_company",
-    "reporter_name_snapshot",
-    "reporter_rank",
-    "department",
-    "event_utc_offset",
-    "incident_categories",
-    "event_chronology",
-    "operating_conditions",
-    "actual_impacts",
-    "potential_impacts",
-    "injury_classification",
-    "operational_delay_hours",
-    "actual_effects_description",
-    "credible_worst_outcome",
-    "master_notified_at",
-    "stabilized_at",
-    "ongoing_dangers",
-    "emt_convened_status",
-    "external_statements_review_status",
-    "notifications",
-    "evidence_items",
-    "vdr_cctv_recording_window",
-    "investigation_leads",
-    "rca_method",
-    "direct_cause",
-    "contributing_conditions",
-    "immediate_correction",
-    "capa_actions",
-    "pms_work_order_references",
-    "purchase_requisition_references",
-    "car_reference",
-    "safety_meeting_at",
-    "safety_meeting_minutes_reference",
-    "fleet_bulletin_lms_training_reference",
-    "master_approval",
-    "safety_officer_approval",
-    "vessel_manager_approval",
-    "marine_manager_approval",
-    "marine_standards_approval",
-    "action_effectiveness_status",
-    "fleet_learning_status",
-    "closure_justification",
-  ];
-
-  const jsonbFields = new Set([
-    "incident_categories",
-    "actual_impacts",
-    "potential_impacts",
-    "notifications",
-    "evidence_items",
-    "capa_actions",
-  ]);
-
-  // Validate main-table fields.
-  const unknownMainFields = Object.keys(body).filter(
-    (key) => !mainFields.includes(key)
-  );
-
-  if (unknownMainFields.length > 0) {
-    return res.status(400).json({
-      error: "Unknown incident fields",
-      fields: unknownMainFields,
-    });
-  }
-
-  if (
-    body.title !== undefined &&
-    (typeof body.title !== "string" || !body.title.trim())
-  ) {
-    return res.status(400).json({
-      error: "title must be a non-empty string",
-    });
-  }
-
-  // Validate questionnaire fields.
-  if (details !== undefined) {
-    const unknownDetailFields = Object.keys(details).filter(
-      (key) => !detailFields.includes(key)
-    );
-
-    if (unknownDetailFields.length > 0) {
-      return res.status(400).json({
-        error: "Unknown incident detail fields",
-        fields: unknownDetailFields,
-      });
-    }
-
-    for (const field of jsonbFields) {
-      if (
-        details[field] !== undefined &&
-        !Array.isArray(details[field])
-      ) {
-        return res.status(400).json({
-          error: `${field} must be an array`,
-        });
-      }
-    }
-  }
-
   const client = await db.connect();
   let transactionStarted = false;
 
@@ -808,19 +767,26 @@ export const updateIncident = async (req, res) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
-    // Lock the incident while checking permissions and updating it.
-    const currentResult = await client.query(
+    // Fetch and lock the incident, including its creator's role.
+    const { rows } = await client.query(
       `
-      SELECT *
-      FROM incident_reports
-      WHERE incident_id = $1
-        AND is_deleted IS NOT TRUE
-      FOR UPDATE
+        SELECT
+          ir.*,
+          EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.user_id = ir.reported_by_user_id
+              AND u.role_id = $2
+          ) AS created_by_superadmin
+        FROM incident_reports ir
+        WHERE ir.incident_id = $1
+          AND ir.is_deleted IS NOT TRUE
+        FOR UPDATE OF ir
       `,
-      [incidentId]
+      [incidentId, ROLE_SUPERADMIN]
     );
 
-    if (currentResult.rows.length === 0) {
+    if (rows.length === 0) {
       await client.query("ROLLBACK");
       transactionStarted = false;
 
@@ -829,125 +795,418 @@ export const updateIncident = async (req, res) => {
       });
     }
 
-    const currentIncident = currentResult.rows[0];
+    const currentIncident = rows[0];
 
-    // Enforce the existing role-based authorization rules.
+    // Superadmin can edit all incidents.
+    // Only same-company Admins can edit company-user-created incidents.
     if (!canModifyIncident(req.user, currentIncident)) {
       await client.query("ROLLBACK");
       transactionStarted = false;
 
       return res.status(403).json({
-        error: "Forbidden",
+        error: "You are not authorized to update this incident.",
       });
     }
 
-    // Update only the main-table fields provided by the client.
-    const fieldsToUpdate = mainFields.filter(
-      (field) => body[field] !== undefined
-    );
+    const body = req.body ?? {};
 
-    let incident = currentIncident;
+    const hasField = (field) =>
+      Object.prototype.hasOwnProperty.call(body, field);
 
-    if (fieldsToUpdate.length > 0) {
-      const values = fieldsToUpdate.map((field) =>
-        field === "title" ? body[field].trim() : body[field]
-      );
+    // Validate main incident fields.
+    const incidentColumns = [
+      "visible_to_ship_only",
+      "title",
+      "description",
+      "incident_type",
+      "severity",
+      "priority",
+      "location_on_ship",
+      "immediate_action",
+      "root_cause",
+      "lesson_learned",
+      "corrective_action",
+      "preventive_action",
+      "status",
+      "occurred_at",
+      "reported_at",
+      "closed_at",
+      "reference_code",
+    ];
 
-      const assignments = fieldsToUpdate.map(
-        (field, index) => `${field} = $${index + 1}`
-      );
+    const incidentUpdates = incidentColumns.filter(hasField);
 
-      values.push(incidentId);
+    if (
+      hasField("title") &&
+      (typeof body.title !== "string" || !body.title.trim())
+    ) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
-      const updateResult = await client.query(
-        `
-        UPDATE incident_reports
-        SET ${assignments.join(", ")},
-            updated_at = NOW()
-        WHERE incident_id = $${values.length}
-          AND is_deleted IS NOT TRUE
-        RETURNING *
-        `,
-        values
-      );
-
-      incident = updateResult.rows[0];
+      return res.status(400).json({
+        error: "title must be a non-empty string",
+      });
     }
 
-    // Update questionnaire details only when details were supplied.
-    if (details !== undefined) {
-      const fieldsToUpdateDetails = detailFields.filter(
-        (field) => details[field] !== undefined
-      );
+    if (
+      hasField("description") &&
+      (typeof body.description !== "string" ||
+        !body.description.trim())
+    ) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
-      if (fieldsToUpdateDetails.length > 0) {
-        const columns = ["incident_id", ...fieldsToUpdateDetails];
+      return res.status(400).json({
+        error: "description must be a non-empty string",
+      });
+    }
 
-        const values = [
-          incidentId,
-          ...fieldsToUpdateDetails.map((field) =>
-            jsonbFields.has(field)
-              ? JSON.stringify(details[field])
-              : details[field]
-          ),
-        ];
+    if (
+      hasField("occurred_at") &&
+      (!body.occurred_at ||
+        Number.isNaN(Date.parse(body.occurred_at)))
+    ) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
-        const placeholders = columns.map((column, index) => {
-          const placeholder = `$${index + 1}`;
+      return res.status(400).json({
+        error: "occurred_at must be a valid date and time",
+      });
+    }
 
-          return jsonbFields.has(column)
-            ? `${placeholder}::jsonb`
-            : placeholder;
+    // Validate ship_id only when supplied.
+    let shipId = currentIncident.ship_id;
+    let companyId = currentIncident.company_id;
+
+    const roleId = Number(req.user?.role_id);
+
+    if (hasField("ship_id")) {
+      const suppliedShipId = body.ship_id;
+
+      if (
+        suppliedShipId !== null &&
+        suppliedShipId !== "" &&
+        (!Number.isInteger(Number(suppliedShipId)) ||
+          Number(suppliedShipId) <= 0)
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(400).json({
+          error: "ship_id must be a positive integer or null",
         });
+      }
 
-        const assignments = fieldsToUpdateDetails.map(
-          (field, index) =>
-            `${field} = $${index + 2}${
-              jsonbFields.has(field) ? "::jsonb" : ""
-            }`
-        );
+      shipId =
+        suppliedShipId === null || suppliedShipId === ""
+          ? null
+          : Number(suppliedShipId);
 
-        // Create a details row if one does not exist yet.
-        // Otherwise, update only the supplied questionnaire fields.
-        await client.query(
+      if (shipId !== null) {
+        const { rows: shipRows } = await client.query(
           `
-          INSERT INTO incident_report_details (${columns.join(", ")})
-          VALUES (${placeholders.join(", ")})
-          ON CONFLICT (incident_id)
-          DO UPDATE SET
-            ${assignments.join(", ")},
-            updated_at = NOW()
+            SELECT ship_id, company_id
+            FROM ships
+            WHERE ship_id = $1
           `,
-          values
+          [shipId]
         );
+
+        if (shipRows.length === 0) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+
+          return res.status(400).json({
+            error: "Invalid ship_id. Ship not found.",
+          });
+        }
+
+        const ship = shipRows[0];
+
+        // Company users cannot select another company's ship.
+        if (
+          roleId !== ROLE_SUPERADMIN &&
+          String(ship.company_id) !== String(req.user?.company_id)
+        ) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+
+          return res.status(403).json({
+            error: "You cannot assign a ship from another company.",
+          });
+        }
+
+        // Subadmins and Crew must use their assigned ship.
+        if (
+          [ROLE_SUBADMIN, ROLE_CREW].includes(roleId) &&
+          Number(ship.ship_id) !== Number(req.user?.ship_id)
+        ) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+
+          return res.status(403).json({
+            error: "Forbidden: ship is outside your scope",
+          });
+        }
+
+        companyId = ship.company_id;
       }
     }
 
-    const detailsResult = await client.query(
-      `
-      SELECT *
-      FROM incident_report_details
-      WHERE incident_id = $1
-      `,
-      [incidentId]
-    );
+    // Company users cannot move incidents outside their company.
+    if (
+      roleId !== ROLE_SUPERADMIN &&
+      String(companyId) !== String(req.user?.company_id)
+    ) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        error: "You cannot update an incident belonging to another company.",
+      });
+    }
+
+    // Update the main incident table.
+    const mainValues = [incidentId];
+    const mainSetClauses = [];
+
+    for (const column of incidentUpdates) {
+      let value = body[column];
+
+      if (column === "title" || column === "description") {
+        value = value.trim();
+      }
+
+      mainValues.push(value);
+      mainSetClauses.push(
+        `${column} = $${mainValues.length}`
+      );
+    }
+
+    // Ship and company are updated together when ship_id is supplied.
+    if (hasField("ship_id")) {
+      mainValues.push(shipId);
+      mainSetClauses.push(`ship_id = $${mainValues.length}`);
+
+      mainValues.push(companyId);
+      mainSetClauses.push(`company_id = $${mainValues.length}`);
+    }
+
+    if (mainSetClauses.length > 0) {
+      mainSetClauses.push("updated_at = NOW()");
+
+      await client.query(
+        `
+          UPDATE incident_reports
+          SET ${mainSetClauses.join(", ")}
+          WHERE incident_id = $1
+            AND is_deleted IS NOT TRUE
+        `,
+        mainValues
+      );
+    }
+
+    // Whitelist of supported incident detail columns.
+    const detailColumns = [
+      "vessel_name_snapshot",
+      "asset_identifier",
+      "flag_or_managing_company",
+      "reporter_name_snapshot",
+      "reporter_rank",
+      "department",
+      "event_utc_offset",
+      "incident_categories",
+      "event_chronology",
+      "operating_conditions",
+      "actual_impacts",
+      "potential_impacts",
+      "injury_classification",
+      "operational_delay_hours",
+      "actual_effects_description",
+      "credible_worst_outcome",
+      "master_notified_at",
+      "stabilized_at",
+      "ongoing_dangers",
+      "emt_convened_status",
+      "external_statements_review_status",
+      "notifications",
+      "evidence_items",
+      "vdr_cctv_recording_window",
+      "investigation_leads",
+      "rca_method",
+      "direct_cause",
+      "contributing_conditions",
+      "immediate_correction",
+      "capa_actions",
+      "pms_work_order_references",
+      "purchase_requisition_references",
+      "car_reference",
+      "safety_meeting_at",
+      "safety_meeting_minutes_reference",
+      "fleet_bulletin_lms_training_reference",
+      "master_approval",
+      "safety_officer_approval",
+      "vessel_manager_approval",
+      "marine_manager_approval",
+      "marine_standards_approval",
+      "action_effectiveness_status",
+      "fleet_learning_status",
+      "closure_justification",
+    ];
+
+    const jsonbColumns = new Set([
+      "incident_categories",
+      "actual_impacts",
+      "potential_impacts",
+      "notifications",
+      "evidence_items",
+      "capa_actions",
+    ]);
+
+    if (hasField("details")) {
+      const { details } = body;
+
+      if (
+        details === null ||
+        typeof details !== "object" ||
+        Array.isArray(details)
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(400).json({
+          error: "details must be an object",
+        });
+      }
+
+      const invalidKeys = Object.keys(details).filter(
+        (key) => !detailColumns.includes(key)
+      );
+
+      if (invalidKeys.length > 0) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(400).json({
+          error: "Invalid incident detail fields",
+          invalid_fields: invalidKeys,
+        });
+      }
+
+      for (const key of jsonbColumns) {
+        if (
+          details[key] !== undefined &&
+          details[key] !== null &&
+          !Array.isArray(details[key])
+        ) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+
+          return res.status(400).json({
+            error: `${key} must be an array or null`,
+          });
+        }
+      }
+
+      if (
+        details.vessel_name_snapshot !== undefined &&
+        details.vessel_name_snapshot !== null &&
+        typeof details.vessel_name_snapshot !== "string"
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(400).json({
+          error: "vessel_name_snapshot must be a string or null",
+        });
+      }
+
+      const providedColumns = Object.keys(details);
+
+      if (providedColumns.length > 0) {
+        const detailValues = [incidentId];
+
+        const detailSetClauses = providedColumns.map((column) => {
+          let value = details[column];
+
+          if (jsonbColumns.has(column)) {
+            value = value === null ? null : JSON.stringify(value);
+          }
+
+          detailValues.push(value);
+
+          const placeholder = `$${detailValues.length}`;
+
+          return jsonbColumns.has(column)
+            ? `${column} = ${placeholder}::jsonb`
+            : `${column} = ${placeholder}`;
+        });
+
+        detailSetClauses.push("updated_at = NOW()");
+
+        const { rowCount } = await client.query(
+          `
+            UPDATE incident_report_details
+            SET ${detailSetClauses.join(", ")}
+            WHERE incident_id = $1
+          `,
+          detailValues
+        );
+
+        if (rowCount === 0) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+
+          return res.status(404).json({
+            error: "Incident details not found",
+          });
+        }
+      }
+    }
 
     await client.query("COMMIT");
     transactionStarted = false;
 
+    // Return the updated incident with nested details.
+    const { rows: responseRows } = await db.query(
+      `
+        SELECT
+          ir.*,
+          CASE
+            WHEN d.incident_id IS NULL THEN NULL
+            ELSE to_jsonb(d)
+          END AS details
+        FROM incident_reports ir
+        LEFT JOIN incident_report_details d
+          ON d.incident_id = ir.incident_id
+        WHERE ir.incident_id = $1
+          AND ir.is_deleted IS NOT TRUE
+      `,
+      [incidentId]
+    );
+
+    if (responseRows.length === 0) {
+      return res.status(404).json({
+        error: "Incident not found after update",
+      });
+    }
+
+    const incident = responseRows[0];
+    delete incident.created_by_superadmin;
+
     return res.status(200).json({
       message: "Incident updated successfully",
-      incident: {
-        ...incident,
-        details: detailsResult.rows[0] ?? null,
-      },
+      incident,
     });
   } catch (error) {
     if (transactionStarted) {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        console.error("Incident update rollback failed:", rollbackError);
+        console.error(
+          "Incident update rollback failed:",
+          rollbackError
+        );
       }
     }
 
@@ -962,15 +1221,16 @@ export const updateIncident = async (req, res) => {
 };
 
 
-export const deleteIncident = async (req, res) => {
-  const incidentId = req.params.id;
 
-  // Only Superadmins can delete incidents.
+
+export const deleteIncident = async (req, res) => {
   if (Number(req.user?.role_id) !== ROLE_SUPERADMIN) {
     return res.status(403).json({
-      error: "Forbidden: Only Superadmins can delete incidents.",
+      error: "Only Superadmin can delete incidents.",
     });
   }
+
+  const incidentId = req.params.id;
 
   if (!isUuid(incidentId)) {
     return res.status(400).json({
@@ -981,12 +1241,12 @@ export const deleteIncident = async (req, res) => {
   try {
     const { rows } = await db.query(
       `
-      UPDATE incident_reports
-      SET is_deleted = TRUE,
-          updated_at = NOW()
-      WHERE incident_id = $1
-        AND is_deleted IS NOT TRUE
-      RETURNING incident_id
+        UPDATE incident_reports
+        SET is_deleted = TRUE,
+            updated_at = NOW()
+        WHERE incident_id = $1
+          AND is_deleted IS NOT TRUE
+        RETURNING incident_id
       `,
       [incidentId]
     );
@@ -1009,6 +1269,9 @@ export const deleteIncident = async (req, res) => {
     });
   }
 };
+
+
+
 
 
 //new incident training
@@ -1116,9 +1379,10 @@ export const getRecentTrainingRequestCount = async (req, res) => {
 
 
 
+
 export const requestIncidentTraining = async (req, res) => {
   const incidentId = req.params.id;
-  const { training_type } = req.body;
+  const { training_type } = req.body ?? {};
   const roleId = Number(req.user?.role_id);
 
   if (!isUuid(incidentId)) {
@@ -1133,7 +1397,8 @@ export const requestIncidentTraining = async (req, res) => {
     (
       !Array.isArray(training_type) ||
       !training_type.every(
-        (item) => typeof item === "string" && item.trim().length > 0
+        (item) =>
+          typeof item === "string" && item.trim().length > 0
       )
     )
   ) {
@@ -1150,32 +1415,38 @@ export const requestIncidentTraining = async (req, res) => {
       ROLE_CREW,
     ].includes(roleId)
   ) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({
+      error: "Forbidden",
+    });
   }
 
   try {
-    const currentRes = await db.query(
+    const { rows: incidentRows } = await db.query(
       `
-        SELECT *
-        FROM incident_reports
-        WHERE incident_id = $1
-          AND is_deleted IS NOT TRUE
+        SELECT
+          ir.*,
+          EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.user_id = ir.reported_by_user_id
+              AND u.role_id = $2
+          ) AS created_by_superadmin
+        FROM incident_reports ir
+        WHERE ir.incident_id = $1
+          AND ir.is_deleted IS NOT TRUE
       `,
-      [incidentId]
+      [incidentId, ROLE_SUPERADMIN]
     );
 
-    if (currentRes.rows.length === 0) {
+    if (incidentRows.length === 0) {
       return res.status(404).json({
         error: "Incident not found",
       });
     }
 
-    const user = {
-      ...req.user,
-      role_id: roleId,
-    };
+    const incident = incidentRows[0];
 
-    if (!canAccessIncident(user, currentRes.rows[0])) {
+    if (!canAccessIncident(req.user, incident)) {
       return res.status(403).json({
         error: "Forbidden: You do not have access to this incident",
       });
@@ -1186,14 +1457,20 @@ export const requestIncidentTraining = async (req, res) => {
         UPDATE incident_reports
         SET
           training_requested = TRUE,
-          training_request_type = COALESCE($1, training_request_type),
+          training_request_type =
+            COALESCE($1::text[], training_request_type),
           training_requested_at = NOW(),
           updated_at = NOW()
         WHERE incident_id = $2
           AND is_deleted IS NOT TRUE
         RETURNING *
       `,
-      [training_type ?? null, incidentId]
+      [
+        training_type == null
+          ? null
+          : training_type.map((item) => item.trim()),
+        incidentId,
+      ]
     );
 
     if (rows.length === 0) {
@@ -1208,6 +1485,7 @@ export const requestIncidentTraining = async (req, res) => {
     });
   } catch (error) {
     console.error("Error requesting training:", error);
+
     return res.status(500).json({
       error: "Failed to request training",
     });
@@ -1215,17 +1493,17 @@ export const requestIncidentTraining = async (req, res) => {
 };
 
 
+
 //ai
-export const generateDashboard = async(req,res)=>{
+export const generateDashboard = async (req, res) => {
 
   const roleId = req.user?.role_id;
-  if(roleId !== 1 && roleId!== 2)
-  {
+  if (roleId !== 1 && roleId !== 2) {
     return res.status(403).json({
-      error: 'Access denied. Only Admins and Superadmins can regenerate AI analytics.' 
+      error: 'Access denied. Only Admins and Superadmins can regenerate AI analytics.'
     })
   }
-  const {incident_id}= req.params;
+  const { incident_id } = req.params;
 
   try {
     // Fetch ALL mandatory fields from the form/database
@@ -1245,9 +1523,8 @@ export const generateDashboard = async(req,res)=>{
 
     const fetchResult = await db.query(fetchQuery, [incident_id]);
 
-    if(fetchResult.rows.length === 0)
-    {
-      return res.status(404).json({error: 'Incident not found'})
+    if (fetchResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Incident not found' })
     }
 
     const incidentData = fetchResult.rows[0];
@@ -1270,7 +1547,7 @@ export const generateDashboard = async(req,res)=>{
       RETURNING ai_dashboard_data, updated_at;
     `;
 
-    const updateResult = await db.query(updateQuery, [aiDashboardData,incident_id]);
+    const updateResult = await db.query(updateQuery, [aiDashboardData, incident_id]);
 
     return res.status(200).json({
       message: 'Dashboard regenerated successfully',
@@ -1280,6 +1557,6 @@ export const generateDashboard = async(req,res)=>{
   } catch (error) {
     console.error('Error generating AI dashboard:', error);
     return res.status(500).json({ error: 'Failed to process AI dashboard generation.' });
-  
+
   }
 }
