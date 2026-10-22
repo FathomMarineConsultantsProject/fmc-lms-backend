@@ -417,7 +417,7 @@ export const createIncident = async (req, res) => {
     details = {},
   } = req.body ?? {};
 
-  // Always derive identity and assignments from the authenticated JWT.
+  // Identity and assignments come from the authenticated JWT.
   const {
     user_id: myUserId,
     role_id,
@@ -440,11 +440,15 @@ export const createIncident = async (req, res) => {
   }
 
   if (typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({ error: "title is required" });
+    return res.status(400).json({
+      error: "title is required",
+    });
   }
 
   if (typeof description !== "string" || !description.trim()) {
-    return res.status(400).json({ error: "description is required" });
+    return res.status(400).json({
+      error: "description is required",
+    });
   }
 
   if (!occurred_at || Number.isNaN(Date.parse(occurred_at))) {
@@ -463,15 +467,14 @@ export const createIncident = async (req, res) => {
     });
   }
 
-  // Normal users must have a company in their JWT.
-  // Superadmin is allowed to have no company or ship.
+  // Normal users must have a company; Superadmin does not need one.
   if (!isSuperAdmin && myCompanyId == null) {
     return res.status(400).json({
       error: "Your account must be associated with a company.",
     });
   }
 
-  // Use JWT assignments; ignore IDs submitted by the frontend.
+  // Never accept ship_id or company_id from the request body.
   const shipId = isSuperAdmin
     ? null
     : myShipId == null || myShipId === ""
@@ -486,6 +489,16 @@ export const createIncident = async (req, res) => {
   ) {
     return res.status(400).json({
       error: "Invalid ship assignment in authenticated user.",
+    });
+  }
+
+  // Validate visibility if supplied.
+  if (
+    visible_to_ship_only !== undefined &&
+    typeof visible_to_ship_only !== "boolean"
+  ) {
+    return res.status(400).json({
+      error: "visible_to_ship_only must be a boolean",
     });
   }
 
@@ -557,10 +570,7 @@ export const createIncident = async (req, res) => {
   }
 
   for (const key of jsonbColumns) {
-    if (
-      details[key] != null &&
-      !Array.isArray(details[key])
-    ) {
+    if (details[key] != null && !Array.isArray(details[key])) {
       return res.status(400).json({
         error: `${key} must be an array or null`,
       });
@@ -583,7 +593,7 @@ export const createIncident = async (req, res) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
-    // Validate the ship assigned in the JWT, if present.
+    // Validate the ship assignment from the JWT, when present.
     if (shipId !== null) {
       const shipResult = await client.query(
         `SELECT ship_id, company_id
@@ -604,7 +614,8 @@ export const createIncident = async (req, res) => {
       const assignedShip = shipResult.rows[0];
 
       if (
-        String(assignedShip.company_id) !== String(incidentCompanyId)
+        String(assignedShip.company_id) !==
+        String(incidentCompanyId)
       ) {
         await client.query("ROLLBACK");
         transactionStarted = false;
@@ -615,7 +626,7 @@ export const createIncident = async (req, res) => {
       }
     }
 
-    // Insert the incident using JWT-derived identity and assignments.
+    // Insert the incident.
     const incidentResult = await client.query(
       `INSERT INTO incident_reports (
         ship_id,
@@ -640,41 +651,56 @@ export const createIncident = async (req, res) => {
         reference_code
       )
       VALUES (
-        $1, $2, $3, COALESCE($4, $5),
-        $6, $7, $8, $9, $10, $11,
-        $12, $13, $14, $15, $16,
+        $1,
+        $2,
+        $3,
+        COALESCE($4::boolean, $5::boolean),
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        $12,
+        $13,
+        $14,
+        $15,
+        $16,
         COALESCE($17, 'Reported'),
-        $18, COALESCE($19, NOW()), $20, $21
+        $18,
+        COALESCE($19, NOW()),
+        $20,
+        $21
       )
       RETURNING *`,
       [
-        shipId,
-        incidentCompanyId,
-        myUserId,
-        visible_to_ship_only ?? null,
-        shipId !== null,
-        title.trim(),
-        description.trim(),
-        incident_type || null,
-        severity || null,
-        priority || null,
-        location_on_ship || null,
-        immediate_action || null,
-        root_cause || null,
-        lesson_learned || null,
-        corrective_action || null,
-        preventive_action || null,
-        status || null,
-        occurred_at,
-        reported_at || null,
-        closed_at || null,
-        reference_code || null,
+        shipId,                         // $1
+        incidentCompanyId,              // $2
+        myUserId,                       // $3
+        visible_to_ship_only ?? null,   // $4
+        shipId !== null,                // $5
+        title.trim(),                   // $6
+        description.trim(),             // $7
+        incident_type || null,          // $8
+        severity || null,               // $9
+        priority || null,               // $10
+        location_on_ship || null,       // $11
+        immediate_action || null,       // $12
+        root_cause || null,             // $13
+        lesson_learned || null,         // $14
+        corrective_action || null,      // $15
+        preventive_action || null,      // $16
+        status || null,                 // $17
+        occurred_at,                    // $18
+        reported_at || null,            // $19
+        closed_at || null,              // $20
+        reference_code || null,          // $21
       ]
     );
 
     const incident = incidentResult.rows[0];
 
-    // Insert incident details, including the optional typed vessel name.
+    // Insert optional incident details.
     const providedColumns = detailColumns.filter(
       (column) => details[column] !== undefined
     );
@@ -730,14 +756,19 @@ export const createIncident = async (req, res) => {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        console.error(
-          "Incident creation rollback failed:",
-          rollbackError
-        );
+        console.error("Incident creation rollback failed:", rollbackError);
       }
     }
 
-    console.error("Error creating incident:", error);
+    // Log the actual error for diagnosis in server logs.
+    console.error("Error creating incident:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      constraint: error.constraint,
+      table: error.table,
+      column: error.column,
+    });
 
     return res.status(500).json({
       error: "Failed to create incident",
