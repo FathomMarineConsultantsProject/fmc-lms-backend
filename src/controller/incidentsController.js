@@ -395,8 +395,11 @@ export const getIncidentById = async (req, res) => {
 
 
 
+
+
 export const createIncident = async (req, res) => {
   const {
+    ship_id,
     visible_to_ship_only,
     title,
     description,
@@ -417,43 +420,33 @@ export const createIncident = async (req, res) => {
     details = {},
   } = req.body ?? {};
 
-  // Identity and assignments come from the authenticated JWT.
-  const {
-    user_id: myUserId,
-    role_id,
-    company_id: myCompanyId,
-    ship_id: myShipId,
-  } = req.user ?? {};
-
-  const roleId = Number(role_id);
-  const isSuperAdmin = roleId === ROLE_SUPERADMIN;
-
-  if (
-    ![ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN, ROLE_CREW].includes(
-      roleId
-    ) ||
-    myUserId == null
-  ) {
-    return res.status(401).json({
-      error: "Invalid authenticated user",
-    });
-  }
-
+  // Validate required fields.
   if (typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({
-      error: "title is required",
-    });
+    return res.status(400).json({ error: "title is required" });
   }
 
   if (typeof description !== "string" || !description.trim()) {
-    return res.status(400).json({
-      error: "description is required",
-    });
+    return res.status(400).json({ error: "description is required" });
   }
 
   if (!occurred_at || Number.isNaN(Date.parse(occurred_at))) {
     return res.status(400).json({
       error: "occurred_at must be a valid date and time",
+    });
+  }
+
+  // Ship ID is optional.
+  const shipId =
+    ship_id === undefined || ship_id === null || ship_id === ""
+      ? null
+      : Number(ship_id);
+
+  if (
+    shipId !== null &&
+    (!Number.isInteger(shipId) || shipId <= 0)
+  ) {
+    return res.status(400).json({
+      error: "ship_id must be a positive integer",
     });
   }
 
@@ -467,41 +460,27 @@ export const createIncident = async (req, res) => {
     });
   }
 
-  // Normal users must have a company; Superadmin does not need one.
-  if (!isSuperAdmin && myCompanyId == null) {
-    return res.status(400).json({
-      error: "Your account must be associated with a company.",
-    });
-  }
+  const {
+    role_id,
+    company_id: myCompanyId,
+    ship_id: myShipId,
+    user_id: myUserId,
+  } = req.user ?? {};
 
-  // Never accept ship_id or company_id from the request body.
-  const shipId = isSuperAdmin
-    ? null
-    : myShipId == null || myShipId === ""
-      ? null
-      : Number(myShipId);
-
-  const incidentCompanyId = isSuperAdmin ? null : myCompanyId;
+  const roleId = Number(role_id);
 
   if (
-    shipId !== null &&
-    (!Number.isInteger(shipId) || shipId <= 0)
+    ![ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SUBADMIN, ROLE_CREW].includes(
+      roleId
+    ) ||
+    myUserId == null
   ) {
-    return res.status(400).json({
-      error: "Invalid ship assignment in authenticated user.",
+    return res.status(401).json({
+      error: "Invalid authenticated user",
     });
   }
 
-  // Validate visibility if supplied.
-  if (
-    visible_to_ship_only !== undefined &&
-    typeof visible_to_ship_only !== "boolean"
-  ) {
-    return res.status(400).json({
-      error: "visible_to_ship_only must be a boolean",
-    });
-  }
-
+  // Whitelist of supported incident detail columns.
   const detailColumns = [
     "vessel_name_snapshot",
     "asset_identifier",
@@ -558,19 +537,53 @@ export const createIncident = async (req, res) => {
     "capa_actions",
   ]);
 
+  // Reject unsupported fields.
   const unknownFields = Object.keys(details).filter(
     (key) => !detailColumns.includes(key)
   );
 
-  if (unknownFields.length > 0) {
+  if (unknownFields.length) {
     return res.status(400).json({
       error: "Unknown incident detail fields",
       fields: unknownFields,
     });
   }
 
+  // Validate JSONB fields.
   for (const key of jsonbColumns) {
-    if (details[key] != null && !Array.isArray(details[key])) {
+    const value = details[key];
+
+    if (value == null) continue;
+
+    if (key === "notifications") {
+      // New format: { recipients: string[], notes: string }
+      if (
+        typeof value !== "object" ||
+        Array.isArray(value)
+      ) {
+        return res.status(400).json({
+          error:
+            "notifications must be an object containing recipients and notes",
+        });
+      }
+
+      if (
+        !Array.isArray(value.recipients) ||
+        !value.recipients.every(
+          (recipient) => typeof recipient === "string"
+        )
+      ) {
+        return res.status(400).json({
+          error: "notifications.recipients must be an array of strings",
+        });
+      }
+
+      if (typeof value.notes !== "string") {
+        return res.status(400).json({
+          error: "notifications.notes must be a string",
+        });
+      }
+    } else if (!Array.isArray(value)) {
       return res.status(400).json({
         error: `${key} must be an array or null`,
       });
@@ -593,7 +606,9 @@ export const createIncident = async (req, res) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
-    // Validate the ship assignment from the JWT, when present.
+    let incidentCompanyId = myCompanyId ?? null;
+
+    // Validate selected ship and enforce role-based ship scope.
     if (shipId !== null) {
       const shipResult = await client.query(
         `SELECT ship_id, company_id
@@ -602,31 +617,56 @@ export const createIncident = async (req, res) => {
         [shipId]
       );
 
-      if (shipResult.rowCount === 0) {
+      if (!shipResult.rowCount) {
         await client.query("ROLLBACK");
         transactionStarted = false;
 
-        return res.status(400).json({
-          error: "The ship assigned to your account was not found.",
+        return res.status(404).json({
+          error: "Ship not found",
         });
       }
 
-      const assignedShip = shipResult.rows[0];
+      const ship = shipResult.rows[0];
 
       if (
-        String(assignedShip.company_id) !==
-        String(incidentCompanyId)
+        roleId !== ROLE_SUPERADMIN &&
+        String(ship.company_id) !== String(myCompanyId)
       ) {
         await client.query("ROLLBACK");
         transactionStarted = false;
 
         return res.status(403).json({
-          error: "Your assigned ship does not belong to your company.",
+          error: "Forbidden: ship is outside your company",
         });
       }
+
+      if (
+        [ROLE_SUBADMIN, ROLE_CREW].includes(roleId) &&
+        Number(shipId) !== Number(myShipId)
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(403).json({
+          error: "Forbidden: ship is outside your scope",
+        });
+      }
+
+      incidentCompanyId = ship.company_id;
     }
 
-    // Insert the incident.
+    // company_id is NOT NULL in the database.
+    if (incidentCompanyId == null) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        error:
+          "A company association is required. Select a registered ship or ensure your account has a company assigned.",
+      });
+    }
+
+    // Insert the main incident.
     const incidentResult = await client.query(
       `INSERT INTO incident_reports (
         ship_id,
@@ -651,95 +691,73 @@ export const createIncident = async (req, res) => {
         reference_code
       )
       VALUES (
-        $1,
-        $2,
-        $3,
-        COALESCE($4::boolean, $5::boolean),
-        $6,
-        $7,
-        $8,
-        $9,
-        $10,
-        $11,
-        $12,
-        $13,
-        $14,
-        $15,
-        $16,
-        COALESCE($17, 'Reported'),
-        $18,
-        COALESCE($19, NOW()),
-        $20,
-        $21
+        $1, $2, $3, COALESCE($4, true),
+        $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15,
+        COALESCE($16, 'Reported'),
+        $17, COALESCE($18, NOW()), $19, $20
       )
       RETURNING *`,
       [
-        shipId,                         // $1
-        incidentCompanyId,              // $2
-        myUserId,                       // $3
-        visible_to_ship_only ?? null,   // $4
-        shipId !== null,                // $5
-        title.trim(),                   // $6
-        description.trim(),             // $7
-        incident_type || null,          // $8
-        severity || null,               // $9
-        priority || null,               // $10
-        location_on_ship || null,       // $11
-        immediate_action || null,       // $12
-        root_cause || null,             // $13
-        lesson_learned || null,         // $14
-        corrective_action || null,      // $15
-        preventive_action || null,      // $16
-        status || null,                 // $17
-        occurred_at,                    // $18
-        reported_at || null,            // $19
-        closed_at || null,              // $20
-        reference_code || null,          // $21
+        shipId,
+        incidentCompanyId,
+        myUserId,
+        visible_to_ship_only ?? null,
+        title.trim(),
+        description.trim(),
+        incident_type || null,
+        severity || null,
+        priority || null,
+        location_on_ship || null,
+        immediate_action || null,
+        root_cause || null,
+        lesson_learned || null,
+        corrective_action || null,
+        preventive_action || null,
+        status || null,
+        occurred_at,
+        reported_at || null,
+        closed_at || null,
+        reference_code || null,
       ]
     );
 
     const incident = incidentResult.rows[0];
 
-    // Insert optional incident details.
+    // Insert only supplied detail fields.
     const providedColumns = detailColumns.filter(
       (column) => details[column] !== undefined
     );
 
-    let savedDetails = null;
+    const insertColumns = ["incident_id", ...providedColumns];
 
-    if (providedColumns.length > 0) {
-      const insertColumns = ["incident_id", ...providedColumns];
+    const insertValues = [
+      incident.incident_id,
+      ...providedColumns.map((column) => {
+        const value = details[column];
 
-      const insertValues = [
-        incident.incident_id,
-        ...providedColumns.map((column) => {
-          const value = details[column];
+        return jsonbColumns.has(column) && value !== null
+          ? JSON.stringify(value)
+          : value;
+      }),
+    ];
 
-          return jsonbColumns.has(column) && value !== null
-            ? JSON.stringify(value)
-            : value;
-        }),
-      ];
+    const placeholders = insertColumns.map((column, index) => {
+      const placeholder = `$${index + 1}`;
 
-      const placeholders = insertColumns.map((column, index) => {
-        const placeholder = `$${index + 1}`;
+      return jsonbColumns.has(column)
+        ? `${placeholder}::jsonb`
+        : placeholder;
+    });
 
-        return jsonbColumns.has(column)
-          ? `${placeholder}::jsonb`
-          : placeholder;
-      });
-
-      const detailsResult = await client.query(
-        `INSERT INTO incident_report_details (
-          ${insertColumns.join(", ")}
-        )
-        VALUES (${placeholders.join(", ")})
-        RETURNING *`,
-        insertValues
-      );
-
-      savedDetails = detailsResult.rows[0];
-    }
+    const detailsResult = await client.query(
+      `INSERT INTO incident_report_details (
+        ${insertColumns.join(", ")}
+      )
+      VALUES (${placeholders.join(", ")})
+      RETURNING *`,
+      insertValues
+    );
 
     await client.query("COMMIT");
     transactionStarted = false;
@@ -748,7 +766,7 @@ export const createIncident = async (req, res) => {
       message: "Incident created successfully",
       incident: {
         ...incident,
-        details: savedDetails,
+        details: detailsResult.rows[0],
       },
     });
   } catch (error) {
@@ -756,19 +774,14 @@ export const createIncident = async (req, res) => {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        console.error("Incident creation rollback failed:", rollbackError);
+        console.error(
+          "Incident creation rollback failed:",
+          rollbackError
+        );
       }
     }
 
-    // Log the actual error for diagnosis in server logs.
-    console.error("Error creating incident:", {
-      message: error.message,
-      code: error.code,
-      detail: error.detail,
-      constraint: error.constraint,
-      table: error.table,
-      column: error.column,
-    });
+    console.error("Error creating incident:", error);
 
     return res.status(500).json({
       error: "Failed to create incident",
@@ -777,6 +790,8 @@ export const createIncident = async (req, res) => {
     client.release();
   }
 };
+
+
 
 
 
@@ -1009,6 +1024,7 @@ export const updateIncident = async (req, res) => {
       }
 
       mainValues.push(value);
+
       mainSetClauses.push(
         `${column} = $${mainValues.length}`
       );
@@ -1017,10 +1033,14 @@ export const updateIncident = async (req, res) => {
     // Ship and company are updated together when ship_id is supplied.
     if (hasField("ship_id")) {
       mainValues.push(shipId);
-      mainSetClauses.push(`ship_id = $${mainValues.length}`);
+      mainSetClauses.push(
+        `ship_id = $${mainValues.length}`
+      );
 
       mainValues.push(companyId);
-      mainSetClauses.push(`company_id = $${mainValues.length}`);
+      mainSetClauses.push(
+        `company_id = $${mainValues.length}`
+      );
     }
 
     if (mainSetClauses.length > 0) {
@@ -1124,12 +1144,59 @@ export const updateIncident = async (req, res) => {
         });
       }
 
+      // Validate JSONB fields.
+      // notifications is an object; all other JSONB fields are arrays.
       for (const key of jsonbColumns) {
-        if (
-          details[key] !== undefined &&
-          details[key] !== null &&
-          !Array.isArray(details[key])
-        ) {
+        const value = details[key];
+
+        // Allow null and skip fields that were not supplied.
+        if (value === undefined || value === null) {
+          continue;
+        }
+
+        if (key === "notifications") {
+          if (
+            typeof value !== "object" ||
+            Array.isArray(value)
+          ) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(400).json({
+              error:
+                "notifications must be an object containing recipients and notes",
+            });
+          }
+
+          if (
+            !Array.isArray(value.recipients) ||
+            !value.recipients.every(
+              (recipient) => typeof recipient === "string"
+            )
+          ) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(400).json({
+              error:
+                "notifications.recipients must be an array of strings",
+            });
+          }
+
+          if (typeof value.notes !== "string") {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(400).json({
+              error: "notifications.notes must be a string",
+            });
+          }
+
+          continue;
+        }
+
+        // All other JSONB columns must remain arrays.
+        if (!Array.isArray(value)) {
           await client.query("ROLLBACK");
           transactionStarted = false;
 
