@@ -655,8 +655,12 @@ export const createIncident = async (req, res) => {
       incidentCompanyId = ship.company_id;
     }
 
-    // company_id is NOT NULL in the database.
-    if (incidentCompanyId == null) {
+    // Company association is mandatory for regular users,
+    // but optional for Superadmin.
+    if (
+      incidentCompanyId == null &&
+      roleId !== ROLE_SUPERADMIN
+    ) {
       await client.query("ROLLBACK");
       transactionStarted = false;
 
