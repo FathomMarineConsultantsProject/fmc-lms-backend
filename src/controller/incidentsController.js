@@ -1061,6 +1061,7 @@ export const updateIncident = async (req, res) => {
       "emt_convened_status",
       "external_statements_review_status",
       "notifications",
+      "notification_notes",
       "evidence_items",
       "vdr_cctv_recording_window",
       "investigation_leads",
