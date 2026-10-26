@@ -543,123 +543,576 @@ export const updateAssessment = async (req, res) => {
 
 // ================= UPDATE ASSESSMENT QUESTIONS + OPTIONS =================
 
+// export const updateAssessmentQuestions = async (req, res) => {
+//   const client = await db.connect();
+
+//   try {
+//     const { assessmentId } = req.params;
+//     const { questions = [] } = req.body;
+
+//     if (!Array.isArray(questions) || questions.length === 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "questions array is required",
+//       });
+//     }
+
+//     await client.query("BEGIN");
+
+//     const assessmentResult = await client.query(
+//       `
+//       SELECT assessment_id, assessment_type
+//       FROM assessments
+//       WHERE assessment_id = $1
+//       AND is_deleted = false
+//       `,
+//       [assessmentId]
+//     );
+
+//     const allowed = await checkAssessmentScope(req, assessmentId, client);
+
+//     if (!allowed) {
+//       throw new Error("Assessment not found");
+//     }
+
+//     if (assessmentResult.rows.length === 0) {
+//       throw new Error("Assessment not found");
+//     }
+
+//     const assessment = assessmentResult.rows[0];
+
+//     let totalMarks = 0;
+
+//     for (const q of questions) {
+//       totalMarks += Number(q.marks || 1);
+
+//       if (!ASSESSMENT_TYPES.includes(q.question_type)) {
+//         throw new Error("Invalid question_type");
+//       }
+
+//       if (q.question_type !== assessment.assessment_type) {
+//         throw new Error("Question type must match assessment type");
+//       }
+
+//       if (MCQ_TYPES.includes(assessment.assessment_type)) {
+//         if (!Array.isArray(q.options) || q.options.length < 2) {
+//           throw new Error("MCQ questions must have at least 2 options");
+//         }
+
+//         const correctCount = q.options.filter((opt) => opt.is_correct).length;
+
+//         if (assessment.assessment_type === "mcq_single" && correctCount !== 1) {
+//           throw new Error("mcq_single question must have exactly one correct option");
+//         }
+
+//         if (assessment.assessment_type === "mcq_multiple" && correctCount < 1) {
+//           throw new Error("mcq_multiple question must have at least one correct option");
+//         }
+//       }
+
+//       if (assessment.assessment_type === "subjective" && q.options?.length) {
+//         throw new Error("Subjective questions cannot have options");
+//       }
+//     }
+
+//     await client.query(
+//       `
+//     UPDATE assessment_questions
+//     SET is_deleted = true,
+//         updated_at = NOW()
+//     WHERE assessment_id = $1
+//       AND is_deleted = false
+//   `,
+//       [assessmentId]
+//     );
+
+//     for (let i = 0; i < questions.length; i++) {
+//       const q = questions[i];
+
+//       const questionResult = await client.query(
+//         `
+//         INSERT INTO assessment_questions (
+//           assessment_id,
+//           question_text,
+//           question_type,
+//           marks,
+//           question_order,
+//           explanation,
+//           is_required
+//         )
+//         VALUES ($1,$2,$3,$4,$5,$6,$7)
+//         RETURNING *
+//         `,
+//         [
+//           assessmentId,
+//           q.question_text,
+//           q.question_type,
+//           q.marks || 1,
+//           q.question_order || i + 1,
+//           q.explanation || null,
+//           q.is_required !== false,
+//         ]
+//       );
+
+//       const question = questionResult.rows[0];
+
+//       if (MCQ_TYPES.includes(assessment.assessment_type)) {
+//         for (let j = 0; j < q.options.length; j++) {
+//           const opt = q.options[j];
+
+//           await client.query(
+//             `
+//             INSERT INTO assessment_options (
+//               question_id,
+//               option_text,
+//               is_correct,
+//               option_order
+//             )
+//             VALUES ($1,$2,$3,$4)
+//             `,
+//             [
+//               question.question_id,
+//               opt.option_text,
+//               normalizeBool(opt.is_correct, false),
+//               opt.option_order || j + 1,
+//             ]
+//           );
+//         }
+//       }
+//     }
+
+//     await client.query(
+//       `
+//       UPDATE assessments
+//       SET total_marks = $1,
+//           updated_at = NOW()
+//       WHERE assessment_id = $2
+//       `,
+//       [totalMarks, assessmentId]
+//     );
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       success: true,
+//       message: "Assessment questions updated successfully",
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("Update assessment questions error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message || "Failed to update assessment questions",
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
+
 export const updateAssessmentQuestions = async (req, res) => {
   const client = await db.connect();
+  let transactionStarted = false;
 
   try {
     const { assessmentId } = req.params;
-    const { questions = [] } = req.body;
+
+    const {
+      questions,
+      deletedQuestionIds = [],
+      deletedOptionIds = [],
+    } = req.body;
 
     if (!Array.isArray(questions) || questions.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "questions array is required",
+        message: "At least one question is required",
+      });
+    }
+
+    if (
+      !Array.isArray(deletedQuestionIds) ||
+      !Array.isArray(deletedOptionIds)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "deletedQuestionIds and deletedOptionIds must be arrays",
       });
     }
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
+    // Lock the assessment while its questions are being edited.
     const assessmentResult = await client.query(
       `
       SELECT assessment_id, assessment_type
       FROM assessments
       WHERE assessment_id = $1
-      AND is_deleted = false
+        AND is_deleted = false
+      FOR UPDATE
       `,
       [assessmentId]
     );
 
-    const allowed = await checkAssessmentScope(req, assessmentId, client);
+    const allowed = await checkAssessmentScope(
+      req,
+      assessmentId,
+      client
+    );
 
-    if (!allowed) {
-      throw new Error("Assessment not found");
-    }
-
-    if (assessmentResult.rows.length === 0) {
-      throw new Error("Assessment not found");
+    if (!allowed || assessmentResult.rows.length === 0) {
+      const error = new Error("Assessment not found or access denied");
+      error.statusCode = 404;
+      throw error;
     }
 
     const assessment = assessmentResult.rows[0];
+    const assessmentType = assessment.assessment_type;
 
+    const existingQuestionsResult = await client.query(
+      `
+      SELECT question_id, question_order
+      FROM assessment_questions
+      WHERE assessment_id = $1
+        AND is_deleted = false
+      FOR UPDATE
+      `,
+      [assessmentId]
+    );
+
+    const existingQuestionIds = new Set(
+      existingQuestionsResult.rows.map((q) => q.question_id)
+    );
+
+    const submittedQuestionIds = new Set();
+
+    // Validate the entire payload before changing question data.
     let totalMarks = 0;
 
-    for (const q of questions) {
-      totalMarks += Number(q.marks || 1);
+    for (const [index, q] of questions.entries()) {
+      if (
+        typeof q.question_text !== "string" ||
+        !q.question_text.trim()
+      ) {
+        throw new Error(
+          `Question ${index + 1}: question_text is required`
+        );
+      }
+
+      if (q.question_id) {
+        if (!existingQuestionIds.has(q.question_id)) {
+          throw new Error(
+            `Question ${q.question_id} does not belong to this assessment`
+          );
+        }
+
+        if (submittedQuestionIds.has(q.question_id)) {
+          throw new Error(
+            `Duplicate question_id: ${q.question_id}`
+          );
+        }
+
+        submittedQuestionIds.add(q.question_id);
+      }
+
+      if (q.question_type !== assessmentType) {
+        throw new Error(
+          `Question ${index + 1}: question_type must match assessment type`
+        );
+      }
 
       if (!ASSESSMENT_TYPES.includes(q.question_type)) {
-        throw new Error("Invalid question_type");
+        throw new Error(
+          `Question ${index + 1}: invalid question_type`
+        );
       }
 
-      if (q.question_type !== assessment.assessment_type) {
-        throw new Error("Question type must match assessment type");
+      const marks = Number(q.marks ?? 1);
+
+      if (!Number.isFinite(marks) || marks < 0) {
+        throw new Error(
+          `Question ${index + 1}: marks must be a non-negative number`
+        );
       }
 
-      if (MCQ_TYPES.includes(assessment.assessment_type)) {
+      totalMarks += marks;
+
+      if (MCQ_TYPES.includes(assessmentType)) {
         if (!Array.isArray(q.options) || q.options.length < 2) {
-          throw new Error("MCQ questions must have at least 2 options");
+          throw new Error(
+            `Question ${index + 1}: MCQ questions require at least 2 options`
+          );
         }
 
-        const correctCount = q.options.filter((opt) => opt.is_correct).length;
+        const correctCount = q.options.filter(
+          (option) => option.is_correct === true
+        ).length;
 
-        if (assessment.assessment_type === "mcq_single" && correctCount !== 1) {
-          throw new Error("mcq_single question must have exactly one correct option");
+        if (
+          assessmentType === "mcq_single" &&
+          correctCount !== 1
+        ) {
+          throw new Error(
+            `Question ${index + 1}: exactly one correct option is required`
+          );
         }
 
-        if (assessment.assessment_type === "mcq_multiple" && correctCount < 1) {
-          throw new Error("mcq_multiple question must have at least one correct option");
+        if (
+          assessmentType === "mcq_multiple" &&
+          correctCount < 1
+        ) {
+          throw new Error(
+            `Question ${index + 1}: at least one correct option is required`
+          );
+        }
+
+        const submittedOptionIds = new Set();
+
+        for (const [optionIndex, option] of q.options.entries()) {
+          if (
+            typeof option.option_text !== "string" ||
+            !option.option_text.trim()
+          ) {
+            throw new Error(
+              `Question ${index + 1}, option ${optionIndex + 1}: option_text is required`
+            );
+          }
+
+          if (option.option_id) {
+            if (submittedOptionIds.has(option.option_id)) {
+              throw new Error(
+                `Duplicate option_id: ${option.option_id}`
+              );
+            }
+
+            submittedOptionIds.add(option.option_id);
+          }
         }
       }
 
-      if (assessment.assessment_type === "subjective" && q.options?.length) {
+      if (assessmentType === "subjective" && q.options?.length) {
         throw new Error("Subjective questions cannot have options");
       }
     }
 
-    await client.query(
+    // Deleting a question must be explicit and must refer to this assessment.
+    const uniqueDeletedQuestionIds = [
+      ...new Set(deletedQuestionIds),
+    ];
+
+    const uniqueDeletedOptionIds = [
+      ...new Set(deletedOptionIds),
+    ];
+
+    for (const questionId of uniqueDeletedQuestionIds) {
+      if (!existingQuestionIds.has(questionId)) {
+        throw new Error(
+          `Cannot delete question ${questionId}: it does not belong to this assessment`
+        );
+      }
+
+      if (submittedQuestionIds.has(questionId)) {
+        throw new Error(
+          `Question ${questionId} cannot be both submitted and deleted`
+        );
+      }
+    }
+
+    // Prevent deleting questions/options referenced by saved answers.
+    // Keep historical results intact rather than cascading their deletion.
+    if (uniqueDeletedQuestionIds.length > 0) {
+      const usedQuestions = await client.query(
+        `
+        SELECT DISTINCT q.question_id
+        FROM assessment_questions q
+        WHERE q.question_id = ANY($1::uuid[])
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM assessment_answers aa
+              WHERE aa.question_id = q.question_id
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM assessment_attempt_questions aaq
+              WHERE aaq.question_id = q.question_id
+            )
+          )
+        `,
+        [uniqueDeletedQuestionIds]
+      );
+
+      if (usedQuestions.rows.length > 0) {
+        const error = new Error(
+          "Some questions have assessment history and cannot be deleted. Keep them or implement historical question snapshots first."
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
+    // Shift active question orders temporarily to avoid unique-order conflicts
+    // while existing questions are reordered.
+    const maxOrderResult = await client.query(
       `
-    UPDATE assessment_questions
-    SET is_deleted = true,
-        updated_at = NOW()
-    WHERE assessment_id = $1
-      AND is_deleted = false
-  `,
+      SELECT COALESCE(MAX(question_order), 0) AS max_order
+      FROM assessment_questions
+      WHERE assessment_id = $1
+      `,
       [assessmentId]
     );
 
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
+    const orderOffset =
+      Number(maxOrderResult.rows[0].max_order) +
+      questions.length +
+      existingQuestionsResult.rows.length +
+      100;
 
-      const questionResult = await client.query(
+    await client.query(
+      `
+      UPDATE assessment_questions
+      SET question_order = question_order + $2
+      WHERE assessment_id = $1
+        AND is_deleted = false
+      `,
+      [assessmentId, orderOffset]
+    );
+
+    // Delete only explicitly selected questions.
+    // This project already uses is_deleted for question removal.
+    if (uniqueDeletedQuestionIds.length > 0) {
+      await client.query(
         `
-        INSERT INTO assessment_questions (
-          assessment_id,
-          question_text,
-          question_type,
-          marks,
-          question_order,
-          explanation,
-          is_required
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        RETURNING *
+        UPDATE assessment_questions
+        SET is_deleted = true,
+            updated_at = NOW()
+        WHERE assessment_id = $1
+          AND question_id = ANY($2::uuid[])
+          AND is_deleted = false
         `,
-        [
-          assessmentId,
-          q.question_text,
-          q.question_type,
-          q.marks || 1,
-          q.question_order || i + 1,
-          q.explanation || null,
-          q.is_required !== false,
-        ]
+        [assessmentId, uniqueDeletedQuestionIds]
+      );
+    }
+
+    // Process questions one by one, preserving existing IDs.
+    for (const [index, q] of questions.entries()) {
+      const questionOrder = index + 1;
+      const marks = Number(q.marks ?? 1);
+
+      let questionId = q.question_id;
+
+      if (questionId) {
+        await client.query(
+          `
+          UPDATE assessment_questions
+          SET question_text = $1,
+              question_type = $2,
+              marks = $3,
+              question_order = $4,
+              explanation = $5,
+              is_required = $6,
+              updated_at = NOW()
+          WHERE question_id = $7
+            AND assessment_id = $8
+            AND is_deleted = false
+          `,
+          [
+            q.question_text.trim(),
+            q.question_type,
+            marks,
+            questionOrder,
+            q.explanation ?? null,
+            q.is_required !== false,
+            questionId,
+            assessmentId,
+          ]
+        );
+      } else {
+        const insertedQuestion = await client.query(
+          `
+          INSERT INTO assessment_questions (
+            assessment_id,
+            question_text,
+            question_type,
+            marks,
+            question_order,
+            explanation,
+            is_required
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING question_id
+          `,
+          [
+            assessmentId,
+            q.question_text.trim(),
+            q.question_type,
+            marks,
+            questionOrder,
+            q.explanation ?? null,
+            q.is_required !== false,
+          ]
+        );
+
+        questionId = insertedQuestion.rows[0].question_id;
+      }
+
+      if (!MCQ_TYPES.includes(assessmentType)) {
+        continue;
+      }
+
+      // Validate that submitted option IDs belong to this question.
+      const existingOptionsResult = await client.query(
+        `
+        SELECT option_id
+        FROM assessment_options
+        WHERE question_id = $1
+        `,
+        [questionId]
       );
 
-      const question = questionResult.rows[0];
+      const existingOptionIds = new Set(
+        existingOptionsResult.rows.map((option) => option.option_id)
+      );
 
-      if (MCQ_TYPES.includes(assessment.assessment_type)) {
-        for (let j = 0; j < q.options.length; j++) {
-          const opt = q.options[j];
+      const submittedOptionIds = new Set();
 
+      for (const option of q.options) {
+        if (option.option_id) {
+          if (!existingOptionIds.has(option.option_id)) {
+            throw new Error(
+              `Option ${option.option_id} does not belong to question ${questionId}`
+            );
+          }
+
+          submittedOptionIds.add(option.option_id);
+        }
+      }
+
+      // Update existing options or insert new options.
+      for (const [optionIndex, option] of q.options.entries()) {
+        const optionOrder = optionIndex + 1;
+
+        if (option.option_id) {
+          await client.query(
+            `
+            UPDATE assessment_options
+            SET option_text = $1,
+                is_correct = $2,
+                option_order = $3
+            WHERE option_id = $4
+              AND question_id = $5
+            `,
+            [
+              option.option_text.trim(),
+              normalizeBool(option.is_correct, false),
+              optionOrder,
+              option.option_id,
+              questionId,
+            ]
+          );
+        } else {
           await client.query(
             `
             INSERT INTO assessment_options (
@@ -668,40 +1121,111 @@ export const updateAssessmentQuestions = async (req, res) => {
               is_correct,
               option_order
             )
-            VALUES ($1,$2,$3,$4)
+            VALUES ($1, $2, $3, $4)
             `,
             [
-              question.question_id,
-              opt.option_text,
-              normalizeBool(opt.is_correct, false),
-              opt.option_order || j + 1,
+              questionId,
+              option.option_text.trim(),
+              normalizeBool(option.is_correct, false),
+              optionOrder,
             ]
           );
         }
       }
+
+      // Explicit option deletions are handled separately below.
+      // Omitted options are not automatically deleted.
     }
 
+    // Delete specific options only when they belong to a question
+    // in this assessment and have no historical answer references.
+    if (uniqueDeletedOptionIds.length > 0) {
+      const deletedOptionsResult = await client.query(
+        `
+        SELECT o.option_id, o.question_id
+        FROM assessment_options o
+        JOIN assessment_questions q
+          ON q.question_id = o.question_id
+        WHERE o.option_id = ANY($1::uuid[])
+          AND q.assessment_id = $2
+        `,
+        [uniqueDeletedOptionIds, assessmentId]
+      );
+
+      if (deletedOptionsResult.rows.length !== uniqueDeletedOptionIds.length) {
+        throw new Error(
+          "One or more options do not belong to this assessment"
+        );
+      }
+
+      const usedOptions = await client.query(
+        `
+        SELECT o.option_id
+        FROM assessment_options o
+        WHERE o.option_id = ANY($1::uuid[])
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM assessment_answers aa
+              WHERE aa.selected_option_id = o.option_id
+                 OR o.option_id = ANY(
+                   COALESCE(aa.selected_option_ids, ARRAY[]::uuid[])
+                 )
+            )
+          )
+        `,
+        [uniqueDeletedOptionIds]
+      );
+
+      if (usedOptions.rows.length > 0) {
+        const error = new Error(
+          "Some options have been used in saved answers and cannot be deleted without preserving historical results."
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      await client.query(
+        `
+        DELETE FROM assessment_options
+        WHERE option_id = ANY($1::uuid[])
+        `,
+        [uniqueDeletedOptionIds]
+      );
+    }
+
+    // Update the assessment's total marks.
     await client.query(
       `
       UPDATE assessments
       SET total_marks = $1,
+          updated_by = $2,
           updated_at = NOW()
-      WHERE assessment_id = $2
+      WHERE assessment_id = $3
       `,
-      [totalMarks, assessmentId]
+      [totalMarks, getUserId(req), assessmentId]
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.json({
       success: true,
       message: "Assessment questions updated successfully",
+      data: {
+        assessment_id: assessmentId,
+        question_count: questions.length,
+        total_marks: totalMarks,
+      },
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
     console.error("Update assessment questions error:", error);
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message || "Failed to update assessment questions",
     });
@@ -712,12 +1236,116 @@ export const updateAssessmentQuestions = async (req, res) => {
 
 // ================= UPDATE QUESTION OPTIONS =================
 
+// export const updateQuestionOptions = async (req, res) => {
+//   const client = await db.connect();
+
+//   try {
+//     const { questionId } = req.params;
+//     const { options = [] } = req.body;
+
+//     if (!Array.isArray(options) || options.length < 2) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "At least 2 options are required",
+//       });
+//     }
+
+//     await client.query("BEGIN");
+
+//     const questionResult = await client.query(`
+//   SELECT q.*, a.assessment_type
+//   FROM assessment_questions q
+//   JOIN assessments a ON a.assessment_id = q.assessment_id
+//   WHERE q.question_id = $1
+//   AND q.is_deleted = false
+//   AND a.is_deleted = false
+// `, [questionId]);
+
+//     if (questionResult.rows.length === 0) {
+//       throw new Error("Question not found");
+//     }
+
+//     const question = questionResult.rows[0];
+
+//     const allowed = await checkAssessmentScope(req, question.assessment_id, client);
+
+//     if (!allowed) {
+//       throw new Error("Assessment not found");
+//     }
+
+//     if (!MCQ_TYPES.includes(question.question_type)) {
+//       throw new Error("Options can only be updated for MCQ questions");
+//     }
+
+//     const correctCount = options.filter((opt) => opt.is_correct).length;
+
+//     if (question.question_type === "mcq_single" && correctCount !== 1) {
+//       throw new Error("mcq_single question must have exactly one correct option");
+//     }
+
+//     if (question.question_type === "mcq_multiple" && correctCount < 1) {
+//       throw new Error("mcq_multiple question must have at least one correct option");
+//     }
+
+//     await client.query(
+//       `
+//       DELETE FROM assessment_options
+//       WHERE question_id = $1
+//       `,
+//       [questionId]
+//     );
+
+//     for (let i = 0; i < options.length; i++) {
+//       const opt = options[i];
+
+//       await client.query(
+//         `
+//         INSERT INTO assessment_options (
+//           question_id,
+//           option_text,
+//           is_correct,
+//           option_order
+//         )
+//         VALUES ($1,$2,$3,$4)
+//         `,
+//         [
+//           questionId,
+//           opt.option_text,
+//           normalizeBool(opt.is_correct, false),
+//           opt.option_order || i + 1,
+//         ]
+//       );
+//     }
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       success: true,
+//       message: "Question options updated successfully",
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("Update question options error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message || "Failed to update question options",
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
+
 export const updateQuestionOptions = async (req, res) => {
   const client = await db.connect();
+  let transactionStarted = false;
 
   try {
     const { questionId } = req.params;
-    const { options = [] } = req.body;
+    const {
+      options = [],
+      deletedOptionIds = [],
+    } = req.body;
 
     if (!Array.isArray(options) || options.length < 2) {
       return res.status(400).json({
@@ -726,84 +1354,325 @@ export const updateQuestionOptions = async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
+    if (!Array.isArray(deletedOptionIds)) {
+      return res.status(400).json({
+        success: false,
+        message: "deletedOptionIds must be an array",
+      });
+    }
 
-    const questionResult = await client.query(`
-  SELECT q.*, a.assessment_type
-  FROM assessment_questions q
-  JOIN assessments a ON a.assessment_id = q.assessment_id
-  WHERE q.question_id = $1
-  AND q.is_deleted = false
-  AND a.is_deleted = false
-`, [questionId]);
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    // Lock the question while its options are being updated.
+    const questionResult = await client.query(
+      `
+      SELECT q.question_id, q.question_type, q.assessment_id
+      FROM assessment_questions q
+      JOIN assessments a
+        ON a.assessment_id = q.assessment_id
+      WHERE q.question_id = $1
+        AND q.is_deleted = false
+        AND a.is_deleted = false
+      FOR UPDATE OF q
+      `,
+      [questionId]
+    );
 
     if (questionResult.rows.length === 0) {
-      throw new Error("Question not found");
+      const error = new Error("Question not found");
+      error.statusCode = 404;
+      throw error;
     }
 
     const question = questionResult.rows[0];
 
-    const allowed = await checkAssessmentScope(req, question.assessment_id, client);
+    const allowed = await checkAssessmentScope(
+      req,
+      question.assessment_id,
+      client
+    );
 
     if (!allowed) {
-      throw new Error("Assessment not found");
+      const error = new Error("Access denied");
+      error.statusCode = 403;
+      throw error;
     }
 
     if (!MCQ_TYPES.includes(question.question_type)) {
-      throw new Error("Options can only be updated for MCQ questions");
+      const error = new Error(
+        "Options can only be updated for MCQ questions"
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
-    const correctCount = options.filter((opt) => opt.is_correct).length;
+    // Validate option content and correct-answer rules.
+    const submittedOptionIds = new Set();
+    const normalizedOptions = [];
 
-    if (question.question_type === "mcq_single" && correctCount !== 1) {
-      throw new Error("mcq_single question must have exactly one correct option");
+    for (const [index, option] of options.entries()) {
+      if (
+        typeof option.option_text !== "string" ||
+        !option.option_text.trim()
+      ) {
+        const error = new Error(
+          `Option ${index + 1}: option_text is required`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (
+        option.option_id &&
+        submittedOptionIds.has(option.option_id)
+      ) {
+        const error = new Error(
+          `Duplicate option_id: ${option.option_id}`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (option.option_id) {
+        submittedOptionIds.add(option.option_id);
+      }
+
+      normalizedOptions.push({
+        ...option,
+        option_text: option.option_text.trim(),
+        is_correct: normalizeBool(option.is_correct, false),
+      });
     }
 
-    if (question.question_type === "mcq_multiple" && correctCount < 1) {
-      throw new Error("mcq_multiple question must have at least one correct option");
+    const correctCount = normalizedOptions.filter(
+      (option) => option.is_correct
+    ).length;
+
+    if (
+      question.question_type === "mcq_single" &&
+      correctCount !== 1
+    ) {
+      const error = new Error(
+        "mcq_single question must have exactly one correct option"
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
-    await client.query(
+    if (
+      question.question_type === "mcq_multiple" &&
+      correctCount < 1
+    ) {
+      const error = new Error(
+        "mcq_multiple question must have at least one correct option"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const uniqueDeletedOptionIds = [
+      ...new Set(deletedOptionIds),
+    ];
+
+    // An option cannot be submitted and deleted in the same request.
+    for (const optionId of uniqueDeletedOptionIds) {
+      if (submittedOptionIds.has(optionId)) {
+        const error = new Error(
+          `Option ${optionId} cannot be submitted and deleted`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Lock and load existing options.
+    const existingResult = await client.query(
       `
-      DELETE FROM assessment_options
+      SELECT option_id, option_order
+      FROM assessment_options
+      WHERE question_id = $1
+      ORDER BY option_order
+      FOR UPDATE
+      `,
+      [questionId]
+    );
+
+    const existingOptionIds = new Set(
+      existingResult.rows.map((row) => row.option_id)
+    );
+
+    // Validate all submitted existing IDs before modifying options.
+    for (const option of normalizedOptions) {
+      if (
+        option.option_id &&
+        !existingOptionIds.has(option.option_id)
+      ) {
+        const error = new Error(
+          `Option ${option.option_id} does not belong to question ${questionId}`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Validate explicitly deleted IDs.
+    for (const optionId of uniqueDeletedOptionIds) {
+      if (!existingOptionIds.has(optionId)) {
+        const error = new Error(
+          `Option ${optionId} does not belong to question ${questionId}`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Check that deletions will leave at least two options.
+    const remainingCount =
+      existingResult.rows.length -
+      uniqueDeletedOptionIds.length +
+      normalizedOptions.filter((option) => !option.option_id).length;
+
+    if (remainingCount < 2) {
+      const error = new Error(
+        "An MCQ question must have at least 2 options"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Check historical references before deleting any options.
+    if (uniqueDeletedOptionIds.length > 0) {
+      const usedOptionsResult = await client.query(
+        `
+        SELECT DISTINCT o.option_id
+        FROM assessment_options o
+        WHERE o.question_id = $1
+          AND o.option_id = ANY($2::uuid[])
+          AND EXISTS (
+            SELECT 1
+            FROM assessment_answers aa
+            WHERE aa.selected_option_id = o.option_id
+               OR o.option_id = ANY(
+                 COALESCE(
+                   aa.selected_option_ids,
+                   ARRAY[]::uuid[]
+                 )
+               )
+          )
+        `,
+        [questionId, uniqueDeletedOptionIds]
+      );
+
+      if (usedOptionsResult.rows.length > 0) {
+        const error = new Error(
+          "Some options are referenced by saved answers and cannot be deleted."
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
+    // Temporarily move existing option orders out of the normal range.
+    // This prevents unique (question_id, option_order) conflicts
+    // when existing options are reordered.
+    const maxOrderResult = await client.query(
+      `
+      SELECT COALESCE(MAX(option_order), 0) AS max_order
+      FROM assessment_options
       WHERE question_id = $1
       `,
       [questionId]
     );
 
-    for (let i = 0; i < options.length; i++) {
-      const opt = options[i];
+    const maxOrder = Number(maxOrderResult.rows[0].max_order);
+    const orderOffset =
+      maxOrder +
+      existingResult.rows.length +
+      normalizedOptions.length +
+      100;
 
+    if (existingResult.rows.length > 0) {
       await client.query(
         `
-        INSERT INTO assessment_options (
-          question_id,
-          option_text,
-          is_correct,
-          option_order
-        )
-        VALUES ($1,$2,$3,$4)
+        UPDATE assessment_options
+        SET option_order = option_order + $2
+        WHERE question_id = $1
         `,
-        [
-          questionId,
-          opt.option_text,
-          normalizeBool(opt.is_correct, false),
-          opt.option_order || i + 1,
-        ]
+        [questionId, orderOffset]
       );
     }
 
-    await client.query("COMMIT");
+    // Explicitly delete only options requested for deletion.
+    if (uniqueDeletedOptionIds.length > 0) {
+      await client.query(
+        `
+        DELETE FROM assessment_options
+        WHERE question_id = $1
+          AND option_id = ANY($2::uuid[])
+        `,
+        [questionId, uniqueDeletedOptionIds]
+      );
+    }
 
-    return res.json({
+    // Update existing options in place; insert only new options.
+    for (const [index, option] of normalizedOptions.entries()) {
+      const optionOrder = index + 1;
+
+      if (option.option_id) {
+        await client.query(
+          `
+          UPDATE assessment_options
+          SET option_text = $1,
+              is_correct = $2,
+              option_order = $3
+          WHERE option_id = $4
+            AND question_id = $5
+          `,
+          [
+            option.option_text,
+            option.is_correct,
+            optionOrder,
+            option.option_id,
+            questionId,
+          ]
+        );
+      } else {
+        await client.query(
+          `
+          INSERT INTO assessment_options (
+            question_id,
+            option_text,
+            is_correct,
+            option_order
+          )
+          VALUES ($1, $2, $3, $4)
+          `,
+          [
+            questionId,
+            option.option_text,
+            option.is_correct,
+            optionOrder,
+          ]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.status(200).json({
       success: true,
       message: "Question options updated successfully",
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
     console.error("Update question options error:", error);
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || "Failed to update question options",
     });
