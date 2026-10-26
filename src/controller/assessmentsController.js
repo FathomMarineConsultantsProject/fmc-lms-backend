@@ -2095,24 +2095,24 @@ export const deleteQuestion = async (req, res) => {
     // 1. Fetch and lock the active question.
     const questionResult = await client.query(
       `
-      SELECT question_id, assessment_id, marks, question_order
+      SELECT question_id, assessment_id, marks
       FROM assessment_questions
       WHERE question_id = $1
-        AND is_deleted = false
+        AND is_deleted = FALSE
       FOR UPDATE
       `,
       [questionId]
     );
 
     if (questionResult.rows.length === 0) {
-      const error = new Error("Question not found");
+      const error = new Error("Question not found or already deleted");
       error.statusCode = 404;
       throw error;
     }
 
     const question = questionResult.rows[0];
 
-    // 2. Check assessment access.
+    // 2. Verify that the current user has access to this assessment.
     const allowed = await checkAssessmentScope(
       req,
       question.assessment_id,
@@ -2125,51 +2125,28 @@ export const deleteQuestion = async (req, res) => {
       throw error;
     }
 
-    // 3. Protect questions referenced by assessment attempts.
-    const attemptQuestionResult = await client.query(
+    // 3. Soft-delete the question.
+    // Do not block deletion because of assessment attempt history.
+    // Historical attempt and answer records remain intact.
+    const deleteResult = await client.query(
       `
-      SELECT 1
-      FROM assessment_attempt_questions
+      UPDATE assessment_questions
+      SET is_deleted = TRUE,
+          updated_at = NOW()
       WHERE question_id = $1
-      LIMIT 1
+        AND is_deleted = FALSE
+      RETURNING question_id
       `,
       [questionId]
     );
 
-    // 4. Protect questions referenced by saved answers.
-    const answerResult = await client.query(
-      `
-      SELECT 1
-      FROM assessment_answers
-      WHERE question_id = $1
-      LIMIT 1
-      `,
-      [questionId]
-    );
-
-    if (
-      attemptQuestionResult.rows.length > 0 ||
-      answerResult.rows.length > 0
-    ) {
-      const error = new Error(
-        "Cannot delete this question because it is associated with assessment attempt history"
-      );
+    if (deleteResult.rowCount === 0) {
+      const error = new Error("Question could not be deleted");
       error.statusCode = 409;
       throw error;
     }
 
-    // 5. Soft-delete the question to preserve its record.
-    await client.query(
-      `
-      UPDATE assessment_questions
-      SET is_deleted = true,
-          updated_at = NOW()
-      WHERE question_id = $1
-      `,
-      [questionId]
-    );
-
-    // 6. Recalculate marks using active questions only.
+    // 4. Recalculate total marks from active questions only.
     await client.query(
       `
       UPDATE assessments
@@ -2178,7 +2155,7 @@ export const deleteQuestion = async (req, res) => {
           SELECT SUM(marks)
           FROM assessment_questions
           WHERE assessment_id = $1
-            AND is_deleted = false
+            AND is_deleted = FALSE
         ),
         0
       ),
@@ -2193,6 +2170,7 @@ export const deleteQuestion = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Question deleted successfully",
+      question_id: questionId,
     });
   } catch (error) {
     await client.query("ROLLBACK");
