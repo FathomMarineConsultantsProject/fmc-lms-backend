@@ -817,35 +817,91 @@ export async function updateCourse(req, res) {
       ]
     );
 
-    if (Array.isArray(req.body.contents)) {
-      await client.query(`DELETE FROM course_contents WHERE course_id = $1`, [courseId]);
 
+    if (Array.isArray(req.body.contents)) {
       for (let i = 0; i < payload.contents.length; i++) {
         const item = payload.contents[i];
 
-        await client.query(
-          `
-          INSERT INTO course_contents (
-            course_id,
-            content_title,
-            content_description,
-            content_type,
-            youtube_url,
-            sort_order
-          )
-          VALUES ($1, $2, $3, $4, $5, $6)
-          `,
-          [
-            courseId,
-            normalizeString(item.content_title),
-            normalizeString(item.content_description),
-            normalizeString(item.content_type),
-            normalizeString(item.youtube_url),
-            Number(item.sort_order ?? i + 1),
-          ]
-        );
+        const contentTitle = normalizeString(item.content_title);
+        const contentDescription = normalizeString(item.content_description);
+        const contentType = normalizeString(item.content_type);
+        const youtubeUrl = normalizeString(item.youtube_url);
+        const sortOrder = Number(item.sort_order ?? i + 1);
+
+        const hasExistingId =
+          item.id !== undefined &&
+          item.id !== null &&
+          String(item.id).trim() !== "";
+
+        if (hasExistingId) {
+          // Update the existing module without changing its ID.
+          const contentId = Number(item.id);
+
+          if (!Number.isSafeInteger(contentId) || contentId <= 0) {
+            const error = new Error("Invalid content ID.");
+            error.statusCode = 400;
+            throw error;
+          }
+
+          const updatedContent = await client.query(
+            `
+        UPDATE course_contents
+        SET
+          content_title = $1,
+          content_description = $2,
+          content_type = $3,
+          youtube_url = $4,
+          sort_order = $5,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $6
+          AND course_id = $7
+        RETURNING id
+        `,
+            [
+              contentTitle,
+              contentDescription,
+              contentType,
+              youtubeUrl,
+              sortOrder,
+              contentId,
+              courseId,
+            ]
+          );
+
+          if (!updatedContent.rowCount) {
+            const error = new Error(
+              `Content ID ${contentId} does not belong to this course.`
+            );
+            error.statusCode = 400;
+            throw error;
+          }
+        } else {
+          // Insert a module only when it is new.
+          await client.query(
+            `
+        INSERT INTO course_contents (
+          course_id,
+          content_title,
+          content_description,
+          content_type,
+          youtube_url,
+          sort_order
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+            [
+              courseId,
+              contentTitle,
+              contentDescription,
+              contentType,
+              youtubeUrl,
+              sortOrder,
+            ]
+          );
+        }
       }
     }
+
 
     await client.query("COMMIT");
 
@@ -858,7 +914,7 @@ export async function updateCourse(req, res) {
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("updateCourse error:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       message: "Failed to update course",
       error: error.message,
     });
@@ -2243,8 +2299,8 @@ export async function assignCourseToUsers(req, res) {
 
     // 1. Authorization Check: Only role IDs 1 (Superadmin), 2 (Admin), and 3 (Subadmin) can assign
     if (![1, 2, 3].includes(roleId)) {
-      return res.status(403).json({ 
-        message: "Forbidden: You do not have permission to assign courses." 
+      return res.status(403).json({
+        message: "Forbidden: You do not have permission to assign courses."
       });
     }
 
@@ -2262,14 +2318,14 @@ export async function assignCourseToUsers(req, res) {
     }
 
     const validUserIds = targetUserIds.map(Number).filter(id => !Number.isNaN(id));
-    
+
     if (validUserIds.length === 0) {
       return res.status(400).json({ message: "No valid user IDs provided" });
     }
 
     // 3. Course Scope Check: Ensure the assigner has access to this course
     const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
-    
+
     if (!allowed) {
       return res.status(404).json({ message: "Course not found or access denied" });
     }
@@ -2288,21 +2344,21 @@ export async function assignCourseToUsers(req, res) {
 
     // Categorize our users
     const existingRecords = existingEnrollments.rows;
-    
+
     // Users who already have assigned = true
     const alreadyAssignedIds = existingRecords.filter(r => r.assigned).map(r => r.user_id);
-    
+
     // Users who have assigned = false (self-enrolled, need an upgrade)
     const upgradeIds = existingRecords.filter(r => !r.assigned).map(r => r.user_id);
-    
+
     // Users who have no record at all (need an insert)
-    const newInsertIds = validUserIds.filter(id => 
+    const newInsertIds = validUserIds.filter(id =>
       !alreadyAssignedIds.includes(id) && !upgradeIds.includes(id)
     );
 
     if (upgradeIds.length === 0 && newInsertIds.length === 0) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ 
+      return res.status(409).json({
         message: "All provided users are already assigned to this course.",
         already_assigned: alreadyAssignedIds
       });
@@ -2502,10 +2558,10 @@ export async function assignCourseToShips(req, res) {
   try {
     const roleId = getRoleId(req);
 
-    
+
 
     if (![1, 2].includes(roleId)) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         message: "Forbidden: You do not have permission to assign courses to entire ships."
       });
     }
@@ -2524,14 +2580,14 @@ export async function assignCourseToShips(req, res) {
     }
 
     const validShipIds = shipIds.map(Number).filter(id => !Number.isNaN(id));
-    
+
     if (validShipIds.length === 0) {
       return res.status(400).json({ message: "No valid ship IDs provided" });
     }
 
     // 3. Course Scope Check: Ensure the assigner has access to this course
     const allowed = await checkCourseScope(req, courseId, client, { includeGlobal: true });
-    
+
     if (!allowed) {
       return res.status(404).json({ message: "Course not found or access denied" });
     }
@@ -2568,21 +2624,21 @@ export async function assignCourseToShips(req, res) {
 
     // Categorize our users
     const existingRecords = existingEnrollments.rows;
-    
+
     // Users who already have assigned = true
     const alreadyAssignedIds = existingRecords.filter(r => r.assigned).map(r => r.user_id);
-    
+
     // Users who have assigned = false (self-enrolled, need an upgrade)
     const upgradeIds = existingRecords.filter(r => !r.assigned).map(r => r.user_id);
-    
+
     // Users who have no record at all (need an insert)
-    const newInsertIds = validUserIds.filter(id => 
+    const newInsertIds = validUserIds.filter(id =>
       !alreadyAssignedIds.includes(id) && !upgradeIds.includes(id)
     );
 
     if (upgradeIds.length === 0 && newInsertIds.length === 0) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ 
+      return res.status(409).json({
         message: "All crew members on the selected ships are already assigned to this course.",
         already_assigned_count: alreadyAssignedIds.length
       });
