@@ -1803,6 +1803,85 @@ export const deleteQuestion = async (req, res) => {
 
 // ================= DELETE OPTION =================
 
+// export const deleteOption = async (req, res) => {
+//   const client = await db.connect();
+
+//   try {
+//     const { optionId } = req.params;
+
+//     await client.query("BEGIN");
+
+//     const optionResult = await client.query(
+//       `
+//       SELECT o.*, q.question_type, q.assessment_id
+// FROM assessment_options o
+// JOIN assessment_questions q ON q.question_id = o.question_id
+// WHERE o.option_id = $1
+// AND q.is_deleted = false
+//       `,
+//       [optionId]
+//     );
+
+//     if (optionResult.rows.length === 0) {
+//       throw new Error("Option not found");
+//     }
+
+//     const option = optionResult.rows[0];
+
+//     const allowed = await checkAssessmentScope(req, option.assessment_id, client);
+
+//     if (!allowed) {
+//       throw new Error("Assessment not found");
+//     }
+
+//     const countResult = await client.query(
+//       `
+//       SELECT
+//         COUNT(*)::INTEGER AS total_options,
+//         COUNT(*) FILTER (WHERE is_correct = true)::INTEGER AS correct_options
+//       FROM assessment_options
+//       WHERE question_id = $1
+//       `,
+//       [option.question_id]
+//     );
+
+//     const totalOptions = Number(countResult.rows[0].total_options);
+//     const correctOptions = Number(countResult.rows[0].correct_options);
+
+//     if (totalOptions <= 2) {
+//       throw new Error("MCQ question must have at least 2 options");
+//     }
+
+//     if (option.is_correct && correctOptions <= 1) {
+//       throw new Error("Cannot delete the only correct option");
+//     }
+
+//     await client.query(
+//       `
+//       DELETE FROM assessment_options
+//       WHERE option_id = $1
+//       `,
+//       [optionId]
+//     );
+
+//     await client.query("COMMIT");
+
+//     return res.json({
+//       success: true,
+//       message: "Option deleted successfully",
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("Delete option error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message || "Failed to delete option",
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
 export const deleteOption = async (req, res) => {
   const client = await db.connect();
 
@@ -1811,51 +1890,119 @@ export const deleteOption = async (req, res) => {
 
     await client.query("BEGIN");
 
+    // 1. Fetch and lock the option and its parent question.
     const optionResult = await client.query(
       `
-      SELECT o.*, q.question_type, q.assessment_id
-FROM assessment_options o
-JOIN assessment_questions q ON q.question_id = o.question_id
-WHERE o.option_id = $1
-AND q.is_deleted = false
+      SELECT
+        o.option_id,
+        o.question_id,
+        o.option_text,
+        o.is_correct,
+        o.option_order,
+        q.question_type,
+        q.assessment_id
+      FROM assessment_options o
+      JOIN assessment_questions q
+        ON q.question_id = o.question_id
+      WHERE o.option_id = $1
+        AND q.is_deleted = false
+      FOR UPDATE OF o, q
       `,
       [optionId]
     );
 
     if (optionResult.rows.length === 0) {
-      throw new Error("Option not found");
+      const error = new Error("Option not found");
+      error.statusCode = 404;
+      throw error;
     }
 
     const option = optionResult.rows[0];
 
-    const allowed = await checkAssessmentScope(req, option.assessment_id, client);
+    // 2. Verify assessment access.
+    const allowed = await checkAssessmentScope(
+      req,
+      option.assessment_id,
+      client
+    );
 
     if (!allowed) {
-      throw new Error("Assessment not found");
+      const error = new Error("Assessment not found");
+      error.statusCode = 404;
+      throw error;
     }
 
-    const countResult = await client.query(
+    // 3. Validate that this is an MCQ question.
+    const mcqTypes = ["mcq_single", "mcq_multiple"];
+
+    if (!mcqTypes.includes(option.question_type)) {
+      const error = new Error(
+        "Options can only be deleted from MCQ questions"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // 4. Lock all options for this question.
+    const optionsResult = await client.query(
       `
-      SELECT
-        COUNT(*)::INTEGER AS total_options,
-        COUNT(*) FILTER (WHERE is_correct = true)::INTEGER AS correct_options
+      SELECT option_id, is_correct, option_order
       FROM assessment_options
       WHERE question_id = $1
+      ORDER BY option_order, option_id
+      FOR UPDATE
       `,
       [option.question_id]
     );
 
-    const totalOptions = Number(countResult.rows[0].total_options);
-    const correctOptions = Number(countResult.rows[0].correct_options);
+    const existingOptions = optionsResult.rows;
+    const totalOptions = existingOptions.length;
+    const correctOptions = existingOptions.filter(
+      (item) => item.is_correct === true
+    ).length;
 
+    // 5. Ensure at least two options remain.
     if (totalOptions <= 2) {
-      throw new Error("MCQ question must have at least 2 options");
+      const error = new Error(
+        "MCQ question must have at least 2 options"
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
+    // 6. Prevent removing the only correct answer.
     if (option.is_correct && correctOptions <= 1) {
-      throw new Error("Cannot delete the only correct option");
+      const error = new Error(
+        "Cannot delete the only correct option"
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
+    // 7. Protect historical answers.
+    // Check both the single-choice and multiple-choice answer columns.
+    const answerUsageResult = await client.query(
+      `
+      SELECT 1
+      FROM assessment_answers aa
+      WHERE aa.selected_option_id = $1
+         OR $1 = ANY(
+           COALESCE(aa.selected_option_ids, ARRAY[]::uuid[])
+         )
+      LIMIT 1
+      `,
+      [optionId]
+    );
+
+    if (answerUsageResult.rows.length > 0) {
+      const error = new Error(
+        "Cannot delete this option because it has been used in assessment answers"
+      );
+      error.statusCode = 409;
+      throw error;
+    }
+
+    // 8. Delete the option.
     await client.query(
       `
       DELETE FROM assessment_options
@@ -1864,17 +2011,55 @@ AND q.is_deleted = false
       [optionId]
     );
 
+    // 9. Reorder remaining options safely.
+    // Move orders out of the way first to avoid unique constraint
+    // conflicts on (question_id, option_order).
+    const remainingOptions = existingOptions
+      .filter((item) => item.option_id !== optionId)
+      .sort(
+        (a, b) =>
+          a.option_order - b.option_order ||
+          a.option_id.localeCompare(b.option_id)
+      );
+
+    const maxOrder = Math.max(
+      ...existingOptions.map((item) => Number(item.option_order))
+    );
+
+    const offset = maxOrder + totalOptions + 100;
+
+    await client.query(
+      `
+      UPDATE assessment_options
+      SET option_order = option_order + $2
+      WHERE question_id = $1
+      `,
+      [option.question_id, offset]
+    );
+
+    for (let index = 0; index < remainingOptions.length; index++) {
+      await client.query(
+        `
+        UPDATE assessment_options
+        SET option_order = $2
+        WHERE option_id = $1
+        `,
+        [remainingOptions[index].option_id, index + 1]
+      );
+    }
+
     await client.query("COMMIT");
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       message: "Option deleted successfully",
     });
   } catch (error) {
     await client.query("ROLLBACK");
+
     console.error("Delete option error:", error);
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || "Failed to delete option",
     });
@@ -1882,7 +2067,6 @@ AND q.is_deleted = false
     client.release();
   }
 };
-
 // ================= START ASSESSMENT =================
 
 export const startAssessment = async (req, res) => {
