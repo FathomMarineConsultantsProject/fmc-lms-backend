@@ -762,6 +762,7 @@ export const getUsersByShipId = async (req, res) => {
          u.user_id,
          u.seafarer_id,
          u.full_name,
+         u.email, 
          u.rank,
          u.trip,
          u.embarkation_date,
