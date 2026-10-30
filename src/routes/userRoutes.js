@@ -15,7 +15,8 @@ import {
   syncUserStatusByDates,
   searchUsers,
   bulkUpdateUserShip,
-  bulkUpdateUserDates
+  bulkUpdateUserDates,
+  bulkUpdateUserEmails
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -162,3 +163,8 @@ router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
 
 router.post("/users/search", requireAuth, allowRoles(1,2,3), searchUsers);
 
+router.patch(
+  "/users/bulk-email",
+  requireAuth,
+  bulkUpdateUserEmails
+);

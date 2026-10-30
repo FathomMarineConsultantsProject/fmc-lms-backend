@@ -3358,3 +3358,253 @@ export const searchUsers = async (req, res) => {
     });
   }
 };
+
+
+
+// PATCH /users/bulk-email
+// Bulk update email addresses for multiple users.
+
+export const bulkUpdateUserEmails = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Only Super Admin, Company Admin and Ship Admin
+  if (![1, 2, 3].includes(role)) {
+    return res.status(403).json({
+      error: "Forbidden",
+    });
+  }
+
+  const updates = req.body?.updates;
+
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({
+      error: "updates must be a non-empty array",
+    });
+  }
+
+  // Prevent excessively large requests
+  if (updates.length > 500) {
+    return res.status(400).json({
+      error: "Maximum 500 users can be updated per request",
+    });
+  }
+
+  // Validate and normalize request data
+  const normalizedUpdates = [];
+  const seenUserIds = new Set();
+
+  for (let i = 0; i < updates.length; i++) {
+    const item = updates[i];
+
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return res.status(400).json({
+        error: `Invalid update object at index ${i}`,
+      });
+    }
+
+    const user_id = Number(item.user_id);
+
+    if (!Number.isSafeInteger(user_id) || user_id <= 0) {
+      return res.status(400).json({
+        error: `Invalid user_id at index ${i}`,
+      });
+    }
+
+    if (seenUserIds.has(user_id)) {
+      return res.status(400).json({
+        error: `Duplicate user_id: ${user_id}`,
+      });
+    }
+
+    seenUserIds.add(user_id);
+
+    // Require the email property even when its value is null.
+    if (!Object.prototype.hasOwnProperty.call(item, "email")) {
+      return res.status(400).json({
+        error: `Email field is missing for user_id ${user_id}`,
+      });
+    }
+
+    let email = null;
+
+    if (item.email !== null && item.email !== "") {
+      if (typeof item.email !== "string") {
+        return res.status(400).json({
+          error: `Invalid email value for user_id ${user_id}`,
+        });
+      }
+
+      email = item.email.trim();
+
+      if (
+        email.length > 255 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
+        return res.status(400).json({
+          error: `Invalid email address for user_id ${user_id}`,
+        });
+      }
+    }
+
+    normalizedUpdates.push({
+      user_id,
+      email,
+    });
+  }
+
+  // Role-based scope from authenticated user
+  const myCompanyId = req.user?.company_id
+    ? String(req.user.company_id)
+    : null;
+
+  const myShipId =
+    req.user?.ship_id != null
+      ? Number(req.user.ship_id)
+      : null;
+
+  if (role === 2 && !myCompanyId) {
+    return res.status(403).json({
+      error: "Company information missing from authenticated user",
+    });
+  }
+
+  if (role === 3 && (!myCompanyId || myShipId == null)) {
+    return res.status(403).json({
+      error: "Company or ship information missing from authenticated user",
+    });
+  }
+
+  let client;
+  let transactionStarted = false;
+
+  try {
+    // Use one dedicated PostgreSQL connection for the transaction.
+    client = await db.connect();
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const userIds = normalizedUpdates.map((u) => u.user_id);
+
+    // Lock selected users and fetch their assignment information.
+    const { rows: users } = await client.query(
+      `SELECT
+         user_id,
+         full_name,
+         company_id,
+         ship_id,
+         email
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [userIds]
+    );
+
+    // Check that every requested user exists.
+    if (users.length !== normalizedUpdates.length) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        error: "One or more users were not found",
+        requested: normalizedUpdates.length,
+        found: users.length,
+      });
+    }
+
+    // Enforce company and ship permissions.
+    const violations = [];
+
+    for (const user of users) {
+      if (
+        role === 2 &&
+        String(user.company_id) !== myCompanyId
+      ) {
+        violations.push(user.user_id);
+      }
+
+      if (
+        role === 3 &&
+        (
+          String(user.company_id) !== myCompanyId ||
+          Number(user.ship_id) !== myShipId
+        )
+      ) {
+        violations.push(user.user_id);
+      }
+    }
+
+    if (violations.length > 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        error: "Some users are outside your permitted company/ship scope",
+        violations,
+      });
+    }
+
+    // Update only the email column.
+    const updatedUsers = [];
+
+    for (const item of normalizedUpdates) {
+      const { rows } = await client.query(
+        `UPDATE users
+         SET
+           email = $1,
+           updated_at = NOW()
+         WHERE user_id = $2
+         RETURNING
+           user_id,
+           full_name,
+           email`,
+        [
+          item.email,
+          item.user_id,
+        ]
+      );
+
+      updatedUsers.push(rows[0]);
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.status(200).json({
+      message: "User emails updated successfully",
+      requested: normalizedUpdates.length,
+      updated: updatedUsers.length,
+      users: updatedUsers,
+    });
+
+  } catch (err) {
+    if (transactionStarted && client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Bulk email rollback error:", rollbackError);
+      }
+    }
+
+    console.error("bulkUpdateUserEmails error:", {
+      code: err.code,
+      constraint: err.constraint,
+      message: err.message,
+    });
+
+    if (err.code === "23505") {
+      return res.status(409).json({
+        error: "One or more email addresses conflict with a unique database constraint",
+      });
+    }
+
+    return res.status(500).json({
+      error: "Failed to update user emails",
+    });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+};

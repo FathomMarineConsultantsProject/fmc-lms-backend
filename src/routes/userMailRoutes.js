@@ -5,6 +5,7 @@ import {
   sendCredentialsSingle,
   sendCredentialsBulk,
   sendCredentialsToMultipleEmails,
+  sendCredentialsIndividually,
   getSupportMailTemplate,
 } from "../controller/userMailController.js";
 
@@ -25,6 +26,13 @@ router.post(
   requireAuth,
   mailLimiter,
   sendCredentialsToMultipleEmails
+);
+
+router.post(
+  "/send-credentials/individual",
+  requireAuth,
+  mailLimiter,
+  sendCredentialsIndividually
 );
 // GET /mail/support-template
 router.get("/support-template", requireAuth, getSupportMailTemplate);

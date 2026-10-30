@@ -458,3 +458,241 @@ export const sendCredentialsToMultipleEmails = async (req, res) => {
     });
   }
 };
+
+// POST /api/users/send-credentials/individual
+// Sends a separate credential email to each selected user's own email address.
+export const sendCredentialsIndividually = async (req, res) => {
+  try {
+    const requester = req.user;
+    const role = Number(requester?.role_id);
+
+    // Same permission policy as the existing mail endpoints.
+    if (![1, 2].includes(role)) {
+      return res.status(403).json({
+        error: "Only admins can send credentials.",
+      });
+    }
+
+    const { user_ids } = req.body || {};
+
+    if (
+      !Array.isArray(user_ids) ||
+      user_ids.length === 0 ||
+      user_ids.length > 100
+    ) {
+      return res.status(400).json({
+        error: "Select between 1 and 100 users.",
+      });
+    }
+
+    const ids = user_ids.map(Number);
+
+    if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+      return res.status(400).json({
+        error: "Invalid user IDs.",
+      });
+    }
+
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({
+        error: "Duplicate user IDs are not allowed.",
+      });
+    }
+
+    // Fetch selected users, including their registered email addresses.
+    const { rows: users } = await db.query(
+      `
+      SELECT
+        u.user_id,
+        u.seafarer_id,
+        u.company_id,
+        u.ship_id,
+        u.role_id,
+        u.username,
+        u.password_enc AS password_encrypted,
+        u.full_name,
+        u.rank,
+        u.rank AS rank_name,
+        u.email
+      FROM users u
+      WHERE u.user_id = ANY($1::int[])
+      `,
+      [ids]
+    );
+
+    if (users.length !== ids.length) {
+      return res.status(404).json({
+        error: "One or more selected users were not found.",
+      });
+    }
+
+    // Validate access to every selected user before sending any emails.
+    if (users.some((user) => !assertCanAccessUser(requester, user))) {
+      return res.status(403).json({
+        error: "One or more selected users are outside your access scope.",
+      });
+    }
+
+    if (
+      users.some((user) =>
+        DISALLOWED_TARGET_ROLES.has(Number(user.role_id))
+      )
+    ) {
+      return res.status(400).json({
+        error: "Credentials cannot be sent for Super Admin accounts.",
+      });
+    }
+
+    const usersById = new Map(
+      users.map((user) => [Number(user.user_id), user])
+    );
+
+    const results = new Array(ids.length);
+    let nextIndex = 0;
+
+    const sendToUser = async (user, index) => {
+      const email = String(user.email || "").trim();
+
+      if (!email || !isValidEmail(email)) {
+        results[index] = {
+          user_id: user.user_id,
+          full_name: user.full_name,
+          status: "skipped",
+          reason: "Valid email address not available.",
+        };
+        return;
+      }
+
+      if (!user.username || !user.password_encrypted) {
+        results[index] = {
+          user_id: user.user_id,
+          full_name: user.full_name,
+          email,
+          status: "skipped",
+          reason: "Login credentials not available.",
+        };
+        return;
+      }
+
+      try {
+        const plain_password = await decryptPassword(
+          user.password_encrypted
+        );
+
+        if (!plain_password) {
+          results[index] = {
+            user_id: user.user_id,
+            full_name: user.full_name,
+            email,
+            status: "skipped",
+            reason: "Password could not be decrypted.",
+          };
+          return;
+        }
+
+        const companyName =
+          (await fetchCompanyName(user.company_id)) || "Fathom Marine";
+
+        // Build a single-user email, never a bulk credential email.
+        const { subject, html } = buildSingleCredentialEmail({
+          companyName,
+          row: {
+            ...user,
+            plain_password,
+          },
+        });
+
+        // Only this user's registered email receives this email.
+        await sendEmail({
+          to: email,
+          subject,
+          html,
+        });
+
+        results[index] = {
+          user_id: user.user_id,
+          full_name: user.full_name,
+          email,
+          status: "sent",
+        };
+      } catch (error) {
+        console.error(
+          `Failed to send credentials to user ${user.user_id}:`,
+          error
+        );
+
+        results[index] = {
+          user_id: user.user_id,
+          full_name: user.full_name,
+          email,
+          status: "failed",
+          reason: "Email could not be sent.",
+        };
+      }
+    };
+
+    // Process at most 3 emails concurrently.
+    const worker = async () => {
+      while (true) {
+        const index = nextIndex++;
+
+        if (index >= ids.length) return;
+
+        await sendToUser(
+          usersById.get(ids[index]),
+          index
+        );
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(3, ids.length) },
+        () => worker()
+      )
+    );
+
+    const sentCount = results.filter(
+      (item) => item.status === "sent"
+    ).length;
+
+    const skippedCount = results.filter(
+      (item) => item.status === "skipped"
+    ).length;
+
+    const failedCount = results.filter(
+      (item) => item.status === "failed"
+    ).length;
+
+    await logMailEvent({
+      requester,
+      actor_user_id: requester.user_id,
+      activity_type: "SEND_CREDENTIALS_INDIVIDUALLY",
+      payload: {
+        requested_count: ids.length,
+        sent_count: sentCount,
+        skipped_count: skippedCount,
+        failed_count: failedCount,
+        results: results.map(({ user_id, status }) => ({
+          user_id,
+          status,
+        })),
+      },
+    });
+
+    return res.status(200).json({
+      message: "Individual credential emails processed.",
+      requested_count: ids.length,
+      sent_count: sentCount,
+      skipped_count: skippedCount,
+      failed_count: failedCount,
+      results,
+    });
+  } catch (error) {
+    console.error("sendCredentialsIndividually error:", error);
+
+    return res.status(500).json({
+      error: "Failed to process credential emails.",
+    });
+  }
+};
