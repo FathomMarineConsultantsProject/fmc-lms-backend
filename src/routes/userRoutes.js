@@ -16,7 +16,8 @@ import {
   searchUsers,
   bulkUpdateUserShip,
   bulkUpdateUserDates,
-  bulkUpdateUserEmails
+  bulkUpdateUserEmails,
+  sendCredentialsIndividually
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -167,4 +168,11 @@ router.patch(
   "/users/bulk-email",
   requireAuth,
   bulkUpdateUserEmails
+);
+
+router.post(
+  "/send-credentials/individual",
+  requireAuth,
+  mailLimiter,
+  sendCredentialsIndividually
 );
