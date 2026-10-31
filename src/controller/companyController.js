@@ -709,13 +709,18 @@ export const editCompany = async (req, res) => {
     // USERNAME
     // ============================================================
 
+
     let newUsername = null;
 
-    if (username !== undefined && username !== null && username !== "") {
+    if (
+      username !== undefined &&
+      username !== null &&
+      username.trim() !== ""
+    ) {
+      // Preserve uppercase and lowercase characters
       const cleanUsername = String(username)
         .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9._-]/g, "");
+        .replace(/[^a-zA-Z0-9._-]/g, "");
 
       if (!cleanUsername) {
         return res.status(400).json({
@@ -723,34 +728,34 @@ export const editCompany = async (req, res) => {
         });
       }
 
-      // Same username as the current company admin
-      if (cleanUsername === String(existingUsername || "").toLowerCase()) {
-        newUsername = existingUsername;
-      } else {
-        // Check whether another user already owns this username
-        const conflictRes = await client.query(
-          `
-          SELECT user_id
-          FROM users
-          WHERE username = $1
-            AND user_id <> $2
-          LIMIT 1
-          `,
-          [
-            cleanUsername,
-            existingAdminUserId || 0,
-          ]
-        );
-
-        if (conflictRes.rows.length > 0) {
-          return res.status(409).json({
-            error: "Username already exists",
-            message: `The username "${cleanUsername}" is already being used.`,
-          });
-        }
-
-        newUsername = cleanUsername;
+      if (!existingAdminUserId) {
+        return res.status(404).json({
+          error: "Company admin account not found",
+        });
       }
+
+      // Check username uniqueness without considering letter case.
+      // Exclude the current company admin.
+      const conflictRes = await client.query(
+        `
+    SELECT user_id
+    FROM users
+    WHERE LOWER(username) = LOWER($1)
+      AND user_id <> $2
+    LIMIT 1
+    `,
+        [cleanUsername, existingAdminUserId]
+      );
+
+      if (conflictRes.rows.length > 0) {
+        return res.status(409).json({
+          error: "Username already exists",
+          message: `The username "${cleanUsername}" is already being used.`,
+        });
+      }
+
+      // Preserve exactly the casing entered by the user
+      newUsername = cleanUsername;
     }
 
     // ============================================================
