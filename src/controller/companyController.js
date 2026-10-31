@@ -87,17 +87,25 @@ const decryptPassword = (enc) => {
 const makeUniqueUsername = async (base) => {
   const clean = String(base || "")
     .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, "");
+    .replace(/[^a-zA-Z0-9._-]/g, "");
 
   if (!clean) return null;
 
-  const check1 = await db.query("SELECT 1 FROM users WHERE username = $1 LIMIT 1", [clean]);
+  const check1 = await db.query(
+    "SELECT 1 FROM users WHERE username = $1 LIMIT 1",
+    [clean]
+  );
+
   if (check1.rows.length === 0) return clean;
 
   for (let i = 0; i < 5; i++) {
     const candidate = `${clean}.${crypto.randomBytes(2).toString("hex")}`;
-    const check = await db.query("SELECT 1 FROM users WHERE username = $1 LIMIT 1", [candidate]);
+
+    const check = await db.query(
+      "SELECT 1 FROM users WHERE username = $1 LIMIT 1",
+      [candidate]
+    );
+
     if (check.rows.length === 0) return candidate;
   }
 
