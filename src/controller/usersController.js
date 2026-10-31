@@ -762,6 +762,7 @@ export const getUsersByShipId = async (req, res) => {
          u.user_id,
          u.seafarer_id,
          u.full_name,
+         u.email, 
          u.rank,
          u.trip,
          u.embarkation_date,
@@ -827,7 +828,7 @@ export const getUsersByShipId = async (req, res) => {
 
 // POST /users
 export const createUser = async (req, res) => {
-  const role = Number(req.user.role_id);
+  const role = Number(req.user?.role_id);
 
   const {
     seafarer_id,
@@ -840,7 +841,10 @@ export const createUser = async (req, res) => {
     ship_id,
     company_id,
 
-    // NEW fields
+    // Email field
+    email,
+
+    // Additional fields
     sex,
     date_of_birth,
     place_of_birth,
@@ -857,12 +861,20 @@ export const createUser = async (req, res) => {
     seaman_book_issue_date,
     seaman_book_expiry_date,
 
-    role_id, // optionally allow create user role (careful)
+    role_id, // Optionally allow create-user role
   } = req.body;
 
   if (!seafarer_id || !full_name) {
-    return res.status(400).json({ error: "seafarer_id and full_name are required" });
+    return res.status(400).json({
+      error: "seafarer_id and full_name are required",
+    });
   }
+
+  // Normalize email: trim whitespace and store blank values as NULL
+  const normalizedEmail =
+    email != null && String(email).trim() !== ""
+      ? String(email).trim()
+      : null;
 
   const onboardNow = isOnboard(status);
 
@@ -872,6 +884,7 @@ export const createUser = async (req, res) => {
     let passwordHashToStore = null;
     let passwordEncToStore = null;
 
+    // Generate credentials only when onboard
     if (onboardNow) {
       generatedUsername = await createUniqueUsername(seafarer_id);
       generatedPassword = generatePassword(12);
@@ -881,64 +894,92 @@ export const createUser = async (req, res) => {
 
     const { rows } = await db.query(
       `INSERT INTO users
-       (seafarer_id, full_name, rank, trip,
-        embarkation_date, disembarkation_date, status,
-        username, password_hash, password_enc,
-        ship_id, company_id,
-        sex, date_of_birth, place_of_birth, nationality,
-        embarkation_port, disembarkation_port, end_of_contract, plus_months,
-        passport_number, passport_issue_place, passport_issue_date, passport_expiry_date,
-        seaman_book_number, seaman_book_issue_date, seaman_book_expiry_date,
-        role_id,
-        created_at, updated_at)
+        (
+          seafarer_id,
+          full_name,
+          rank,
+          trip,
+          embarkation_date,
+          disembarkation_date,
+          status,
+          username,
+          password_hash,
+          password_enc,
+          ship_id,
+          company_id,
+          sex,
+          date_of_birth,
+          place_of_birth,
+          nationality,
+          embarkation_port,
+          disembarkation_port,
+          end_of_contract,
+          plus_months,
+          passport_number,
+          passport_issue_place,
+          passport_issue_date,
+          passport_expiry_date,
+          seaman_book_number,
+          seaman_book_issue_date,
+          seaman_book_expiry_date,
+          role_id,
+          email,
+          created_at,
+          updated_at
+        )
        VALUES
-       ($1,$2,$3,$4,
-        $5,$6,$7,
-        $8,$9,$10,
-        $11,$12,
-        $13,$14,$15,$16,
-        $17,$18,$19,$20,
-        $21,$22,$23,$24,
-        $25,$26,$27,
-        $28,
-        NOW(), NOW())
+        (
+          $1, $2, $3, $4,
+          $5, $6, $7,
+          $8, $9, $10,
+          $11, $12,
+          $13, $14, $15, $16,
+          $17, $18, $19, $20,
+          $21, $22, $23, $24,
+          $25, $26, $27,
+          $28, $29,
+          NOW(), NOW()
+        )
        RETURNING *`,
       [
-        seafarer_id,
-        full_name,
-        rank ?? null,
-        trip ?? null,
-        embarkation_date ?? null,
-        disembarkation_date ?? null,
-        status ?? null,
+        seafarer_id,                 // $1
+        full_name,                    // $2
+        rank ?? null,                 // $3
+        trip ?? null,                 // $4
 
-        generatedUsername,
-        passwordHashToStore,
-        passwordEncToStore,
+        embarkation_date ?? null,     // $5
+        disembarkation_date ?? null,  // $6
+        status ?? null,               // $7
 
-        ship_id ?? null,
-        company_id ?? null,
+        generatedUsername,             // $8
+        passwordHashToStore,           // $9
+        passwordEncToStore,            // $10
 
-        sex ?? null,
-        date_of_birth ?? null,
-        place_of_birth ?? null,
-        nationality ?? null,
+        ship_id ?? null,              // $11
+        company_id ?? null,            // $12
 
-        embarkation_port ?? null,
-        disembarkation_port ?? null,
-        end_of_contract ?? null,
-        plus_months ?? null,
+        sex ?? null,                  // $13
+        date_of_birth ?? null,         // $14
+        place_of_birth ?? null,        // $15
+        nationality ?? null,           // $16
 
-        passport_number ?? null,
-        passport_issue_place ?? null,
-        passport_issue_date ?? null,
-        passport_expiry_date ?? null,
+        embarkation_port ?? null,      // $17
+        disembarkation_port ?? null,   // $18
+        end_of_contract ?? null,       // $19
+        plus_months ?? null,           // $20
 
-        seaman_book_number ?? null,
-        seaman_book_issue_date ?? null,
-        seaman_book_expiry_date ?? null,
+        passport_number ?? null,       // $21
+        passport_issue_place ?? null,  // $22
+        passport_issue_date ?? null,   // $23
+        passport_expiry_date ?? null,  // $24
 
-        role_id ?? 4,
+        seaman_book_number ?? null,    // $25
+        seaman_book_issue_date ?? null,// $26
+        seaman_book_expiry_date ?? null,// $27
+
+        role_id ?? 4,                 // $28
+        normalizedEmail,               // $29
+
       ]
     );
 
@@ -947,15 +988,24 @@ export const createUser = async (req, res) => {
     return res.status(201).json({
       user,
       credentials: onboardNow
-        ? { username: generatedUsername, password: generatedPassword }
+        ? {
+            username: generatedUsername,
+            password: generatedPassword,
+          }
         : null,
     });
   } catch (err) {
     console.error("Error creating user:", err);
+
     if (err.code === "23505") {
-      return res.status(409).json({ error: "Duplicate seafarer_id or username" });
+      return res.status(409).json({
+        error: "Duplicate seafarer_id or username",
+      });
     }
-    return res.status(500).json({ error: "Failed to create user" });
+
+    return res.status(500).json({
+      error: "Failed to create user",
+    });
   }
 };
 
@@ -1828,38 +1878,65 @@ const pickSheetWithHeader = (wb, requestedSheetName) => {
 // POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
+
   async (req, res) => {
     const role = Number(req.user?.role_id);
-    if (![1, 2, 3].includes(role)) return res.status(403).json({ error: "Forbidden" });
+
+    if (![1, 2, 3].includes(role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     if (!req.file) {
-      return res.status(400).json({ error: 'Excel file is required (field name: "file")' });
+      return res.status(400).json({
+        error: 'Excel file is required (field name: "file")',
+      });
     }
 
     try {
       // 1) Validate and lock import scope
       const scope = await resolveImportScope(req);
-      if (scope.error) return res.status(400).json({ error: scope.error });
+
+      if (scope.error) {
+        return res.status(400).json({ error: scope.error });
+      }
+
       const { company_id, ship_id } = scope;
 
       // 2) Parse workbook + find sheet/header
-      const wb = xlsx.read(req.file.buffer, { type: "buffer", cellDates: true });
+      const wb = xlsx.read(req.file.buffer, {
+        type: "buffer",
+        cellDates: true,
+      });
+
       const picked = pickSheetWithHeader(wb, req.body?.sheet_name);
-      if (picked.error) return res.status(400).json({ error: picked.error });
+
+      if (picked.error) {
+        return res.status(400).json({ error: picked.error });
+      }
 
       const { sheetName, matrix, headerRowIdx } = picked;
 
       // 3) Convert rows using our safe matrix conversion
       const { rows } = matrixToObjects(matrix, headerRowIdx);
-      if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
 
-      // ✅ PRELOAD existing users once for the whole sheet (company scope)
+      if (!rows.length) {
+        return res.status(400).json({
+          error: "Excel sheet is empty",
+        });
+      }
+
+      // Preload existing users once for the whole sheet (company scope)
       const allSids = Array.from(
         new Set(
           rows
             .map((r) => {
-              const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
-              return sidCandidate != null && String(sidCandidate).trim() !== ""
+              const sidCandidate = getByAliases(
+                r,
+                FIELD_ALIASES.seafarer_id
+              );
+
+              return sidCandidate != null &&
+                String(sidCandidate).trim() !== ""
                 ? String(sidCandidate).replace(/\s+/g, " ").trim()
                 : null;
             })
@@ -1870,19 +1947,20 @@ export const importUsersFromExcel = [
       const existingAllRes =
         allSids.length > 0
           ? await db.query(
-            `SELECT user_id, seafarer_id, ship_id
-         FROM users
-         WHERE company_id = $1 AND seafarer_id = ANY($2::text[])`,
-            [company_id, allSids]
-          )
+              `SELECT user_id, seafarer_id, ship_id
+               FROM users
+               WHERE company_id = $1
+                 AND seafarer_id = ANY($2::text[])`,
+              [company_id, allSids]
+            )
           : { rows: [] };
 
       // Map seafarer_id -> existing user row
       const existingMap = new Map();
+
       for (const u of existingAllRes.rows) {
         existingMap.set(String(u.seafarer_id), u);
       }
-
 
       const results = {
         import_scope: { company_id, ship_id },
@@ -1895,18 +1973,25 @@ export const importUsersFromExcel = [
         errors: [],
         created_credentials: [],
       };
+
       await db.query("BEGIN");
-      const CHUNK_SIZE = 50; // or 25 if big Excel
+
+      const CHUNK_SIZE = 50;
+
       for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
         const chunk = rows.slice(start, start + CHUNK_SIZE);
 
         for (let i = 0; i < chunk.length; i++) {
           const r = chunk[i];
-          const rowNum = headerRowIdx + 2 + (start + i);
+          const rowNum = headerRowIdx + 2 + start + i;
 
-          // Required (smart)
+          // Required fields
           const full_name = getFullNameSmart(r);
-          const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
+
+          const sidCandidate = getByAliases(
+            r,
+            FIELD_ALIASES.seafarer_id
+          );
 
           const seafarer_id =
             sidCandidate != null && String(sidCandidate).trim() !== ""
@@ -1915,72 +2000,159 @@ export const importUsersFromExcel = [
 
           if (!seafarer_id || !full_name) {
             results.skipped++;
+
             results.errors.push({
               row: rowNum,
               error:
                 "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
             });
+
             continue;
           }
 
           // Optional fields
           const rank = getByAliases(r, FIELD_ALIASES.rank);
           const sex = getByAliases(r, FIELD_ALIASES.sex);
-          const nationality = getByAliases(r, FIELD_ALIASES.nationality);
-          const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
+          const nationality = getByAliases(
+            r,
+            FIELD_ALIASES.nationality
+          );
 
-          const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
+          const place_of_birth = getByAliases(
+            r,
+            FIELD_ALIASES.place_of_birth
+          );
 
-          const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
-          const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
+          // EMAIL: read email from the Excel row
+          // The fallback aliases work even if email is not yet
+          // explicitly configured inside FIELD_ALIASES.
+          const emailCandidate = getByAliases(
+            r,
+            FIELD_ALIASES.email || [
+              "email",
+              "e-mail",
+              "email address",
+              "mail",
+            ]
+          );
 
-          const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
-          const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
+          const email =
+            emailCandidate != null &&
+            String(emailCandidate).trim() !== ""
+              ? String(emailCandidate).trim()
+              : null;
 
-          // ✅ Fix invalid ranges coming from Excel (disembark < embark)
+          const date_of_birth = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.date_of_birth)
+          );
+
+          const embarkation_port = getByAliases(
+            r,
+            FIELD_ALIASES.embarkation_port
+          );
+
+          const embarkation_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.embarkation_date)
+          );
+
+          const disembarkation_port = getByAliases(
+            r,
+            FIELD_ALIASES.disembarkation_port
+          );
+
+          const disembarkation_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.disembarkation_date)
+          );
+
+          // Fix invalid ranges coming from Excel (disembark < embark)
           let emb = embarkation_date;
           let dis = disembarkation_date;
-          // ✅ Safety: never allow NaN to flow into DB params
-          if (emb !== null && Number.isNaN(emb)) emb = null;
-          if (dis !== null && Number.isNaN(dis)) dis = null;
+
+          // Safety: never allow NaN to flow into DB params
+          if (emb !== null && Number.isNaN(emb)) {
+            emb = null;
+          }
+
+          if (dis !== null && Number.isNaN(dis)) {
+            dis = null;
+          }
 
           if (emb && dis) {
             const embD = new Date(emb);
             const disD = new Date(dis);
-            if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
+
+            if (
+              !Number.isNaN(embD.getTime()) &&
+              !Number.isNaN(disD.getTime()) &&
+              disD < embD
+            ) {
               dis = null;
             }
           }
 
+          const end_of_contract = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.end_of_contract)
+          );
 
-          const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
-          const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
+          const plus_months = parseIntOrNull(
+            getByAliases(r, FIELD_ALIASES.plus_months)
+          );
 
-          const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
-          const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
-          const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
-          const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
+          const passport_number = getByAliases(
+            r,
+            FIELD_ALIASES.passport_number
+          );
 
-          const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
-          const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
-          const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
+          const passport_issue_place = getByAliases(
+            r,
+            FIELD_ALIASES.passport_issue_place
+          );
 
-          // Status from excel or computed
-          const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
+          const passport_issue_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.passport_issue_date)
+          );
+
+          const passport_expiry_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.passport_expiry_date)
+          );
+
+          const seaman_book_number = getByAliases(
+            r,
+            FIELD_ALIASES.seaman_book_number
+          );
+
+          const seaman_book_issue_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.seaman_book_issue_date)
+          );
+
+          const seaman_book_expiry_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date)
+          );
+
+          // Status from Excel or computed
+          const statusFromExcel = getByAliases(
+            r,
+            FIELD_ALIASES.status
+          );
+
           let status =
-            statusFromExcel != null && String(statusFromExcel).trim() !== ""
+            statusFromExcel != null &&
+            String(statusFromExcel).trim() !== ""
               ? String(statusFromExcel)
-              : computeStatusFromDates({ disembarkation_date: dis });
+              : computeStatusFromDates({
+                  disembarkation_date: dis,
+                });
 
-          // ✅ Auto role assignment:
-          // If rank is senior → role_id=3 + force Onboard
+          // Auto role assignment:
+          // If rank is senior -> role_id = 3 and force Onboard
           const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
 
           if (role_id_to_insert === 3 && ship_id) {
             status = "Onboard";
           }
 
-          // ✅ If this user already exists in same company, UPDATE instead of INSERT
+          // If this user already exists in the same company,
+          // update instead of insert
           const existingUser = existingMap.get(seafarer_id) || null;
 
           const dateFieldsForUpdate = [
@@ -1994,48 +2166,60 @@ export const importUsersFromExcel = [
             ["seaman_book_expiry_date", seaman_book_expiry_date],
           ];
 
-          // if any is NaN (shouldn't happen after fix, but guard anyway)
-          const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
+          const badDateUpdate = dateFieldsForUpdate.find(
+            ([, v]) => v !== null && Number.isNaN(v)
+          );
+
           if (badDateUpdate) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
+
+            results.errors.push({
+              row: rowNum,
+              error: `Invalid date in ${badDateUpdate[0]}`,
+            });
+
             continue;
           }
 
+          // ==========================================
+          // UPDATE EXISTING USER
+          // ==========================================
           if (existingUser) {
-            // IMPORTANT: do NOT regenerate password on transfer
+            // Do NOT regenerate password on transfer
             await db.query(
               `UPDATE users
-     SET
-       full_name = COALESCE($1, full_name),
-       rank = COALESCE($2, rank),
-       ship_id = $3,
-       status = $4,
-       embarkation_date = COALESCE($5, embarkation_date),
-       disembarkation_date = COALESCE($6, disembarkation_date),
-       embarkation_port = COALESCE($7, embarkation_port),
-       disembarkation_port = COALESCE($8, disembarkation_port),
-       role_id = COALESCE($9, role_id),
+               SET
+                 full_name = COALESCE($1, full_name),
+                 rank = COALESCE($2, rank),
+                 ship_id = $3,
+                 status = $4,
+                 embarkation_date = COALESCE($5, embarkation_date),
+                 disembarkation_date = COALESCE($6, disembarkation_date),
+                 embarkation_port = COALESCE($7, embarkation_port),
+                 disembarkation_port = COALESCE($8, disembarkation_port),
+                 role_id = COALESCE($9, role_id),
 
-       sex = COALESCE($10, sex),
-       date_of_birth = COALESCE($11, date_of_birth),
-       place_of_birth = COALESCE($12, place_of_birth),
-       nationality = COALESCE($13, nationality),
+                 sex = COALESCE($10, sex),
+                 date_of_birth = COALESCE($11, date_of_birth),
+                 place_of_birth = COALESCE($12, place_of_birth),
+                 nationality = COALESCE($13, nationality),
 
-       end_of_contract = COALESCE($14, end_of_contract),
-       plus_months = COALESCE($15, plus_months),
+                 end_of_contract = COALESCE($14, end_of_contract),
+                 plus_months = COALESCE($15, plus_months),
 
-       passport_number = COALESCE($16, passport_number),
-       passport_issue_place = COALESCE($17, passport_issue_place),
-       passport_issue_date = COALESCE($18, passport_issue_date),
-       passport_expiry_date = COALESCE($19, passport_expiry_date),
+                 passport_number = COALESCE($16, passport_number),
+                 passport_issue_place = COALESCE($17, passport_issue_place),
+                 passport_issue_date = COALESCE($18, passport_issue_date),
+                 passport_expiry_date = COALESCE($19, passport_expiry_date),
 
-       seaman_book_number = COALESCE($20, seaman_book_number),
-       seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
-       seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
+                 seaman_book_number = COALESCE($20, seaman_book_number),
+                 seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
+                 seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
 
-       updated_at = NOW()
-     WHERE user_id = $23`,
+                 email = COALESCE($23, email),
+                 updated_at = NOW()
+
+               WHERE user_id = $24`,
               [
                 full_name,
                 rank ?? null,
@@ -2064,6 +2248,10 @@ export const importUsersFromExcel = [
                 seaman_book_issue_date ?? null,
                 seaman_book_expiry_date ?? null,
 
+                // $23: email
+                email,
+
+                // $24: existing user's ID
                 existingUser.user_id,
               ]
             );
@@ -2084,7 +2272,7 @@ export const importUsersFromExcel = [
               notes: "Excel import (existing user ship update)",
             });
 
-            // keep in-memory map fresh
+            // Keep in-memory map fresh
             existingMap.set(seafarer_id, {
               user_id: existingUser.user_id,
               seafarer_id,
@@ -2095,10 +2283,17 @@ export const importUsersFromExcel = [
             continue;
           }
 
-          // Validate numbers/dates if present
+          // ==========================================
+          // VALIDATE NEW USER DATA
+          // ==========================================
           if (plus_months !== null && Number.isNaN(plus_months)) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
+
+            results.errors.push({
+              row: rowNum,
+              error: "Plus Months must be a number (if provided)",
+            });
+
             continue;
           }
 
@@ -2112,14 +2307,23 @@ export const importUsersFromExcel = [
             ["seaman_book_issue_date", seaman_book_issue_date],
             ["seaman_book_expiry_date", seaman_book_expiry_date],
           ];
-          const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
+
+          const badDate = dateFields.find(
+            ([, v]) => v !== null && Number.isNaN(v)
+          );
+
           if (badDate) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
+
+            results.errors.push({
+              row: rowNum,
+              error: `Invalid date in ${badDate[0]}`,
+            });
+
             continue;
           }
 
-          // ✅ Generate credentials if onboard
+          // Generate credentials if onboard
           let username = null;
           let password = null;
           let password_hash = null;
@@ -2132,31 +2336,66 @@ export const importUsersFromExcel = [
             password_enc = encryptPassword(password);
           }
 
+          // ==========================================
+          // INSERT NEW USER
+          // ==========================================
           try {
             const { rows: inserted } = await db.query(
               `INSERT INTO users
-              (seafarer_id, full_name, rank, trip,
-               embarkation_date, disembarkation_date, status,
-               username, password_hash, password_enc,
-               ship_id, company_id,
-               sex, date_of_birth, place_of_birth, nationality,
-               embarkation_port, disembarkation_port, end_of_contract, plus_months,
-               passport_number, passport_issue_place, passport_issue_date, passport_expiry_date,
-               seaman_book_number, seaman_book_issue_date, seaman_book_expiry_date,
-               role_id,
-               created_at, updated_at)
-             VALUES
-              ($1,$2,$3,$4,
-               $5,$6,$7,
-               $8,$9,$10,
-               $11,$12,
-               $13,$14,$15,$16,
-               $17,$18,$19,$20,
-               $21,$22,$23,$24,
-               $25,$26,$27,
-               $28,
-               NOW(), NOW())
-             RETURNING user_id, seafarer_id, full_name, username, status, role_id`,
+                (
+                  seafarer_id,
+                  full_name,
+                  rank,
+                  trip,
+                  embarkation_date,
+                  disembarkation_date,
+                  status,
+                  username,
+                  password_hash,
+                  password_enc,
+                  ship_id,
+                  company_id,
+                  sex,
+                  date_of_birth,
+                  place_of_birth,
+                  nationality,
+                  embarkation_port,
+                  disembarkation_port,
+                  end_of_contract,
+                  plus_months,
+                  passport_number,
+                  passport_issue_place,
+                  passport_issue_date,
+                  passport_expiry_date,
+                  seaman_book_number,
+                  seaman_book_issue_date,
+                  seaman_book_expiry_date,
+                  role_id,
+                  email,
+                  created_at,
+                  updated_at
+                )
+               VALUES
+                (
+                  $1, $2, $3, $4,
+                  $5, $6, $7,
+                  $8, $9, $10,
+                  $11, $12,
+                  $13, $14, $15, $16,
+                  $17, $18, $19, $20,
+                  $21, $22, $23, $24,
+                  $25, $26, $27,
+                  $28, $29,
+                  NOW(), NOW()
+                )
+               RETURNING
+                 user_id,
+                 seafarer_id,
+                 full_name,
+                 email,
+                 username,
+                 status,
+                 role_id`,
               [
                 seafarer_id,
                 full_name,
@@ -2193,15 +2432,23 @@ export const importUsersFromExcel = [
                 seaman_book_issue_date ?? null,
                 seaman_book_expiry_date ?? null,
 
+                // $28: role_id
                 role_id_to_insert,
+
+                // $29: email
+                email,
               ]
             );
 
             const insertedUserId = inserted[0]?.user_id;
 
-            // ✅ update in-memory map so if same seafarer_id appears again in this sheet, it will be treated as existing
-            existingMap.set(seafarer_id, { user_id: insertedUserId, seafarer_id, ship_id });
-
+            // Update in-memory map so duplicate IDs in this sheet
+            // are treated as existing
+            existingMap.set(seafarer_id, {
+              user_id: insertedUserId,
+              seafarer_id,
+              ship_id,
+            });
 
             await handleShipHistoryChange({
               user_id: insertedUserId,
@@ -2215,7 +2462,6 @@ export const importUsersFromExcel = [
               changed_by_user_id: req.user.user_id,
               notes: "Excel import (new user)",
             });
-
 
             results.inserted++;
 
@@ -2231,9 +2477,13 @@ export const importUsersFromExcel = [
             }
           } catch (e) {
             results.skipped++;
+
             results.errors.push({
               row: rowNum,
-              error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
+              error:
+                e.code === "23505"
+                  ? "Duplicate seafarer_id or username"
+                  : e.message,
             });
           }
         }
@@ -2246,9 +2496,17 @@ export const importUsersFromExcel = [
         ...results,
       });
     } catch (err) {
-      try { await db.query("ROLLBACK"); } catch { }
+      try {
+        await db.query("ROLLBACK");
+      } catch {
+        // Ignore rollback errors
+      }
+
       console.error("importUsersFromExcel error:", err);
-      return res.status(500).json({ error: "Failed to import users" });
+
+      return res.status(500).json({
+        error: "Failed to import users",
+      });
     }
   },
 ];
@@ -3088,5 +3346,256 @@ export const searchUsers = async (req, res) => {
     return res.status(500).json({
       error: "Failed to search users",
     });
+  }
+};
+
+
+
+
+// PATCH /users/bulk-email
+// Bulk update email addresses for multiple users.
+
+export const bulkUpdateUserEmails = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Only Super Admin, Company Admin and Ship Admin
+  if (![1, 2, 3].includes(role)) {
+    return res.status(403).json({
+      error: "Forbidden",
+    });
+  }
+
+  const updates = req.body?.updates;
+
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({
+      error: "updates must be a non-empty array",
+    });
+  }
+
+  // Prevent excessively large requests
+  if (updates.length > 500) {
+    return res.status(400).json({
+      error: "Maximum 500 users can be updated per request",
+    });
+  }
+
+  // Validate and normalize request data
+  const normalizedUpdates = [];
+  const seenUserIds = new Set();
+
+  for (let i = 0; i < updates.length; i++) {
+    const item = updates[i];
+
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return res.status(400).json({
+        error: `Invalid update object at index ${i}`,
+      });
+    }
+
+    const user_id = Number(item.user_id);
+
+    if (!Number.isSafeInteger(user_id) || user_id <= 0) {
+      return res.status(400).json({
+        error: `Invalid user_id at index ${i}`,
+      });
+    }
+
+    if (seenUserIds.has(user_id)) {
+      return res.status(400).json({
+        error: `Duplicate user_id: ${user_id}`,
+      });
+    }
+
+    seenUserIds.add(user_id);
+
+    // Require the email property even when its value is null.
+    if (!Object.prototype.hasOwnProperty.call(item, "email")) {
+      return res.status(400).json({
+        error: `Email field is missing for user_id ${user_id}`,
+      });
+    }
+
+    let email = null;
+
+    if (item.email !== null && item.email !== "") {
+      if (typeof item.email !== "string") {
+        return res.status(400).json({
+          error: `Invalid email value for user_id ${user_id}`,
+        });
+      }
+
+      email = item.email.trim();
+
+      if (
+        email.length > 255 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
+        return res.status(400).json({
+          error: `Invalid email address for user_id ${user_id}`,
+        });
+      }
+    }
+
+    normalizedUpdates.push({
+      user_id,
+      email,
+    });
+  }
+
+  // Role-based scope from authenticated user
+  const myCompanyId = req.user?.company_id
+    ? String(req.user.company_id)
+    : null;
+
+  const myShipId =
+    req.user?.ship_id != null
+      ? Number(req.user.ship_id)
+      : null;
+
+  if (role === 2 && !myCompanyId) {
+    return res.status(403).json({
+      error: "Company information missing from authenticated user",
+    });
+  }
+
+  if (role === 3 && (!myCompanyId || myShipId == null)) {
+    return res.status(403).json({
+      error: "Company or ship information missing from authenticated user",
+    });
+  }
+
+  let client;
+  let transactionStarted = false;
+
+  try {
+    // Use one dedicated PostgreSQL connection for the transaction.
+    client = await db.connect();
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const userIds = normalizedUpdates.map((u) => u.user_id);
+
+    // Lock selected users and fetch their assignment information.
+    const { rows: users } = await client.query(
+      `SELECT
+         user_id,
+         full_name,
+         company_id,
+         ship_id,
+         email
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [userIds]
+    );
+
+    // Check that every requested user exists.
+    if (users.length !== normalizedUpdates.length) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        error: "One or more users were not found",
+        requested: normalizedUpdates.length,
+        found: users.length,
+      });
+    }
+
+    // Enforce company and ship permissions.
+    const violations = [];
+
+    for (const user of users) {
+      if (
+        role === 2 &&
+        String(user.company_id) !== myCompanyId
+      ) {
+        violations.push(user.user_id);
+      }
+
+      if (
+        role === 3 &&
+        (
+          String(user.company_id) !== myCompanyId ||
+          Number(user.ship_id) !== myShipId
+        )
+      ) {
+        violations.push(user.user_id);
+      }
+    }
+
+    if (violations.length > 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        error: "Some users are outside your permitted company/ship scope",
+        violations,
+      });
+    }
+
+    // Update only the email column.
+    const updatedUsers = [];
+
+    for (const item of normalizedUpdates) {
+      const { rows } = await client.query(
+        `UPDATE users
+         SET
+           email = $1,
+           updated_at = NOW()
+         WHERE user_id = $2
+         RETURNING
+           user_id,
+           full_name,
+           email`,
+        [
+          item.email,
+          item.user_id,
+        ]
+      );
+
+      updatedUsers.push(rows[0]);
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.status(200).json({
+      message: "User emails updated successfully",
+      requested: normalizedUpdates.length,
+      updated: updatedUsers.length,
+      users: updatedUsers,
+    });
+
+  } catch (err) {
+    if (transactionStarted && client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Bulk email rollback error:", rollbackError);
+      }
+    }
+
+    console.error("bulkUpdateUserEmails error:", {
+      code: err.code,
+      constraint: err.constraint,
+      message: err.message,
+    });
+
+    if (err.code === "23505") {
+      return res.status(409).json({
+        error: "One or more email addresses conflict with a unique database constraint",
+      });
+    }
+
+    return res.status(500).json({
+      error: "Failed to update user emails",
+    });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 };
