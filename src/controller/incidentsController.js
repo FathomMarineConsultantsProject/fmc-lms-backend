@@ -1547,11 +1547,21 @@ export const requestIncidentTraining = async (req, res) => {
 
     const user = req.user;
     const roleId = Number(user?.role_id);
+    const requestedBy = Number(user?.user_id);
+
+    const allowedFormats = ["2D", "3D", "Immersive"];
 
     // Validate incident UUID
     if (!isUuid(incidentId)) {
         return res.status(400).json({
             error: "incident_id must be a UUID",
+        });
+    }
+
+    // Validate authenticated user
+    if (!Number.isInteger(requestedBy) || requestedBy <= 0) {
+        return res.status(401).json({
+            error: "Unable to identify the authenticated user",
         });
     }
 
@@ -1563,8 +1573,6 @@ export const requestIncidentTraining = async (req, res) => {
     }
 
     // Validate selected training formats
-    const allowedFormats = ["2D", "3D", "Immersive"];
-
     if (
         !Array.isArray(training_formats) ||
         training_formats.length === 0 ||
@@ -1580,26 +1588,63 @@ export const requestIncidentTraining = async (req, res) => {
         });
     }
 
-    // Get requester information from authenticated user
-    const requestedBy = Number(user?.user_id);
-    const requestedByName = user?.full_name || user?.username;
-    const requestedByUsername = user?.username || null;
-    const companyId = user?.company_id || null;
-
-    if (
-        !Number.isInteger(requestedBy) ||
-        requestedBy <= 0 ||
-        !requestedByName
-    ) {
-        return res.status(401).json({
-            error: "Unable to identify the authenticated user",
-        });
-    }
-
     const client = await db.connect();
+
+    let transactionStarted = false;
 
     try {
         await client.query("BEGIN");
+        transactionStarted = true;
+
+        // Fetch requester details from users table
+        const { rows: userRows } = await client.query(
+            `
+            SELECT
+                user_id,
+                full_name,
+                username,
+                company_id,
+                role_id
+            FROM users
+            WHERE user_id = $1
+            `,
+            [requestedBy]
+        );
+
+        if (userRows.length === 0) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(401).json({
+                error: "Authenticated user not found",
+            });
+        }
+
+        const requester = userRows[0];
+
+        const requestedByName =
+            requester.full_name ||
+            requester.username ||
+            `User ${requester.user_id}`;
+
+        const requestedByUsername = requester.username || null;
+
+        // Superadmin may have NULL company_id
+        const companyId = requester.company_id || null;
+
+        const requesterRoleId = Number(requester.role_id);
+
+        // Verify current role from database as well
+        if (
+            ![ROLE_SUPERADMIN, ROLE_ADMIN].includes(requesterRoleId)
+        ) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(403).json({
+                error: "Only Superadmin and Admin can request training",
+            });
+        }
 
         // Find and lock the incident
         const { rows: incidentRows } = await client.query(
@@ -1615,6 +1660,7 @@ export const requestIncidentTraining = async (req, res) => {
 
         if (incidentRows.length === 0) {
             await client.query("ROLLBACK");
+            transactionStarted = false;
 
             return res.status(404).json({
                 error: "Incident not found",
@@ -1626,6 +1672,7 @@ export const requestIncidentTraining = async (req, res) => {
         // Verify that the requester can access this incident
         if (!canAccessIncident(user, incident)) {
             await client.query("ROLLBACK");
+            transactionStarted = false;
 
             return res.status(403).json({
                 error: "Forbidden: You do not have access to this incident",
@@ -1650,11 +1697,11 @@ export const requestIncidentTraining = async (req, res) => {
             `,
             [
                 incidentId,
-                requestedBy,
+                requester.user_id,
                 requestedByName,
                 requestedByUsername,
                 companyId,
-                roleId,
+                requesterRoleId,
                 JSON.stringify(training_formats),
             ]
         );
@@ -1673,6 +1720,7 @@ export const requestIncidentTraining = async (req, res) => {
         );
 
         await client.query("COMMIT");
+        transactionStarted = false;
 
         return res.status(201).json({
             success: true,
@@ -1681,7 +1729,9 @@ export const requestIncidentTraining = async (req, res) => {
         });
 
     } catch (error) {
-        await client.query("ROLLBACK");
+        if (transactionStarted) {
+            await client.query("ROLLBACK");
+        }
 
         console.error("Error requesting training:", error);
 
