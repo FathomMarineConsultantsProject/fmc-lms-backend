@@ -1378,57 +1378,115 @@ export const deleteIncident = async (req, res) => {
 
 //new incident training
 
+
 export const getRequestedTrainings = async (req, res) => {
-  const { company_id, ship_id } = req.user;
-  const roleId = Number(req.user?.role_id);
+    const {
+        company_id,
+        ship_id,
+    } = req.user;
 
-  try {
-    let queryText = `
-      SELECT
-        incident_id,
-        title,
-        severity,
-        reference_code,
-        training_request_type,
-        training_requested_at
-      FROM incident_reports
-      WHERE is_deleted IS NOT TRUE
-        AND training_requested = TRUE
-    `;
+    const roleId = Number(req.user?.role_id);
 
-    const queryValues = [];
+    try {
+        let queryText = `
+            SELECT
+                itr.id AS request_id,
+                itr.incident_id,
 
-    if (roleId === ROLE_SUPERADMIN) {
-      // Superadmin can view all training requests.
-    } else if (roleId === ROLE_ADMIN) {
-      queryValues.push(company_id);
-      queryText += ` AND company_id = $${queryValues.length}`;
-    } else if (
-      roleId === ROLE_SUBADMIN ||
-      roleId === ROLE_CREW
-    ) {
-      queryValues.push(company_id, ship_id);
-      queryText += `
-        AND company_id = $${queryValues.length - 1}
-        AND ship_id = $${queryValues.length}
-      `;
-    } else {
-      return res.status(403).json({ error: "Forbidden" });
+                ir.reference_code,
+                ir.title,
+                ir.description,
+                ir.severity,
+                ir.incident_type,
+                ir.status AS incident_status,
+
+                ir.company_id AS incident_company_id,
+                ir.ship_id,
+
+                itr.requested_by,
+                itr.requested_by_name,
+                itr.requested_by_username,
+                itr.company_id AS requester_company_id,
+                itr.role_id,
+
+                itr.training_formats,
+                itr.status AS training_request_status,
+                itr.requested_at,
+
+                itr.created_at,
+                itr.updated_at
+
+            FROM incident_training_requests itr
+
+            INNER JOIN incident_reports ir
+                ON ir.incident_id = itr.incident_id
+
+            WHERE ir.is_deleted IS NOT TRUE
+        `;
+
+        const queryValues = [];
+
+        if (roleId === ROLE_SUPERADMIN) {
+            // Superadmin can view all training requests.
+        } else if (roleId === ROLE_ADMIN) {
+            // Admin can view requests for their company's incidents.
+            if (!company_id) {
+                return res.status(403).json({
+                    error: "No company assigned to this user",
+                });
+            }
+
+            queryValues.push(company_id);
+
+            queryText += `
+                AND ir.company_id = $${queryValues.length}
+            `;
+
+        } else if (
+            roleId === ROLE_SUBADMIN ||
+            roleId === ROLE_CREW
+        ) {
+            // Preserve existing company and ship visibility.
+            if (!company_id || !ship_id) {
+                return res.status(403).json({
+                    error: "Company or ship not assigned",
+                });
+            }
+
+            queryValues.push(company_id, ship_id);
+
+            queryText += `
+                AND ir.company_id = $${queryValues.length - 1}
+                AND ir.ship_id = $${queryValues.length}
+            `;
+
+        } else {
+            return res.status(403).json({
+                error: "Forbidden",
+            });
+        }
+
+        queryText += `
+            ORDER BY itr.requested_at DESC
+        `;
+
+        const { rows } = await db.query(queryText, queryValues);
+
+        return res.status(200).json({
+            success: true,
+            count: rows.length,
+            data: rows,
+        });
+
+    } catch (error) {
+        console.error("Error fetching requested trainings:", error);
+
+        return res.status(500).json({
+            error: "Failed to fetch requested trainings",
+        });
     }
-
-    queryText += `
-      ORDER BY training_requested_at DESC NULLS LAST
-    `;
-
-    const { rows } = await db.query(queryText, queryValues);
-    return res.status(200).json(rows);
-  } catch (error) {
-    console.error("Error fetching requested trainings:", error);
-    return res.status(500).json({
-      error: "Failed to fetch requested trainings",
-    });
-  }
 };
+
 
 
 
@@ -1482,117 +1540,160 @@ export const getRecentTrainingRequestCount = async (req, res) => {
 
 
 
+
 export const requestIncidentTraining = async (req, res) => {
-  const incidentId = req.params.id;
-  const { training_type } = req.body ?? {};
-  const roleId = Number(req.user?.role_id);
+    const incidentId = req.params.id;
+    const { training_formats } = req.body ?? {};
 
-  if (!isUuid(incidentId)) {
-    return res.status(400).json({
-      error: "incident_id must be a UUID",
-    });
-  }
+    const user = req.user;
+    const roleId = Number(user?.role_id);
 
-  if (
-    training_type !== undefined &&
-    training_type !== null &&
-    (
-      !Array.isArray(training_type) ||
-      !training_type.every(
-        (item) =>
-          typeof item === "string" && item.trim().length > 0
-      )
-    )
-  ) {
-    return res.status(400).json({
-      error: "training_type must be an array of non-empty strings",
-    });
-  }
-
-  if (
-    ![
-      ROLE_SUPERADMIN,
-      ROLE_ADMIN,
-      ROLE_SUBADMIN,
-      ROLE_CREW,
-    ].includes(roleId)
-  ) {
-    return res.status(403).json({
-      error: "Forbidden",
-    });
-  }
-
-  try {
-    const { rows: incidentRows } = await db.query(
-      `
-        SELECT
-          ir.*,
-          EXISTS (
-            SELECT 1
-            FROM users u
-            WHERE u.user_id = ir.reported_by_user_id
-              AND u.role_id = $2
-          ) AS created_by_superadmin
-        FROM incident_reports ir
-        WHERE ir.incident_id = $1
-          AND ir.is_deleted IS NOT TRUE
-      `,
-      [incidentId, ROLE_SUPERADMIN]
-    );
-
-    if (incidentRows.length === 0) {
-      return res.status(404).json({
-        error: "Incident not found",
-      });
+    // Validate incident UUID
+    if (!isUuid(incidentId)) {
+        return res.status(400).json({
+            error: "incident_id must be a UUID",
+        });
     }
 
-    const incident = incidentRows[0];
-
-    if (!canAccessIncident(req.user, incident)) {
-      return res.status(403).json({
-        error: "Forbidden: You do not have access to this incident",
-      });
+    // Only Superadmin and Admin can request training
+    if (![ROLE_SUPERADMIN, ROLE_ADMIN].includes(roleId)) {
+        return res.status(403).json({
+            error: "Only Superadmin and Admin can request training",
+        });
     }
 
-    const { rows } = await db.query(
-      `
-        UPDATE incident_reports
-        SET
-          training_requested = TRUE,
-          training_request_type =
-            COALESCE($1::text[], training_request_type),
-          training_requested_at = NOW(),
-          updated_at = NOW()
-        WHERE incident_id = $2
-          AND is_deleted IS NOT TRUE
-        RETURNING *
-      `,
-      [
-        training_type == null
-          ? null
-          : training_type.map((item) => item.trim()),
-        incidentId,
-      ]
-    );
+    // Validate selected training formats
+    const allowedFormats = ["2D", "3D", "Immersive"];
 
-    if (rows.length === 0) {
-      return res.status(404).json({
-        error: "Incident not found",
-      });
+    if (
+        !Array.isArray(training_formats) ||
+        training_formats.length === 0 ||
+        !training_formats.every(
+            (format) =>
+                typeof format === "string" &&
+                allowedFormats.includes(format)
+        ) ||
+        new Set(training_formats).size !== training_formats.length
+    ) {
+        return res.status(400).json({
+            error: "Select at least one valid training format: 2D, 3D or Immersive",
+        });
     }
 
-    return res.status(200).json({
-      message: "Training requested successfully",
-      incident: rows[0],
-    });
-  } catch (error) {
-    console.error("Error requesting training:", error);
+    // Get requester information from authenticated user
+    const requestedBy = Number(user?.user_id);
+    const requestedByName = user?.full_name || user?.username;
+    const requestedByUsername = user?.username || null;
+    const companyId = user?.company_id || null;
 
-    return res.status(500).json({
-      error: "Failed to request training",
-    });
-  }
+    if (
+        !Number.isInteger(requestedBy) ||
+        requestedBy <= 0 ||
+        !requestedByName
+    ) {
+        return res.status(401).json({
+            error: "Unable to identify the authenticated user",
+        });
+    }
+
+    const client = await db.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        // Find and lock the incident
+        const { rows: incidentRows } = await client.query(
+            `
+            SELECT *
+            FROM incident_reports
+            WHERE incident_id = $1
+              AND is_deleted IS NOT TRUE
+            FOR UPDATE
+            `,
+            [incidentId]
+        );
+
+        if (incidentRows.length === 0) {
+            await client.query("ROLLBACK");
+
+            return res.status(404).json({
+                error: "Incident not found",
+            });
+        }
+
+        const incident = incidentRows[0];
+
+        // Verify that the requester can access this incident
+        if (!canAccessIncident(user, incident)) {
+            await client.query("ROLLBACK");
+
+            return res.status(403).json({
+                error: "Forbidden: You do not have access to this incident",
+            });
+        }
+
+        // Create a separate training request record
+        const { rows: requestRows } = await client.query(
+            `
+            INSERT INTO incident_training_requests (
+                incident_id,
+                requested_by,
+                requested_by_name,
+                requested_by_username,
+                company_id,
+                role_id,
+                training_formats,
+                status
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'Pending')
+            RETURNING *
+            `,
+            [
+                incidentId,
+                requestedBy,
+                requestedByName,
+                requestedByUsername,
+                companyId,
+                roleId,
+                JSON.stringify(training_formats),
+            ]
+        );
+
+        // Update summary fields in the incident table
+        await client.query(
+            `
+            UPDATE incident_reports
+            SET
+                training_requested = TRUE,
+                training_requested_at = NOW(),
+                updated_at = NOW()
+            WHERE incident_id = $1
+            `,
+            [incidentId]
+        );
+
+        await client.query("COMMIT");
+
+        return res.status(201).json({
+            success: true,
+            message: "Training requested successfully",
+            training_request: requestRows[0],
+        });
+
+    } catch (error) {
+        await client.query("ROLLBACK");
+
+        console.error("Error requesting training:", error);
+
+        return res.status(500).json({
+            error: "Failed to request training",
+        });
+
+    } finally {
+        client.release();
+    }
 };
+
 
 
 
