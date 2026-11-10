@@ -1159,48 +1159,61 @@ export const updateUser = async (req, res) => {
 };
 
 // Runs daily via Vercel Cron, or manually by an authenticated superadmin.
+
 export const syncUserStatusByDates = async (req, res) => {
   try {
     const expected = process.env.CRON_SECRET;
-    const isCronAllowed =
-      Boolean(expected) && req.headers.authorization === `Bearer ${expected}`;
 
-    const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
+    const isCronAllowed =
+      Boolean(expected) &&
+      req.headers.authorization === `Bearer ${expected}`;
+
+    const isSuperAdmin =
+      req.user && Number(req.user.role_id) === 1;
 
     if (!isCronAllowed && !isSuperAdmin) {
-      return res.status(401).json({ error: "Unauthorized (cron or superadmin required)" });
+      return res.status(401).json({
+        error: "Unauthorized (cron or superadmin required)",
+      });
     }
 
-    // ----- Date-based sync rules -----
+    // Mark users as Offboard when disembarkation date is reached
     const offboardRes = await db.query(
       `UPDATE users
-SET
-  status = 'Offboard',
-  ship_id = NULL,
-  updated_at = NOW()
-WHERE
-  disembarkation_date IS NOT NULL
-  AND (embarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND disembarkation_date::date <= CURRENT_DATE
-  AND (status IS NULL OR lower(status) <> 'offboard')
-RETURNING user_id;
-`
+       SET
+         status = 'Offboard',
+         updated_at = NOW()
+       WHERE
+         disembarkation_date IS NOT NULL
+         AND (
+           embarkation_date IS NULL
+           OR disembarkation_date::date >= embarkation_date::date
+         )
+         AND disembarkation_date::date <= CURRENT_DATE
+         AND (status IS NULL OR lower(status) <> 'offboard')
+       RETURNING user_id`
     );
 
+    // Mark users as Onboard when embarkation date is reached
     const onboardRes = await db.query(
       `UPDATE users
-SET
-  status = 'Onboard',
-  updated_at = NOW()
-WHERE
-  ship_id IS NOT NULL
-  AND embarkation_date IS NOT NULL
-  AND (disembarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND embarkation_date::date <= CURRENT_DATE
-  AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
-  AND (status IS NULL OR lower(status) <> 'onboard')
-RETURNING user_id;
-`
+       SET
+         status = 'Onboard',
+         updated_at = NOW()
+       WHERE
+         ship_id IS NOT NULL
+         AND embarkation_date IS NOT NULL
+         AND (
+           disembarkation_date IS NULL
+           OR disembarkation_date::date >= embarkation_date::date
+         )
+         AND embarkation_date::date <= CURRENT_DATE
+         AND (
+           disembarkation_date IS NULL
+           OR disembarkation_date::date > CURRENT_DATE
+         )
+         AND (status IS NULL OR lower(status) <> 'onboard')
+       RETURNING user_id`
     );
 
     return res.json({
@@ -1208,14 +1221,22 @@ RETURNING user_id;
       today: new Date().toISOString().slice(0, 10),
       offboarded_count: offboardRes.rowCount,
       onboarded_count: onboardRes.rowCount,
-      offboarded_user_ids: offboardRes.rows.map((r) => r.user_id),
-      onboarded_user_ids: onboardRes.rows.map((r) => r.user_id),
+      offboarded_user_ids: offboardRes.rows.map(
+        (row) => row.user_id
+      ),
+      onboarded_user_ids: onboardRes.rows.map(
+        (row) => row.user_id
+      ),
     });
-  } catch (err) {
-    console.error("syncUserStatusByDates error:", err);
-    return res.status(500).json({ error: "Failed to sync user status" });
+  } catch (error) {
+    console.error("syncUserStatusByDates error:", error);
+
+    return res.status(500).json({
+      error: "Failed to sync user status",
+    });
   }
 };
+
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -2513,59 +2534,95 @@ export const importUsersFromExcel = [
 
 
 // PATCH /users/bulk-ship
+
+
 export const bulkUpdateUserShip = async (req, res) => {
   const role = Number(req.user?.role_id);
 
-  // Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
+  // Only Superadmin (1) and Admin (2) can perform bulk ship assignment
   if (![1, 2].includes(role)) {
-    return res.status(403).json({ error: "Forbidden. Only Superadmin and Admin can mass update ship assignments." });
+    return res.status(403).json({
+      error: "Forbidden. Only Superadmin and Admin can mass update ship assignments.",
+    });
   }
 
-  const user_ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+  const user_ids = Array.isArray(req.body?.user_ids)
+    ? req.body.user_ids
+    : [];
+
   const ship_id_raw = req.body?.ship_id;
 
   if (!user_ids.length) {
-    return res.status(400).json({ error: "user_ids must be a non-empty array" });
+    return res.status(400).json({
+      error: "user_ids must be a non-empty array",
+    });
   }
 
   const new_ship_id = Number.parseInt(String(ship_id_raw), 10);
+
   if (!Number.isInteger(new_ship_id) || new_ship_id <= 0) {
-    return res.status(400).json({ error: "ship_id must be a valid positive integer" });
+    return res.status(400).json({
+      error: "ship_id must be a valid positive integer",
+    });
   }
 
-  // Sanitize IDs
-  const ids = user_ids
-    .map((x) => Number.parseInt(String(x), 10))
-    .filter((n) => Number.isInteger(n) && n > 0);
+  // Sanitize and remove duplicate IDs
+  const ids = [
+    ...new Set(
+      user_ids
+        .map((id) => Number.parseInt(String(id), 10))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    ),
+  ];
 
   if (!ids.length) {
-    return res.status(400).json({ error: "user_ids must contain valid integer IDs" });
+    return res.status(400).json({
+      error: "user_ids must contain valid integer IDs",
+    });
   }
 
-  try {
-    await db.query("BEGIN");
+  const client = await db.connect();
 
-    //  Validate the new ship exists and grab its company_id
-    const shipRes = await db.query(
-      "SELECT ship_id, company_id FROM ships WHERE ship_id = $1",
+  try {
+    await client.query("BEGIN");
+
+    // Validate target ship
+    const shipRes = await client.query(
+      `SELECT ship_id, company_id
+       FROM ships
+       WHERE ship_id = $1`,
       [new_ship_id]
     );
 
     if (!shipRes.rows.length) {
-      await db.query("ROLLBACK");
-      return res.status(404).json({ error: "Target ship_id does not exist" });
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        error: "Target ship_id does not exist",
+      });
     }
+
     const targetShip = shipRes.rows[0];
 
-    //  Admin Scope Check: Ship must belong to the Admin's company
-    const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
-    if (role === 2 && myCompany && String(targetShip.company_id) !== myCompany) {
-      await db.query("ROLLBACK");
-      return res.status(403).json({ error: "Target ship does not belong to your company scope" });
+    // Admin company scope check
+    const myCompany = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
+
+    if (
+      role === 2 &&
+      myCompany &&
+      String(targetShip.company_id) !== myCompany
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(403).json({
+        error: "Target ship does not belong to your company scope",
+      });
     }
 
-    //  Fetch the users being updated and lock the rows
-    const { rows: users } = await db.query(
+    // Fetch and lock users
+    const { rows: users } = await client.query(
       `SELECT user_id, company_id, ship_id
        FROM users
        WHERE user_id = ANY($1::int[])
@@ -2574,27 +2631,42 @@ export const bulkUpdateUserShip = async (req, res) => {
     );
 
     if (!users.length) {
-      await db.query("ROLLBACK");
-      return res.status(404).json({ error: "No users found for given user_ids" });
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        error: "No users found for given user_ids",
+      });
     }
 
-    // Admin Scope Check: Users must belong to the Admin's company
+    // Admin company scope check for users
     const violations = [];
-    for (const u of users) {
-      if (role === 2 && myCompany && String(u.company_id) !== myCompany) {
-        violations.push(u.user_id);
+
+    for (const user of users) {
+      if (
+        role === 2 &&
+        myCompany &&
+        String(user.company_id) !== myCompany
+      ) {
+        violations.push(user.user_id);
       }
     }
 
     if (violations.length) {
-      await db.query("ROLLBACK");
+      await client.query("ROLLBACK");
+
       return res.status(403).json({
         error: "Scope violation: some user_ids are outside your company scope",
         violations,
       });
     }
 
-    //  Iterate and perform updates
+    // Get the database date for the ship change
+    const dateRes = await client.query(
+      `SELECT CURRENT_DATE::text AS change_date`
+    );
+
+    const changeDate = dateRes.rows[0].change_date;
+
     const results = {
       requested: ids.length,
       found: users.length,
@@ -2603,39 +2675,47 @@ export const bulkUpdateUserShip = async (req, res) => {
       skipped_reasons: [],
     };
 
-    for (const u of users) {
-      // Skip if they are already on this target ship
-      if (Number(u.ship_id) === new_ship_id) {
+    for (const user of users) {
+      // Skip users already assigned to this ship
+      // Do not modify ship_history for same-ship assignments
+      if (Number(user.ship_id) === new_ship_id) {
         results.skipped++;
-        results.skipped_reasons.push({ user_id: u.user_id, reason: "Already assigned to this ship" });
+
+        results.skipped_reasons.push({
+          user_id: user.user_id,
+          reason: "Already assigned to this ship",
+        });
+
         continue;
       }
 
-      // Update the user's ship (and update company_id just in case a Superadmin is moving them to a different company's ship)
-      const { rowCount } = await db.query(
+      // Update only ship assignment and company
+      // Existing dates and status remain unchanged
+      const { rowCount } = await client.query(
         `UPDATE users
          SET
            ship_id = $1,
            company_id = $2,
            updated_at = NOW()
          WHERE user_id = $3`,
-        [new_ship_id, targetShip.company_id, u.user_id]
+        [new_ship_id, targetShip.company_id, user.user_id]
       );
 
       if (!rowCount) {
-        results.skipped++;
-        results.skipped_reasons.push({ user_id: u.user_id, reason: "Update failed" });
-        continue;
+        throw new Error(
+          `Failed to update ship assignment for user ${user.user_id}`
+        );
       }
 
-      // Automatically handle the ship history log
+      // Update ship history using the SAME transaction client
       await handleShipHistoryChange({
-        user_id: u.user_id,
+        client,
+        user_id: user.user_id,
         company_id: targetShip.company_id,
-        old_ship_id: u.ship_id,
-        new_ship_id: new_ship_id,
-        embarkation_date: null, // Optionally pull from req.body if you want to set dates during mass transfer
-        disembarkation_date: null,
+        old_ship_id: user.ship_id,
+        new_ship_id,
+        embarkation_date: changeDate,
+        disembarkation_date: changeDate,
         embarkation_port: null,
         disembarkation_port: null,
         changed_by_user_id: req.user.user_id,
@@ -2645,20 +2725,34 @@ export const bulkUpdateUserShip = async (req, res) => {
       results.updated++;
     }
 
-    await db.query("COMMIT");
+    await client.query("COMMIT");
 
     return res.json({
       message: "Bulk ship assignment completed",
       new_ship_id,
       ...results,
     });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Bulk ship assignment rollback error:",
+        rollbackError
+      );
+    }
 
-  } catch (err) {
-    await db.query("ROLLBACK");
-    console.error("bulkUpdateUserShip error:", err);
-    return res.status(500).json({ error: "Failed to bulk update user ships" });
+    console.error("bulkUpdateUserShip error:", error);
+
+    return res.status(500).json({
+      error: "Failed to bulk update user ships",
+    });
+  } finally {
+    client.release();
   }
 };
+
+
 
 // PATCH /users/bulk-embarkation-dates
 export const bulkUpdateUserDates = async (req, res) => {
