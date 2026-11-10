@@ -2536,6 +2536,7 @@ export const importUsersFromExcel = [
 // PATCH /users/bulk-ship
 
 
+
 export const bulkUpdateUserShip = async (req, res) => {
   const role = Number(req.user?.role_id);
 
@@ -2566,7 +2567,7 @@ export const bulkUpdateUserShip = async (req, res) => {
     });
   }
 
-  // Sanitize and remove duplicate IDs
+  // Sanitize and remove duplicate user IDs
   const ids = [
     ...new Set(
       user_ids
@@ -2621,9 +2622,13 @@ export const bulkUpdateUserShip = async (req, res) => {
       });
     }
 
-    // Fetch and lock users
+    // Fetch and lock users, including their original embarkation dates
     const { rows: users } = await client.query(
-      `SELECT user_id, company_id, ship_id
+      `SELECT
+         user_id,
+         company_id,
+         ship_id,
+         embarkation_date
        FROM users
        WHERE user_id = ANY($1::int[])
        FOR UPDATE`,
@@ -2660,7 +2665,7 @@ export const bulkUpdateUserShip = async (req, res) => {
       });
     }
 
-    // Get the database date for the ship change
+    // Use the database date as the actual ship-change date
     const dateRes = await client.query(
       `SELECT CURRENT_DATE::text AS change_date`
     );
@@ -2676,8 +2681,7 @@ export const bulkUpdateUserShip = async (req, res) => {
     };
 
     for (const user of users) {
-      // Skip users already assigned to this ship
-      // Do not modify ship_history for same-ship assignments
+      // Same ship: do not update user or history
       if (Number(user.ship_id) === new_ship_id) {
         results.skipped++;
 
@@ -2689,8 +2693,8 @@ export const bulkUpdateUserShip = async (req, res) => {
         continue;
       }
 
-      // Update only ship assignment and company
-      // Existing dates and status remain unchanged
+      // Update only ship assignment and company.
+      // Do not modify embarkation_date, disembarkation_date or status.
       const { rowCount } = await client.query(
         `UPDATE users
          SET
@@ -2698,7 +2702,11 @@ export const bulkUpdateUserShip = async (req, res) => {
            company_id = $2,
            updated_at = NOW()
          WHERE user_id = $3`,
-        [new_ship_id, targetShip.company_id, user.user_id]
+        [
+          new_ship_id,
+          targetShip.company_id,
+          user.user_id,
+        ]
       );
 
       if (!rowCount) {
@@ -2707,17 +2715,30 @@ export const bulkUpdateUserShip = async (req, res) => {
         );
       }
 
-      // Update ship history using the SAME transaction client
+      // Immediately update old and new ship history
       await handleShipHistoryChange({
         client,
+
         user_id: user.user_id,
+
+        // New ship details
         company_id: targetShip.company_id,
-        old_ship_id: user.ship_id,
         new_ship_id,
-        embarkation_date: changeDate,
-        disembarkation_date: changeDate,
+
+        // Old ship details
+        old_company_id: user.company_id,
+        old_ship_id: user.ship_id,
+        previous_embarkation_date: user.embarkation_date,
+
+        // Actual ship-change date
+        change_date: changeDate,
+
+        // New ship embarkation date
+        new_embarkation_date: changeDate,
+
         embarkation_port: null,
         disembarkation_port: null,
+
         changed_by_user_id: req.user.user_id,
         notes: "Mass ship assignment via Admin Dashboard",
       });
@@ -2730,6 +2751,7 @@ export const bulkUpdateUserShip = async (req, res) => {
     return res.json({
       message: "Bulk ship assignment completed",
       new_ship_id,
+      change_date: changeDate,
       ...results,
     });
   } catch (error) {
@@ -2751,6 +2773,7 @@ export const bulkUpdateUserShip = async (req, res) => {
     client.release();
   }
 };
+
 
 
 

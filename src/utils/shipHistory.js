@@ -2,42 +2,39 @@
 import { db } from "../db.js";
 
 const toDateOrNull = (value) => {
-  if (
-    value === null ||
-    value === undefined ||
-    String(value).trim() === ""
-  ) {
+  if (value === null || value === undefined || String(value).trim() === "") {
     return null;
   }
 
   if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) return null;
-
-    return value.toISOString().slice(0, 10);
+    return Number.isNaN(value.getTime())
+      ? null
+      : value.toISOString().slice(0, 10);
   }
 
   const str = String(value).trim();
 
-  // Preserve an existing YYYY-MM-DD date without timezone conversion
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
     return str;
   }
 
   const date = new Date(str);
 
-  if (Number.isNaN(date.getTime())) return null;
-
-  return date.toISOString().slice(0, 10);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString().slice(0, 10);
 };
 
 export const handleShipHistoryChange = async ({
   client = db,
   user_id,
   company_id,
+  old_company_id,
   old_ship_id,
   new_ship_id,
-  embarkation_date,
-  disembarkation_date,
+  previous_embarkation_date,
+  new_embarkation_date,
+  change_date,
   embarkation_port,
   disembarkation_port,
   changed_by_user_id,
@@ -45,23 +42,28 @@ export const handleShipHistoryChange = async ({
 }) => {
   if (!user_id) return;
 
-  const oldShip =
-    old_ship_id == null ? null : Number(old_ship_id);
+  const oldShip = old_ship_id == null ? null : Number(old_ship_id);
+  const newShip = new_ship_id == null ? null : Number(new_ship_id);
 
-  const newShip =
-    new_ship_id == null ? null : Number(new_ship_id);
+  const oldEmbDate = toDateOrNull(previous_embarkation_date);
+  const newEmbDate = toDateOrNull(new_embarkation_date);
+  const changeDate = toDateOrNull(change_date);
 
-  const embDate = toDateOrNull(embarkation_date);
-  const disDate = toDateOrNull(disembarkation_date);
-
-  // Same ship: do not modify ship history
+  // Do not modify history when the ship has not changed
   if (oldShip != null && newShip != null && oldShip === newShip) {
     return;
   }
 
-  // 1. Close only the latest open history record
-  // belonging to the previous ship
+  if (newShip != null && !newEmbDate) {
+    throw new Error("New ship embarkation date is required");
+  }
+
+  // 1. Handle the previous ship
   if (oldShip != null) {
+    if (!changeDate) {
+      throw new Error("Ship change date is required");
+    }
+
     const oldHistoryRes = await client.query(
       `SELECT history_id
        FROM user_ship_history
@@ -74,9 +76,9 @@ export const handleShipHistoryChange = async ({
       [user_id, oldShip]
     );
 
-    if (oldHistoryRes.rows.length) {
-      const oldHistoryId = oldHistoryRes.rows[0].history_id;
-
+    if (oldHistoryRes.rows.length > 0) {
+      // Existing old history:
+      // Update ONLY disembarkation date.
       await client.query(
         `UPDATE user_ship_history
          SET
@@ -87,17 +89,47 @@ export const handleShipHistoryChange = async ({
            updated_at = NOW()
          WHERE history_id = $5`,
         [
-          disDate,
+          changeDate,
           disembarkation_port ?? null,
           changed_by_user_id ?? null,
-          notes ?? null,
-          oldHistoryId,
+          notes,
+          oldHistoryRes.rows[0].history_id,
+        ]
+      );
+    } else {
+      // Missing old history:
+      // Create it using the ORIGINAL user embarkation date.
+      await client.query(
+        `INSERT INTO user_ship_history (
+          user_id,
+          company_id,
+          ship_id,
+          embarkation_date,
+          disembarkation_date,
+          embarkation_port,
+          disembarkation_port,
+          changed_by_user_id,
+          notes,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4::date, $5::date, $6, $7, $8, $9, NOW(), NOW())`,
+        [
+          user_id,
+          old_company_id ?? company_id ?? null,
+          oldShip,
+          oldEmbDate,
+          changeDate,
+          null,
+          disembarkation_port ?? null,
+          changed_by_user_id ?? null,
+          notes,
         ]
       );
     }
   }
 
-  // 2. Create a new open history record for the new ship
+  // 2. Insert the new ship history as an open record
   if (newShip != null) {
     await client.query(
       `INSERT INTO user_ship_history (
@@ -113,17 +145,15 @@ export const handleShipHistoryChange = async ({
         created_at,
         updated_at
       )
-      VALUES (
-        $1, $2, $3, $4::date, NULL, $5, NULL, $6, $7, NOW(), NOW()
-      )`,
+      VALUES ($1, $2, $3, $4::date, NULL, $5, NULL, $6, $7, NOW(), NOW())`,
       [
         user_id,
         company_id ?? null,
         newShip,
-        embDate,
+        newEmbDate,
         embarkation_port ?? null,
         changed_by_user_id ?? null,
-        notes ?? null,
+        notes,
       ]
     );
   }
