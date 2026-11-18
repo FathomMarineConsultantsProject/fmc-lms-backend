@@ -225,6 +225,7 @@ export const getNewUsersLast7Days = async (req, res) => {
 // Admin: own company only
 
 
+
 export const getUsersWithRecentActivity = async (req, res) => {
   try {
     const roleId = Number(req.user?.role_id);
@@ -246,8 +247,8 @@ export const getUsersWithRecentActivity = async (req, res) => {
       });
     }
 
-    // Superadmin: no company restriction.
-    // Admin: only users belonging to their own company.
+    // Superadmin: all companies.
+    // Admin: own company only.
     const companyFilter = roleId === 1 ? null : companyId;
 
     const query = `
@@ -299,7 +300,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
 
           CASE
             WHEN r.result->'progress'->>'progress_percentage'
-              ~ '^-?[0-9]+(\\\\.[0-9]+)?$'
+              ~ '^-?[0-9]+(\\.[0-9]+)?$'
             THEN (
               r.result->'progress'->>'progress_percentage'
             )::numeric
@@ -366,16 +367,16 @@ export const getUsersWithRecentActivity = async (req, res) => {
       user_activities AS (
         SELECT
           u.user_id,
-          u.email,
           u.full_name,
-          u.username,
           u.seafarer_id,
           u.rank,
-          u.company_id,
+          u.username,
+          u.email,
           u.ship_id,
-
-          c.company_name,
-          s.ship_name,
+          s.ship_name AS ship,
+          u.company_id,
+          c.company_name AS company,
+          u.role_id,
 
           COUNT(e.event_id)::integer AS total_activities,
 
@@ -417,15 +418,16 @@ export const getUsersWithRecentActivity = async (req, res) => {
 
         GROUP BY
           u.user_id,
-          u.email,
           u.full_name,
-          u.username,
           u.seafarer_id,
           u.rank,
-          u.company_id,
+          u.username,
+          u.email,
           u.ship_id,
+          s.ship_name,
+          u.company_id,
           c.company_name,
-          s.ship_name
+          u.role_id
       )
 
       SELECT *
@@ -433,7 +435,8 @@ export const getUsersWithRecentActivity = async (req, res) => {
       ORDER BY last_activity_at DESC;
     `;
 
-    const result = await pool.query(query, [companyFilter]);
+    // Use db, as imported from ../db.js
+    const result = await db.query(query, [companyFilter]);
 
     return res.status(200).json({
       success: true,
@@ -455,4 +458,5 @@ export const getUsersWithRecentActivity = async (req, res) => {
     });
   }
 };
+
 
