@@ -226,6 +226,7 @@ export const getNewUsersLast7Days = async (req, res) => {
 
 
 
+
 export const getUsersWithRecentActivity = async (req, res) => {
   try {
     const roleId = Number(req.user?.role_id);
@@ -249,13 +250,13 @@ export const getUsersWithRecentActivity = async (req, res) => {
 
     // Superadmin: all companies.
     // Admin: own company only.
-    const companyFilter = roleId === 1 ? null : companyId;
+    const companyFilter = roleId === 1 ? null : String(companyId);
 
     const query = `
       WITH activity_events AS (
         SELECT
           al.activity_id::text AS event_id,
-          al.user_id,
+          al.user_id::text AS user_id,
           'activity_log'::text AS source,
           al.activity_type,
           al.training_type,
@@ -283,7 +284,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
             r.result_index::text
           ) AS event_id,
 
-          NULLIF(r.result->>'user_id', '')::integer AS user_id,
+          NULLIF(r.result->>'user_id', '') AS user_id,
 
           'unity'::text AS source,
 
@@ -340,10 +341,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
           )
         ) WITH ORDINALITY AS r(result, result_index)
 
-        WHERE NULLIF(
-          r.result->>'user_id',
-          ''
-        ) ~ '^[0-9]+$'
+        WHERE NULLIF(r.result->>'user_id', '') IS NOT NULL
 
           AND NULLIF(
             r.result->'progress'->>'last_activity_at',
@@ -403,17 +401,17 @@ export const getUsersWithRecentActivity = async (req, res) => {
         FROM users u
 
         INNER JOIN all_events e
-          ON e.user_id = u.user_id
+          ON e.user_id = u.user_id::text
 
         LEFT JOIN company c
-          ON c.company_id = u.company_id
+          ON c.company_id::text = u.company_id::text
 
         LEFT JOIN ships s
-          ON s.ship_id = u.ship_id
+          ON s.ship_id::text = u.ship_id::text
 
         WHERE (
-          $1::integer IS NULL
-          OR u.company_id = $1
+          $1::text IS NULL
+          OR u.company_id::text = $1::text
         )
 
         GROUP BY
@@ -435,7 +433,6 @@ export const getUsersWithRecentActivity = async (req, res) => {
       ORDER BY last_activity_at DESC;
     `;
 
-    // Use db, as imported from ../db.js
     const result = await db.query(query, [companyFilter]);
 
     return res.status(200).json({
@@ -458,5 +455,6 @@ export const getUsersWithRecentActivity = async (req, res) => {
     });
   }
 };
+
 
 
