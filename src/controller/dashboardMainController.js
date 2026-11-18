@@ -224,12 +224,13 @@ export const getNewUsersLast7Days = async (req, res) => {
 // Superadmin: all companies
 // Admin: own company only
 
+
 export const getUsersWithRecentActivity = async (req, res) => {
   try {
-    const roleId = Number(req.user.role_id);
-    const companyId = req.user.company_id;
+    const roleId = Number(req.user?.role_id);
+    const companyId = req.user?.company_id;
 
-    // Allow only Superadmin and Admin
+    // Only Superadmin and Company Admin can access this API.
     if (![1, 2].includes(roleId)) {
       return res.status(403).json({
         success: false,
@@ -237,7 +238,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
       });
     }
 
-    // Admin must have a company assigned
+    // Company Admin must have a company assigned.
     if (roleId === 2 && !companyId) {
       return res.status(403).json({
         success: false,
@@ -245,17 +246,137 @@ export const getUsersWithRecentActivity = async (req, res) => {
       });
     }
 
+    // Superadmin: all companies.
+    // Company Admin: own company only.
     const values = [];
-    let companyFilter = "";
+    let userScope = "";
 
-    // Admin can only see users belonging to their company
-    // Superadmin can see users from all companies
     if (roleId === 2) {
       values.push(companyId);
-      companyFilter = `AND u.company_id = $${values.length}`;
+      userScope = `AND u.company_id = $1`;
     }
 
     const query = `
+      WITH activity_events AS (
+        SELECT
+          al.activity_id::text AS event_id,
+          al.user_id,
+          'activity'::text AS source,
+          al.activity_type,
+          al.training_type,
+          COALESCE(
+            al.training_type,
+            al.activity_type,
+            'Activity'
+          ) AS title,
+          al.occurred_at AS event_timestamp,
+
+          NULL::numeric AS progress_percentage,
+          NULL::boolean AS is_completed,
+          NULL::timestamptz AS started_at,
+          NULL::timestamptz AS completed_at,
+
+          al.payload_json AS payload,
+          NULL::text AS sync_status,
+          NULL::jsonb AS unity_data
+
+        FROM activity_logs al
+
+        WHERE al.occurred_at >= NOW() - INTERVAL '15 days'
+          AND al.occurred_at <= NOW()
+      ),
+
+      unity_events AS (
+        SELECT
+          CONCAT(
+            'unity_',
+            ucs.id::text,
+            '_',
+            COALESCE(r.result->>'index', '0')
+          ) AS event_id,
+
+          NULLIF(r.result->>'user_id', '')::integer AS user_id,
+
+          'unity'::text AS source,
+
+          'unity_course_progress'::text AS activity_type,
+
+          r.result->>'unity_course_code' AS training_type,
+
+          COALESCE(
+            r.result->>'course_name',
+            r.result->>'unity_course_code',
+            'Unity Course Activity'
+          ) AS title,
+
+          NULLIF(
+            r.result->'progress'->>'last_activity_at',
+            ''
+          )::timestamptz AS event_timestamp,
+
+          CASE
+            WHEN r.result->'progress'->>'progress_percentage'
+              ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (
+              r.result->'progress'->>'progress_percentage'
+            )::numeric
+            ELSE NULL
+          END AS progress_percentage,
+
+          CASE
+            WHEN LOWER(
+              r.result->'progress'->>'is_completed'
+            ) IN ('true', 'false')
+            THEN (
+              r.result->'progress'->>'is_completed'
+            )::boolean
+            ELSE NULL
+          END AS is_completed,
+
+          NULLIF(
+            r.result->'progress'->>'started_at',
+            ''
+          )::timestamptz AS started_at,
+
+          NULLIF(
+            r.result->'progress'->>'completed_at',
+            ''
+          )::timestamptz AS completed_at,
+
+          NULL::jsonb AS payload,
+
+          ucs.status AS sync_status,
+
+          r.result AS unity_data
+
+        FROM unity_course_sync_logs ucs
+
+        CROSS JOIN LATERAL jsonb_array_elements(
+          COALESCE(
+            ucs.raw_response->'results',
+            '[]'::jsonb
+          )
+        ) AS r(result)
+
+        WHERE NULLIF(
+          r.result->'progress'->>'last_activity_at',
+          ''
+        )::timestamptz >= NOW() - INTERVAL '15 days'
+
+          AND NULLIF(
+            r.result->'progress'->>'last_activity_at',
+            ''
+          )::timestamptz <= NOW()
+      ),
+
+      all_events AS (
+        SELECT * FROM activity_events
+
+        UNION ALL
+
+        SELECT * FROM unity_events
+      )
+
       SELECT
         u.user_id,
         u.full_name,
@@ -263,32 +384,42 @@ export const getUsersWithRecentActivity = async (req, res) => {
         u.rank,
         u.username,
         u.email,
+
         u.ship_id,
         s.ship_name AS ship,
+
         u.company_id,
         c.company_name AS company,
+
         u.role_id,
 
-        COUNT(al.activity_id)::int AS total_activities,
-        MAX(al.occurred_at) AS last_activity_at,
+        COUNT(e.event_id)::int AS total_activities,
+
+        MAX(e.event_timestamp) AS last_activity_at,
 
         JSON_AGG(
           JSON_BUILD_OBJECT(
-            'activity_id', al.activity_id,
-            'activity_type', al.activity_type,
-            'training_type', al.training_type,
-            'payload', al.payload_json,
-            'occurred_at', al.occurred_at
+            'id', e.event_id,
+            'source', e.source,
+            'activity_type', e.activity_type,
+            'training_type', e.training_type,
+            'title', e.title,
+            'timestamp', e.event_timestamp,
+            'progress_percentage', e.progress_percentage,
+            'is_completed', e.is_completed,
+            'started_at', e.started_at,
+            'completed_at', e.completed_at,
+            'payload', e.payload,
+            'unity_data', e.unity_data,
+            'sync_status', e.sync_status
           )
-          ORDER BY al.occurred_at DESC
+          ORDER BY e.event_timestamp DESC
         ) AS activities
 
-      FROM users u
+      FROM all_events e
 
-      INNER JOIN activity_logs al
-        ON al.user_id = u.user_id
-        AND al.occurred_at >= NOW() - INTERVAL '15 days'
-        AND al.occurred_at <= NOW()
+      INNER JOIN users u
+        ON u.user_id = e.user_id
 
       LEFT JOIN ships s
         ON s.ship_id = u.ship_id
@@ -297,7 +428,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
         ON c.company_id = u.company_id
 
       WHERE 1 = 1
-      ${companyFilter}
+        ${userScope}
 
       GROUP BY
         u.user_id,
@@ -312,7 +443,7 @@ export const getUsersWithRecentActivity = async (req, res) => {
         c.company_name,
         u.role_id
 
-      ORDER BY MAX(al.occurred_at) DESC;
+      ORDER BY MAX(e.event_timestamp) DESC;
     `;
 
     const result = await db.query(query, values);
@@ -324,7 +455,10 @@ export const getUsersWithRecentActivity = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Error fetching users with recent activity:", error);
+    console.error(
+      "Error fetching users with recent activity:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -332,3 +466,4 @@ export const getUsersWithRecentActivity = async (req, res) => {
     });
   }
 };
+

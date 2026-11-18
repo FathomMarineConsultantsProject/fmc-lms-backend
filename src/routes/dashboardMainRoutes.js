@@ -35,7 +35,7 @@ router.get(
 );
 
 router.get(
-  "/dashboard/users/recent-activity",
+  "/users/recent-activity",
   requireAuth,
   allowRoles(1, 2),
   getUsersWithRecentActivity
