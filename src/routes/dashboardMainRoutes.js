@@ -5,7 +5,8 @@ import { allowRoles } from "../middleware/rbac.js";
 import {
   getRecentUsers,
   getAllUsers,
-  getNewUsersLast7Days
+  getNewUsersLast7Days,
+  getUsersWithRecentActivity
 } from "../controller/dashboardMainController.js";
 
 const router = express.Router();
@@ -31,5 +32,12 @@ router.get(
   requireAuth,
   allowRoles(1, 2),
   getNewUsersLast7Days
+);
+
+router.get(
+  "/dashboard/users/recent-activity",
+  requireAuth,
+  allowRoles(1, 2),
+  getUsersWithRecentActivity
 );
 export default router;

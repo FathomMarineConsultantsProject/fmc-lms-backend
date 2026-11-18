@@ -217,3 +217,118 @@ export const getNewUsersLast7Days = async (req, res) => {
     });
   }
 };
+
+
+// GET /api/dashboard/users/recent-activity
+// Returns users who have activity logs in the last 15 days.
+// Superadmin: all companies
+// Admin: own company only
+
+export const getUsersWithRecentActivity = async (req, res) => {
+  try {
+    const roleId = Number(req.user.role_id);
+    const companyId = req.user.company_id;
+
+    // Allow only Superadmin and Admin
+    if (![1, 2].includes(roleId)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    // Admin must have a company assigned
+    if (roleId === 2 && !companyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Admin company not found",
+      });
+    }
+
+    const values = [];
+    let companyFilter = "";
+
+    // Admin can only see users belonging to their company
+    // Superadmin can see users from all companies
+    if (roleId === 2) {
+      values.push(companyId);
+      companyFilter = `AND u.company_id = $${values.length}`;
+    }
+
+    const query = `
+      SELECT
+        u.user_id,
+        u.full_name,
+        u.seafarer_id,
+        u.rank,
+        u.username,
+        u.email,
+        u.ship_id,
+        s.ship_name AS ship,
+        u.company_id,
+        c.company_name AS company,
+        u.role_id,
+
+        COUNT(al.activity_id)::int AS total_activities,
+        MAX(al.occurred_at) AS last_activity_at,
+
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'activity_id', al.activity_id,
+            'activity_type', al.activity_type,
+            'training_type', al.training_type,
+            'payload', al.payload_json,
+            'occurred_at', al.occurred_at
+          )
+          ORDER BY al.occurred_at DESC
+        ) AS activities
+
+      FROM users u
+
+      INNER JOIN activity_logs al
+        ON al.user_id = u.user_id
+        AND al.occurred_at >= NOW() - INTERVAL '15 days'
+        AND al.occurred_at <= NOW()
+
+      LEFT JOIN ships s
+        ON s.ship_id = u.ship_id
+
+      LEFT JOIN company c
+        ON c.company_id = u.company_id
+
+      WHERE 1 = 1
+      ${companyFilter}
+
+      GROUP BY
+        u.user_id,
+        u.full_name,
+        u.seafarer_id,
+        u.rank,
+        u.username,
+        u.email,
+        u.ship_id,
+        s.ship_name,
+        u.company_id,
+        c.company_name,
+        u.role_id
+
+      ORDER BY MAX(al.occurred_at) DESC;
+    `;
+
+    const result = await db.query(query, values);
+
+    return res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      data: result.rows,
+    });
+
+  } catch (error) {
+    console.error("Error fetching users with recent activity:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch users with recent activity",
+    });
+  }
+};
