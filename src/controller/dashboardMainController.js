@@ -230,53 +230,40 @@ export const getUsersWithRecentActivity = async (req, res) => {
     const roleId = Number(req.user?.role_id);
     const companyId = req.user?.company_id;
 
-    // Only Superadmin and Company Admin can access this API.
+    // Only Superadmin (1) and Admin (2) are allowed.
     if (![1, 2].includes(roleId)) {
       return res.status(403).json({
         success: false,
-        message: "Access denied",
+        message: "You are not authorized to access this data.",
       });
     }
 
-    // Company Admin must have a company assigned.
+    // Admin must belong to a company.
     if (roleId === 2 && !companyId) {
-      return res.status(403).json({
+      return res.status(400).json({
         success: false,
-        message: "Admin company not found",
+        message: "Company information is missing for this admin.",
       });
     }
 
-    // Superadmin: all companies.
-    // Company Admin: own company only.
-    const values = [];
-    let userScope = "";
-
-    if (roleId === 2) {
-      values.push(companyId);
-      userScope = `AND u.company_id = $1`;
-    }
+    // Superadmin: no company restriction.
+    // Admin: only users belonging to their own company.
+    const companyFilter = roleId === 1 ? null : companyId;
 
     const query = `
       WITH activity_events AS (
         SELECT
           al.activity_id::text AS event_id,
           al.user_id,
-          'activity'::text AS source,
+          'activity_log'::text AS source,
           al.activity_type,
           al.training_type,
-          COALESCE(
-            al.training_type,
-            al.activity_type,
-            'Activity'
-          ) AS title,
           al.occurred_at AS event_timestamp,
-
+          al.payload_json AS payload,
           NULL::numeric AS progress_percentage,
           NULL::boolean AS is_completed,
           NULL::timestamptz AS started_at,
           NULL::timestamptz AS completed_at,
-
-          al.payload_json AS payload,
           NULL::text AS sync_status,
           NULL::jsonb AS unity_data
 
@@ -290,9 +277,9 @@ export const getUsersWithRecentActivity = async (req, res) => {
         SELECT
           CONCAT(
             'unity_',
-            ucs.id::text,
+            ucs.sync_id::text,
             '_',
-            COALESCE(r.result->>'index', '0')
+            r.result_index::text
           ) AS event_id,
 
           NULLIF(r.result->>'user_id', '')::integer AS user_id,
@@ -303,20 +290,16 @@ export const getUsersWithRecentActivity = async (req, res) => {
 
           r.result->>'unity_course_code' AS training_type,
 
-          COALESCE(
-            r.result->>'course_name',
-            r.result->>'unity_course_code',
-            'Unity Course Activity'
-          ) AS title,
-
           NULLIF(
             r.result->'progress'->>'last_activity_at',
             ''
           )::timestamptz AS event_timestamp,
 
+          NULL::jsonb AS payload,
+
           CASE
             WHEN r.result->'progress'->>'progress_percentage'
-              ~ '^-?[0-9]+(\\.[0-9]+)?$'
+              ~ '^-?[0-9]+(\\\\.[0-9]+)?$'
             THEN (
               r.result->'progress'->>'progress_percentage'
             )::numeric
@@ -343,8 +326,6 @@ export const getUsersWithRecentActivity = async (req, res) => {
             ''
           )::timestamptz AS completed_at,
 
-          NULL::jsonb AS payload,
-
           ucs.status AS sync_status,
 
           r.result AS unity_data
@@ -356,12 +337,17 @@ export const getUsersWithRecentActivity = async (req, res) => {
             ucs.raw_response->'results',
             '[]'::jsonb
           )
-        ) AS r(result)
+        ) WITH ORDINALITY AS r(result, result_index)
 
         WHERE NULLIF(
-          r.result->'progress'->>'last_activity_at',
+          r.result->>'user_id',
           ''
-        )::timestamptz >= NOW() - INTERVAL '15 days'
+        ) ~ '^[0-9]+$'
+
+          AND NULLIF(
+            r.result->'progress'->>'last_activity_at',
+            ''
+          )::timestamptz >= NOW() - INTERVAL '15 days'
 
           AND NULLIF(
             r.result->'progress'->>'last_activity_at',
@@ -375,82 +361,84 @@ export const getUsersWithRecentActivity = async (req, res) => {
         UNION ALL
 
         SELECT * FROM unity_events
+      ),
+
+      user_activities AS (
+        SELECT
+          u.user_id,
+          u.email,
+          u.full_name,
+          u.username,
+          u.seafarer_id,
+          u.rank,
+          u.company_id,
+          u.ship_id,
+
+          c.company_name,
+          s.ship_name,
+
+          COUNT(e.event_id)::integer AS total_activities,
+
+          MAX(e.event_timestamp) AS last_activity_at,
+
+          JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'event_id', e.event_id,
+              'source', e.source,
+              'activity_type', e.activity_type,
+              'training_type', e.training_type,
+              'event_timestamp', e.event_timestamp,
+              'payload', e.payload,
+              'progress_percentage', e.progress_percentage,
+              'is_completed', e.is_completed,
+              'started_at', e.started_at,
+              'completed_at', e.completed_at,
+              'sync_status', e.sync_status,
+              'unity_data', e.unity_data
+            )
+            ORDER BY e.event_timestamp DESC
+          ) AS activities
+
+        FROM users u
+
+        INNER JOIN all_events e
+          ON e.user_id = u.user_id
+
+        LEFT JOIN company c
+          ON c.company_id = u.company_id
+
+        LEFT JOIN ships s
+          ON s.ship_id = u.ship_id
+
+        WHERE (
+          $1::integer IS NULL
+          OR u.company_id = $1
+        )
+
+        GROUP BY
+          u.user_id,
+          u.email,
+          u.full_name,
+          u.username,
+          u.seafarer_id,
+          u.rank,
+          u.company_id,
+          u.ship_id,
+          c.company_name,
+          s.ship_name
       )
 
-      SELECT
-        u.user_id,
-        u.full_name,
-        u.seafarer_id,
-        u.rank,
-        u.username,
-        u.email,
-
-        u.ship_id,
-        s.ship_name AS ship,
-
-        u.company_id,
-        c.company_name AS company,
-
-        u.role_id,
-
-        COUNT(e.event_id)::int AS total_activities,
-
-        MAX(e.event_timestamp) AS last_activity_at,
-
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'id', e.event_id,
-            'source', e.source,
-            'activity_type', e.activity_type,
-            'training_type', e.training_type,
-            'title', e.title,
-            'timestamp', e.event_timestamp,
-            'progress_percentage', e.progress_percentage,
-            'is_completed', e.is_completed,
-            'started_at', e.started_at,
-            'completed_at', e.completed_at,
-            'payload', e.payload,
-            'unity_data', e.unity_data,
-            'sync_status', e.sync_status
-          )
-          ORDER BY e.event_timestamp DESC
-        ) AS activities
-
-      FROM all_events e
-
-      INNER JOIN users u
-        ON u.user_id = e.user_id
-
-      LEFT JOIN ships s
-        ON s.ship_id = u.ship_id
-
-      LEFT JOIN company c
-        ON c.company_id = u.company_id
-
-      WHERE 1 = 1
-        ${userScope}
-
-      GROUP BY
-        u.user_id,
-        u.full_name,
-        u.seafarer_id,
-        u.rank,
-        u.username,
-        u.email,
-        u.ship_id,
-        s.ship_name,
-        u.company_id,
-        c.company_name,
-        u.role_id
-
-      ORDER BY MAX(e.event_timestamp) DESC;
+      SELECT *
+      FROM user_activities
+      ORDER BY last_activity_at DESC;
     `;
 
-    const result = await db.query(query, values);
+    const result = await pool.query(query, [companyFilter]);
 
     return res.status(200).json({
       success: true,
-      count: result.rows.length,
+      message: "Users with recent activity fetched successfully.",
+      total_users: result.rows.length,
       data: result.rows,
     });
 
@@ -462,7 +450,8 @@ export const getUsersWithRecentActivity = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch users with recent activity",
+      message: "Failed to fetch users with recent activity.",
+      error: error.message,
     });
   }
 };
