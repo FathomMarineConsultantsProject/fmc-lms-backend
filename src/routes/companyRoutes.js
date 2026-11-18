@@ -7,6 +7,8 @@ import {
   createCompany,
   updateCompany,
   deleteCompany,
+  getCompanyOptions,
+  editCompany
 } from "../controller/companyController.js";
 
 export const router = Router();
@@ -19,6 +21,8 @@ export const router = Router();
  */
 
 router.use(requireAuth);
+
+router.get("/options", requireAuth, getCompanyOptions);
 
 /**
  * @openapi
@@ -193,3 +197,6 @@ router.put("/:id", updateCompany);
  *         description: Company not found
  */
 router.delete("/:id", deleteCompany);
+
+router.patch("/edit/:id", editCompany);
+

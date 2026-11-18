@@ -4,6 +4,8 @@ import { createRateLimiter } from "../middleware/rateLimit.js";
 import {
   sendCredentialsSingle,
   sendCredentialsBulk,
+  sendCredentialsToMultipleEmails,
+  sendCredentialsIndividually,
   getSupportMailTemplate,
 } from "../controller/userMailController.js";
 
@@ -19,7 +21,19 @@ const mailLimiter = createRateLimiter({
 
 router.post("/send-credentials", requireAuth, mailLimiter, sendCredentialsSingle);
 router.post("/send-credentials/bulk", requireAuth, mailLimiter, sendCredentialsBulk);
+router.post(
+  "/send-credentials/multiple",
+  requireAuth,
+  mailLimiter,
+  sendCredentialsToMultipleEmails
+);
 
+router.post(
+  "/send-credentials/individual",
+  requireAuth,
+  mailLimiter,
+  sendCredentialsIndividually
+);
 // GET /mail/support-template
 router.get("/support-template", requireAuth, getSupportMailTemplate);
 

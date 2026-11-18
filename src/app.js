@@ -11,7 +11,8 @@ import { router as userRoutes } from "./routes/userRoutes.js";
 import { router as authRoutes } from "./routes/authRoutes.js";
 import { router as incidentRoutes } from "./routes/incidentRoutes.js";
 import { router as certificateRoutes } from "./routes/certificateRoutes.js";
-import { router as assessmentRoutes } from "./routes/assessmentRoutes.js";
+import {router as chatRoutes} from "./routes/chatRoutes.js"
+import assessmentRoutes from "./routes/assessmentRoutes.js";
 import { router as activityRoutes } from "./routes/activityRoutes.js";
 import mailTestRoutes from "./routes/mailTestRoutes.js";
 import userMailRoutes from "./routes/userMailRoutes.js";
@@ -19,7 +20,16 @@ import userExportRoutes from "./routes/userExportRoutes.js";
 import { router as deviceRoutes } from "./routes/deviceRoutes.js";
 import { router as meetingRoutes } from "./routes/meetingRoutes.js";
 import { router as integrationRoutes } from "./routes/integrationRoutes.js";
-
+import courseRoutes from "./routes/courseRoutes.js";
+import unityCourseRoutes from './routes/unityCourseRoutes.js';
+import competancyRoutes from './routes/competancyMatrixRoutes.js'
+import aiAssistant from './routes/aiRoutes.js'
+import dashboardRoutes from "./routes/dashboardRoutes.js";
+import {router as immersiveRoutes} from './routes/immersiveRoutes.js'
+import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import disclaimerRoutes from "./routes/disclaimerRoutes.js"
+import seamilesRoutes from "./routes/seamilesRoutes.js";
+import dashboardMainRoutes from "./routes/dashboardMainRoutes.js"; 
 const app = express();
 
 app.set("trust proxy", 1);
@@ -30,6 +40,9 @@ const allowedExactOrigins = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
 ]);
+if (process.env.FRONTEND_URL) {
+  allowedExactOrigins.add(new URL(process.env.FRONTEND_URL).origin);
+}
 
 // Allow Vercel preview deployments for THIS frontend project:
 // e.g. https://fmc-admin-dashboard-frontend-git-main-xxxx.vercel.app
@@ -47,8 +60,20 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Activity-Key" , "X-Device-Key"],
-  optionsSuccessStatus: 204,
+  allowedHeaders: [
+  "Content-Type",
+  "Authorization",
+
+  // Existing activity/device API headers
+  "X-Activity-Key",
+  "ACTIVITY_API_KEY",
+  "X-Device-Key",
+
+  // Unity course progress API headers
+  "X-Unity-Course-Key",
+  "UNITY_COURSE_API_KEY",
+  "Unity-Course-API-Key",
+],
 };
 
 app.use(cors(corsOptions));
@@ -70,6 +95,7 @@ app.get("/", (req, res) => {
 
 // main routes
 app.use("/auth", authRoutes);
+app.use("/api/dashboard", dashboardMainRoutes);
 app.use("/companies", companyRoutes);
 app.use("/ships", shipRoutes);
 app.use("/users", userRoutes);
@@ -78,16 +104,39 @@ app.use("/certificates", certificateRoutes);
 app.use("/assessments", assessmentRoutes);
 app.use("/activity", activityRoutes);
 app.use("/meetings", meetingRoutes);
-
+app.use("/api/courses", courseRoutes);
+app.use('/api/matrix',competancyRoutes);
+app.use("/api/immersive", immersiveRoutes);
+app.use("/api/training", dashboardRoutes);
 //meeting integrations
 app.use("/integrations", integrationRoutes);
 
+
+app.use("/disclaimer", disclaimerRoutes);
+//chat 
+app.use("/chat", chatRoutes);
+//chatbot
+app.use("/ai", aiAssistant);
 // actual credential mail APIs
 app.use("/api/users", userMailRoutes);
 app.use("/api/users", userExportRoutes);
 app.use("/device", deviceRoutes);
 // testing
 app.use("/api/mail", mailTestRoutes);
+app.use("/api/seamiles", seamilesRoutes);
+app.use("/api/subscriptions", subscriptionRoutes);
+/**
+ * Unity course progress APIs
+ *
+ * POST /unity-courses/progress/track
+ * - Unity app sends course progress here.
+ * - Protected by UNITY_COURSE_API_KEY.
+ *
+ * GET /unity-courses/progress
+ * - Dashboard/admin reads stored Unity course progress.
+ * - Protected by normal login token.
+ */
+app.use('/unity-courses', unityCourseRoutes);
 
 // ✅ CORS error handler MUST be after cors()
 app.use((err, req, res, next) => {
@@ -98,7 +147,7 @@ app.use((err, req, res, next) => {
 });
 
 export default app; // vercel important
-
+// const PORT = process.env.PORT || 4000;
 // app.listen(PORT, () => {
 //   console.log(`FMC backend listening on http://localhost:${PORT}`);
 // });

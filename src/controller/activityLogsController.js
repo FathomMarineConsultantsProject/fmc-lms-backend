@@ -216,9 +216,11 @@ export const getRecentActivityStatus = async (req, res) => {
   try {
     const { role_id, company_id, ship_id, user_id } = req.user;
 
-    const DAYS = 31;
-    const minutes = DAYS * 24 * 60;
-    const sinceDate = new Date(Date.now() - minutes * 60 * 1000);
+    const MONTHS = 9;
+    const sinceDate = new Date();
+    sinceDate.setMonth(sinceDate.getMonth() - MONTHS);
+
+    const minutes = Math.floor((Date.now() - sinceDate.getTime()) / (60 * 1000));
 
     let sql = `
       SELECT MAX(occurred_at) AS last_occurred_at
@@ -266,6 +268,7 @@ export const getRecentActivityStatus = async (req, res) => {
 
     return res.json({
       hasRecent: !!lastOccurredAt,
+      months: MONTHS,
       minutes,
       since: sinceDate.toISOString(),
       lastOccurredAt: lastOccurredAt ? new Date(lastOccurredAt).toISOString() : null,

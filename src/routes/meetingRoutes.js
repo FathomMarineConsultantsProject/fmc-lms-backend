@@ -8,6 +8,7 @@ import {
   updateMeeting,
   deleteMeeting,
   sendMeetingEmails,
+  getMeetingsByUserId,
 } from "../controller/meetingController.js";
 
 export const router = Router();
@@ -29,6 +30,7 @@ router.post("/", requireAuth, allowRoles(...CREATE_ROLES), createMeeting);
  */
 router.post("/query", requireAuth, allowRoles(...READ_ROLES), queryMeetings);
 
+router.get("/user/:user_id", requireAuth, allowRoles(...READ_ROLES), getMeetingsByUserId);
 /**
  * Get by id
  */

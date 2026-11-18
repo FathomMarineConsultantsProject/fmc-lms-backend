@@ -14,6 +14,9 @@ import {
   getUsersByShipId,
   syncUserStatusByDates,
   searchUsers,
+  bulkUpdateUserShip,
+  bulkUpdateUserDates,
+  bulkUpdateUserEmails,
 } from "../controller/usersController.js";
 
 export const router = Router();
@@ -26,7 +29,7 @@ export const router = Router();
  */
 
 router.get("/sync-status", syncUserStatusByDates);
-router.post("/sync-status", syncUserStatusByDates); // optional for Postman manual trigger
+router.post("/sync-status", requireAuth, allowRoles(1), syncUserStatusByDates); // manual superadmin trigger
 
 router.use(requireAuth);
 
@@ -152,8 +155,15 @@ router.post("/import", allowRoles(1, 2, 3), importUsersFromExcel);
 
 router.patch("/bulk-status", allowRoles(1, 2, 3), bulkUpdateUserStatus);
 
+router.patch("/bulk-ship",requireAuth, bulkUpdateUserShip);
+router.patch("/bulk-embarkation-dates",requireAuth, bulkUpdateUserDates);
 router.get("/users/:id/ship-history", requireAuth, getUserShipHistory);
 
 router.get("/users/by-ship/:ship_id", requireAuth, getUsersByShipId);
 
 router.post("/users/search", requireAuth, allowRoles(1,2,3), searchUsers);
+router.patch(
+  "/users/bulk-email",
+  requireAuth,
+  bulkUpdateUserEmails
+);

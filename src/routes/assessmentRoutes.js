@@ -1,117 +1,130 @@
-// src/routes/assessmentRoutes.js
-import { Router } from "express";
+import express from "express";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { allowRoles } from "../middleware/rbac.js";
+
 import {
-  getAllAssessments,
-  getAssessmentById,
   createAssessment,
+  getAssessments,
+  getAssessmentById,
   updateAssessment,
   deleteAssessment,
+  startAssessment,
+  submitAssessment,
+  getAttemptResult,
+  getMyResults,
+  getAssessmentAnalytics,
+  updateAssessmentQuestions,
+  updateQuestionOptions,
+  deleteQuestion,
+  deleteOption,
+  // uploadAssessmentExcel,
+  createAssessmentFromExcel,
+  getUserResultsByRole,
+  getAnalyticsByRole,
+  getAssessmentQuestions,
+  assignAssessmentBulk,
+  getAssignedAssessments,
+  startAssessmentAttempt,
+  getAssessmentAttemptQuestions,
+  checkAssessmentAttemptAnswer,
+  submitAssessmentAttempt,
+  getAssessmentAttemptResult,
+  createCourseAssessment,
 } from "../controller/assessmentsController.js";
+import { uploadExcel } from "../middleware/uploadExcel.js";
 
-export const router = Router();
-
-/**
- * @openapi
- * tags:
- *   - name: Assessments
- *     description: Assessment management
- */
+const router = express.Router();
 
 router.use(requireAuth);
 
-/**
- * @openapi
- * /assessments:
- *   get:
- *     summary: Get all assessments
- *     tags: [Assessments]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200: { description: OK }
- */
-router.get("/", allowRoles(1, 2, 3, 4), getAllAssessments);
+router.get("/results/me", getMyResults);
+router.get("/attempts/:attemptId/result", getAttemptResult);
 
-/**
- * @openapi
- * /assessments/{id}:
- *   get:
- *     summary: Get assessment by ID
- *     tags: [Assessments]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200: { description: OK }
- *       404: { description: Not found }
- */
-router.get("/:id", allowRoles(1, 2, 3, 4), getAssessmentById);
-
-/**
- * @openapi
- * /assessments:
- *   post:
- *     summary: Create assessment
- *     tags: [Assessments]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             additionalProperties: true
- *     responses:
- *       201: { description: Created }
- */
 router.post("/", allowRoles(1, 2, 3), createAssessment);
 
-/**
- * @openapi
- * /assessments/{id}:
- *   put:
- *     summary: Update assessment
- *     tags: [Assessments]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             additionalProperties: true
- *     responses:
- *       200: { description: Updated }
- */
-router.put("/:id", allowRoles(1, 2, 3), updateAssessment);
+// MAIN NEW API (IMPORTANT)
+router.post(
+  "/import-excel",
+  allowRoles(1, 2, 3),
+  uploadExcel.single("file"),
+  createAssessmentFromExcel
+);
 
-/**
- * @openapi
- * /assessments/{id}:
- *   delete:
- *     summary: Delete assessment
- *     tags: [Assessments]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200: { description: Deleted }
- */
-router.delete("/:id", allowRoles(1, 2, 3), deleteAssessment);
+// // ---------- OPTIONAL (existing assessment upload) ----------
+// router.post(
+//   "/:assessmentId/upload-excel",
+//   allowRoles(1, 2, 3),
+//   uploadExcel.single("file"),
+//   uploadAssessmentExcel
+// );
+
+router.get("/", getAssessments);
+router.get("/assigned", getAssignedAssessments);
+router.post("/:assessmentId/start", startAssessment);
+router.post("/:assessmentId/submit", submitAssessment);
+router.get("/:assessmentId/analytics", allowRoles(1, 2, 3), getAssessmentAnalytics);
+
+router.get(
+  "/results/users",
+  allowRoles(1, 2, 3, 4),
+  getUserResultsByRole
+);
+
+router.get(
+  "/analytics/users",
+  allowRoles(1, 2, 3, 4),
+  getAnalyticsByRole
+);
+
+router.get(
+  "/:assessmentId/questions",
+  getAssessmentQuestions
+); 
+
+router.get("/:assessmentId", getAssessmentById);
+router.put("/:assessmentId", allowRoles(1, 2, 3), updateAssessment);
+router.put("/:assessmentId/questions", allowRoles(1, 2, 3), updateAssessmentQuestions);
+router.put("/questions/:questionId/options", allowRoles(1, 2, 3), updateQuestionOptions);
+router.post("/:assessmentId/assign-bulk", assignAssessmentBulk);
+router.delete("/:assessmentId", allowRoles(1, 2, 3), deleteAssessment);
+router.delete("/questions/:questionId", allowRoles(1, 2, 3), deleteQuestion);
+router.delete("/options/:optionId", allowRoles(1, 2, 3), deleteOption);
+
+
+// Start new attempt
+router.post(
+  "/:assessmentId/attempts/start",
+  startAssessmentAttempt
+);
+
+// Get questions for this specific attempt
+router.get(
+  "/:assessmentId/attempts/:attemptId/questions",
+  getAssessmentAttemptQuestions
+);
+
+// Check and save one answer
+router.post(
+  "/:assessmentId/attempts/:attemptId/answer",
+  checkAssessmentAttemptAnswer
+);
+
+// Submit new attempt
+router.post(
+  "/:assessmentId/attempts/:attemptId/submit",
+  submitAssessmentAttempt
+);
+
+
+// Different path so the existing result API remains untouched
+router.get(
+  "/attempt-results/:attemptId",
+  getAssessmentAttemptResult
+);
+
+router.post(
+  "/courses/:courseId/assessments",
+  createCourseAssessment
+);
+
+export default router;

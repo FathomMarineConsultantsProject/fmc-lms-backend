@@ -5,6 +5,7 @@ import multer from "multer";
 import xlsx from "xlsx";
 import { handleShipHistoryChange } from "../utils/shipHistory.js";
 import { encryptPassword, decryptPassword } from "../utils/cryptoPasswords.js";
+import { ids } from "googleapis/build/src/apis/ids/index.js";
 
 // ================= STATUS / PASSWORD HELPERS =================
 const normalizeStatus = (s) => (s ? String(s).trim().toLowerCase() : null);
@@ -20,7 +21,7 @@ const normalizeRank = (r) =>
     .replace(/\s+/g, " ");
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
-const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
+const getPagination = (req, defaults = { page: 1, limit: 500 }) => {
   const pageRaw = parseInt(String(req.query.page ?? defaults.page), 10);
   const limitRaw = parseInt(String(req.query.limit ?? defaults.limit), 10);
 
@@ -29,8 +30,8 @@ const getPagination = (req, defaults = { page: 1, limit: 50 }) => {
   // ✅ enforce min 50, max 100 always
   const limit = clamp(
     Number.isFinite(limitRaw) ? limitRaw : defaults.limit,
-    50,
-    100
+    10,
+    500
   );
 
   const offset = (page - 1) * limit;
@@ -381,7 +382,7 @@ export const getAllUsers = async (req, res) => {
     }
 
     // pagination (min 10 max 100)
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 50 });
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 500 });
 
     // filters
     const q = String(req.query.q ?? "").trim();
@@ -453,7 +454,7 @@ export const getAllUsers = async (req, res) => {
     }
 
     // Hide Superadmin (1) & Admin (2) from user listings
-    where.push(`u.role_id IN (3, 4)`);
+    where.push(`u.role_id IN (2,3, 4)`);
 
     // ---- search filters ----
     if (q) {
@@ -698,11 +699,11 @@ export const getUsersByShipId = async (req, res) => {
     const sort = String(req.query.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
     const order = String(req.query.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
 
-    const { page, limit, offset } = getPagination(req, { page: 1, limit: 100 });
+    const { page, limit, offset } = getPagination(req, { page: 1, limit: 500 });
 
     const where = [
       `u.ship_id = $1`,
-      `u.role_id IN (3, 4)` // hide role 1 & 2
+      `u.role_id IN (2,3, 4)` // hide role 1 & 2
     ];
     const params = [ship_id];
     let idx = 2;
@@ -761,6 +762,7 @@ export const getUsersByShipId = async (req, res) => {
          u.user_id,
          u.seafarer_id,
          u.full_name,
+         u.email, 
          u.rank,
          u.trip,
          u.embarkation_date,
@@ -826,7 +828,7 @@ export const getUsersByShipId = async (req, res) => {
 
 // POST /users
 export const createUser = async (req, res) => {
-  const role = Number(req.user.role_id);
+  const role = Number(req.user?.role_id);
 
   const {
     seafarer_id,
@@ -839,7 +841,10 @@ export const createUser = async (req, res) => {
     ship_id,
     company_id,
 
-    // NEW fields
+    // Email field
+    email,
+
+    // Additional fields
     sex,
     date_of_birth,
     place_of_birth,
@@ -856,12 +861,20 @@ export const createUser = async (req, res) => {
     seaman_book_issue_date,
     seaman_book_expiry_date,
 
-    role_id, // optionally allow create user role (careful)
+    role_id, // Optionally allow create-user role
   } = req.body;
 
   if (!seafarer_id || !full_name) {
-    return res.status(400).json({ error: "seafarer_id and full_name are required" });
+    return res.status(400).json({
+      error: "seafarer_id and full_name are required",
+    });
   }
+
+  // Normalize email: trim whitespace and store blank values as NULL
+  const normalizedEmail =
+    email != null && String(email).trim() !== ""
+      ? String(email).trim()
+      : null;
 
   const onboardNow = isOnboard(status);
 
@@ -871,6 +884,7 @@ export const createUser = async (req, res) => {
     let passwordHashToStore = null;
     let passwordEncToStore = null;
 
+    // Generate credentials only when onboard
     if (onboardNow) {
       generatedUsername = await createUniqueUsername(seafarer_id);
       generatedPassword = generatePassword(12);
@@ -880,64 +894,92 @@ export const createUser = async (req, res) => {
 
     const { rows } = await db.query(
       `INSERT INTO users
-       (seafarer_id, full_name, rank, trip,
-        embarkation_date, disembarkation_date, status,
-        username, password_hash, password_enc,
-        ship_id, company_id,
-        sex, date_of_birth, place_of_birth, nationality,
-        embarkation_port, disembarkation_port, end_of_contract, plus_months,
-        passport_number, passport_issue_place, passport_issue_date, passport_expiry_date,
-        seaman_book_number, seaman_book_issue_date, seaman_book_expiry_date,
-        role_id,
-        created_at, updated_at)
+        (
+          seafarer_id,
+          full_name,
+          rank,
+          trip,
+          embarkation_date,
+          disembarkation_date,
+          status,
+          username,
+          password_hash,
+          password_enc,
+          ship_id,
+          company_id,
+          sex,
+          date_of_birth,
+          place_of_birth,
+          nationality,
+          embarkation_port,
+          disembarkation_port,
+          end_of_contract,
+          plus_months,
+          passport_number,
+          passport_issue_place,
+          passport_issue_date,
+          passport_expiry_date,
+          seaman_book_number,
+          seaman_book_issue_date,
+          seaman_book_expiry_date,
+          role_id,
+          email,
+          created_at,
+          updated_at
+        )
        VALUES
-       ($1,$2,$3,$4,
-        $5,$6,$7,
-        $8,$9,$10,
-        $11,$12,
-        $13,$14,$15,$16,
-        $17,$18,$19,$20,
-        $21,$22,$23,$24,
-        $25,$26,$27,
-        $28,
-        NOW(), NOW())
+        (
+          $1, $2, $3, $4,
+          $5, $6, $7,
+          $8, $9, $10,
+          $11, $12,
+          $13, $14, $15, $16,
+          $17, $18, $19, $20,
+          $21, $22, $23, $24,
+          $25, $26, $27,
+          $28, $29,
+          NOW(), NOW()
+        )
        RETURNING *`,
       [
-        seafarer_id,
-        full_name,
-        rank ?? null,
-        trip ?? null,
-        embarkation_date ?? null,
-        disembarkation_date ?? null,
-        status ?? null,
+        seafarer_id,                 // $1
+        full_name,                    // $2
+        rank ?? null,                 // $3
+        trip ?? null,                 // $4
 
-        generatedUsername,
-        passwordHashToStore,
-        passwordEncToStore,
+        embarkation_date ?? null,     // $5
+        disembarkation_date ?? null,  // $6
+        status ?? null,               // $7
 
-        ship_id ?? null,
-        company_id ?? null,
+        generatedUsername,             // $8
+        passwordHashToStore,           // $9
+        passwordEncToStore,            // $10
 
-        sex ?? null,
-        date_of_birth ?? null,
-        place_of_birth ?? null,
-        nationality ?? null,
+        ship_id ?? null,              // $11
+        company_id ?? null,            // $12
 
-        embarkation_port ?? null,
-        disembarkation_port ?? null,
-        end_of_contract ?? null,
-        plus_months ?? null,
+        sex ?? null,                  // $13
+        date_of_birth ?? null,         // $14
+        place_of_birth ?? null,        // $15
+        nationality ?? null,           // $16
 
-        passport_number ?? null,
-        passport_issue_place ?? null,
-        passport_issue_date ?? null,
-        passport_expiry_date ?? null,
+        embarkation_port ?? null,      // $17
+        disembarkation_port ?? null,   // $18
+        end_of_contract ?? null,       // $19
+        plus_months ?? null,           // $20
 
-        seaman_book_number ?? null,
-        seaman_book_issue_date ?? null,
-        seaman_book_expiry_date ?? null,
+        passport_number ?? null,       // $21
+        passport_issue_place ?? null,  // $22
+        passport_issue_date ?? null,   // $23
+        passport_expiry_date ?? null,  // $24
 
-        role_id ?? 4,
+        seaman_book_number ?? null,    // $25
+        seaman_book_issue_date ?? null,// $26
+        seaman_book_expiry_date ?? null,// $27
+
+        role_id ?? 4,                 // $28
+        normalizedEmail,               // $29
+
       ]
     );
 
@@ -946,20 +988,29 @@ export const createUser = async (req, res) => {
     return res.status(201).json({
       user,
       credentials: onboardNow
-        ? { username: generatedUsername, password: generatedPassword }
+        ? {
+            username: generatedUsername,
+            password: generatedPassword,
+          }
         : null,
     });
   } catch (err) {
     console.error("Error creating user:", err);
+
     if (err.code === "23505") {
-      return res.status(409).json({ error: "Duplicate seafarer_id or username" });
+      return res.status(409).json({
+        error: "Duplicate seafarer_id or username",
+      });
     }
-    return res.status(500).json({ error: "Failed to create user" });
+
+    return res.status(500).json({
+      error: "Failed to create user",
+    });
   }
 };
 
 // PUT /users/:id
-// Generates creds ONLY if status becomes Onboard and user doesn't have creds yet.
+// Generate0s creds ONLY if status becomes Onboard and user doesn't have creds yet.
 export const updateUser = async (req, res) => {
   const role = Number(req.user.role_id);
   const id = parseInt(req.params.id, 10);
@@ -1107,59 +1158,62 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// POST /users/sync-status
-// Runs daily via Vercel Cron (or manually via Postman).
-// Security: either
-// 1) x-cron-secret header matches CRON_SECRET env, OR
-// 2) Authorization Bearer token of role_id=1 (superadmin)
+// Runs daily via Vercel Cron, or manually by an authenticated superadmin.
+
 export const syncUserStatusByDates = async (req, res) => {
   try {
-    // Allow either:
-    // 1) Vercel cron: /users/sync-status?secret=CRON_SECRET
-    // 2) Manual: Authorization Bearer token (superadmin)
-
     const expected = process.env.CRON_SECRET;
 
-    const secretFromQuery = req.query?.secret;
     const isCronAllowed =
-      expected && secretFromQuery && String(secretFromQuery) === String(expected);
+      Boolean(expected) &&
+      req.headers.authorization === `Bearer ${expected}`;
 
-    const isSuperAdmin = req.user && Number(req.user.role_id) === 1; // only if requireAuth ran
+    const isSuperAdmin =
+      req.user && Number(req.user.role_id) === 1;
 
     if (!isCronAllowed && !isSuperAdmin) {
-      return res.status(401).json({ error: "Unauthorized (cron secret or superadmin required)" });
+      return res.status(401).json({
+        error: "Unauthorized (cron or superadmin required)",
+      });
     }
 
-    // ----- Date-based sync rules -----
+    // Mark users as Offboard when disembarkation date is reached
     const offboardRes = await db.query(
       `UPDATE users
-SET
-  status = 'Offboard',
-  ship_id = NULL,
-  updated_at = NOW()
-WHERE
-  disembarkation_date IS NOT NULL
-  AND (embarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND disembarkation_date::date <= CURRENT_DATE
-  AND (status IS NULL OR lower(status) <> 'offboard')
-RETURNING user_id;
-`
+       SET
+         status = 'Offboard',
+         updated_at = NOW()
+       WHERE
+         disembarkation_date IS NOT NULL
+         AND (
+           embarkation_date IS NULL
+           OR disembarkation_date::date >= embarkation_date::date
+         )
+         AND disembarkation_date::date <= CURRENT_DATE
+         AND (status IS NULL OR lower(status) <> 'offboard')
+       RETURNING user_id`
     );
 
+    // Mark users as Onboard when embarkation date is reached
     const onboardRes = await db.query(
       `UPDATE users
-SET
-  status = 'Onboard',
-  updated_at = NOW()
-WHERE
-  ship_id IS NOT NULL
-  AND embarkation_date IS NOT NULL
-  AND (disembarkation_date IS NULL OR disembarkation_date::date >= embarkation_date::date)
-  AND embarkation_date::date <= CURRENT_DATE
-  AND (disembarkation_date IS NULL OR disembarkation_date::date > CURRENT_DATE)
-  AND (status IS NULL OR lower(status) <> 'onboard')
-RETURNING user_id;
-`
+       SET
+         status = 'Onboard',
+         updated_at = NOW()
+       WHERE
+         ship_id IS NOT NULL
+         AND embarkation_date IS NOT NULL
+         AND (
+           disembarkation_date IS NULL
+           OR disembarkation_date::date >= embarkation_date::date
+         )
+         AND embarkation_date::date <= CURRENT_DATE
+         AND (
+           disembarkation_date IS NULL
+           OR disembarkation_date::date > CURRENT_DATE
+         )
+         AND (status IS NULL OR lower(status) <> 'onboard')
+       RETURNING user_id`
     );
 
     return res.json({
@@ -1167,14 +1221,22 @@ RETURNING user_id;
       today: new Date().toISOString().slice(0, 10),
       offboarded_count: offboardRes.rowCount,
       onboarded_count: onboardRes.rowCount,
-      offboarded_user_ids: offboardRes.rows.map((r) => r.user_id),
-      onboarded_user_ids: onboardRes.rows.map((r) => r.user_id),
+      offboarded_user_ids: offboardRes.rows.map(
+        (row) => row.user_id
+      ),
+      onboarded_user_ids: onboardRes.rows.map(
+        (row) => row.user_id
+      ),
     });
-  } catch (err) {
-    console.error("syncUserStatusByDates error:", err);
-    return res.status(500).json({ error: "Failed to sync user status" });
+  } catch (error) {
+    console.error("syncUserStatusByDates error:", error);
+
+    return res.status(500).json({
+      error: "Failed to sync user status",
+    });
   }
 };
+
 // DELETE /users/:id
 export const deleteUser = async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -1336,265 +1398,268 @@ export const bulkUpdateUserStatus = async (req, res) => {
 };
 
 // POST /users/search
-export const searchUsers = async (req, res) => {
-  try {
-    const role = Number(req.user.role_id);
+// export const searchUsers = async (req, res) => {
+//   try {
+//     const role = Number(req.user.role_id);
 
-    // incoming filters from body
-    const body = req.body || {};
-    const q = String(body.q ?? "").trim();
-    const rank = String(body.rank ?? "").trim();
-    const status = String(body.status ?? "").trim();
-    const role_id_q = body.role_id != null ? Number(body.role_id) : null;
+//     // incoming filters from body
+//     const body = req.body || {};
+//     const q = String(body.q ?? "").trim();
+//     const rank = String(body.rank ?? "").trim();
+//     const status = String(body.status ?? "").trim();
+//     const role_id_q = body.role_id != null ? Number(body.role_id) : null;
 
-    // sorting
-    const sort = String(body.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
-    const order =
-      String(body.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+//     // sorting
+//     const sort = String(body.sort ?? "rank").trim().toLowerCase(); // rank | name | created_at
+//     const order =
+//       String(body.order ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
 
-    // pagination (min10 max100)
-    const pageRaw = parseInt(String(body.page ?? "1"), 10);
-    const limitRaw = parseInt(String(body.limit ?? "50"), 10);
-    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
-    const limit = Math.min(
-      100,
-      Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
-    );
-    const offset = (page - 1) * limit;
+//     // pagination (min10 max100)
+//     const pageRaw = parseInt(String(body.page ?? "1"), 10);
+//     const limitRaw = parseInt(String(body.limit ?? "500"), 10);
+//     const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+//     const limit = Math.min(
+//       500,
+//       Math.max(50, Number.isFinite(limitRaw) ? limitRaw : 50)
+//     );
+//     const offset = (page - 1) * limit;
 
-    // company/ship from body (may be ignored depending on role scope)
-    const requestedCompanyId =
-      body.company_id != null && String(body.company_id).trim() !== ""
-        ? String(body.company_id).trim()
-        : null;
+//     // company/ship from body (may be ignored depending on role scope)
+//     const requestedCompanyId =
+//       body.company_id != null && String(body.company_id).trim() !== ""
+//         ? String(body.company_id).trim()
+//         : null;
 
-    const requestedShipId =
-      body.ship_id != null && String(body.ship_id).trim() !== ""
-        ? Number.parseInt(String(body.ship_id), 10)
-        : null;
+//     const requestedShipId =
+//       body.ship_id != null && String(body.ship_id).trim() !== ""
+//         ? Number.parseInt(String(body.ship_id), 10)
+//         : null;
 
-    // VALIDATION (only validate when provided)
-    // company_id must be UUID (only meaningful for role 1, but validate anyway if sent)
-    if (requestedCompanyId && !isUuid(requestedCompanyId)) {
-      return res.status(400).json({ error: "company_id must be a valid UUID" });
-    }
+//     // VALIDATION (only validate when provided)
+//     // company_id must be UUID (only meaningful for role 1, but validate anyway if sent)
+//     if (requestedCompanyId && !isUuid(requestedCompanyId)) {
+//       return res.status(400).json({ error: "company_id must be a valid UUID" });
+//     }
 
-    // ship_id must be a valid integer when provided
-    if (body.ship_id != null && String(body.ship_id).trim() !== "") {
-      if (!Number.isInteger(requestedShipId) || requestedShipId <= 0) {
-        return res.status(400).json({ error: "ship_id must be a positive integer" });
-      }
-    }
+//     // ship_id must be a valid integer when provided
+//     if (body.ship_id != null && String(body.ship_id).trim() !== "") {
+//       if (!Number.isInteger(requestedShipId) || requestedShipId <= 0) {
+//         return res.status(400).json({ error: "ship_id must be a positive integer" });
+//       }
+//     }
 
-    // role_id filter must be valid integer if provided
-    if (body.role_id != null && !Number.isFinite(role_id_q)) {
-      return res.status(400).json({ error: "role_id must be a number" });
-    }
+//     // role_id filter must be valid integer if provided
+//     if (body.role_id != null && !Number.isFinite(role_id_q)) {
+//       return res.status(400).json({ error: "role_id must be a number" });
+//     }
 
-    // status validation (optional but nice)
-    if (status) {
-      const s = String(status).trim().toLowerCase();
-      if (s !== "onboard" && s !== "offboard") {
-        return res
-          .status(400)
-          .json({ error: 'status must be either "Onboard" or "Offboard"' });
-      }
-    }
+//     // status validation (optional but nice)
+//     if (status) {
+//       const s = String(status).trim().toLowerCase();
+//       if (s !== "onboard" && s !== "offboard") {
+//         return res
+//           .status(400)
+//           .json({ error: 'status must be either "Onboard" or "Offboard"' });
+//       }
+//     }
 
-    // ---------------- WHERE builder ----------------
-    const where = [];
-    const params = [];
-    let p = 1;
+//     // ---------------- WHERE builder ----------------
+//     const where = [];
+//     const params = [];
+//     let p = 1;
 
-    // role scope enforcement
-    if (role === 1) {
-      // superadmin: optional company filter
-      if (requestedCompanyId) {
-        where.push(`u.company_id = $${p++}`);
-        params.push(requestedCompanyId);
-      }
-      // optional ship filter
-      if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
-        params.push(requestedShipId);
-      }
-    } else if (role === 2) {
-      // admin: forced company_id from token
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
+//     // role scope enforcement
+//     if (role === 1) {
+//       // superadmin: optional company filter
+//       if (requestedCompanyId) {
+//         where.push(`u.company_id = $${p++}`);
+//         params.push(requestedCompanyId);
+//       }
+//       // optional ship filter
+//       if (Number.isFinite(requestedShipId)) {
+//         where.push(`u.ship_id = $${p++}`);
+//         params.push(requestedShipId);
+//       }
+//     } else if (role === 2) {
+//       // admin: forced company_id from token
+//       where.push(`u.company_id = $${p++}`);
+//       params.push(req.user.company_id);
 
-      // optional ship filter (must still be inside company)
-      if (Number.isFinite(requestedShipId)) {
-        where.push(`u.ship_id = $${p++}`);
-        params.push(requestedShipId);
-      }
-    } else if (role === 3) {
-      // subadmin: forced company + ship
-      where.push(`u.company_id = $${p++}`);
-      params.push(req.user.company_id);
+//       // optional ship filter (must still be inside company)
+//       if (Number.isFinite(requestedShipId)) {
+//         where.push(`u.ship_id = $${p++}`);
+//         params.push(requestedShipId);
+//       }
+//     } else if (role === 3) {
+//       // subadmin: forced company + ship
+//       where.push(`u.company_id = $${p++}`);
+//       params.push(req.user.company_id);
 
-      where.push(`u.ship_id = $${p++}`);
-      params.push(req.user.ship_id);
-    } else {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    // Only return Subadmins & Crew
-    where.push(`u.role_id IN (3, 4)`);
+//       where.push(`u.ship_id = $${p++}`);
+//       params.push(req.user.ship_id);
+//     } else {
+//       return res.status(403).json({ error: "Forbidden" });
+//     }
+//     // Only return Subadmins & Crew
+//     where.push(`u.role_id IN (3, 4)`);
 
-    // q search
-    if (q) {
-      where.push(`(
-        u.full_name ILIKE $${p}
-        OR u.seafarer_id ILIKE $${p}
-        OR u.username ILIKE $${p}
-      )`);
-      params.push(`%${q}%`);
-      p++;
-    }
+//     // q search
+//     if (q) {
+//       where.push(`(
+//         u.full_name ILIKE $${p}
+//         OR u.seafarer_id ILIKE $${p}
+//         OR u.username ILIKE $${p}
+//       )`);
+//       params.push(`%${q}%`);
+//       p++;
+//     }
 
-    // rank filter
-    if (rank) {
-      where.push(`u.rank ILIKE $${p++}`);
-      params.push(`%${rank}%`);
-    }
+//     // rank filter
+//     if (rank) {
+//       where.push(`u.rank ILIKE $${p++}`);
+//       params.push(`%${rank}%`);
+//     }
 
-    // status filter
-    if (status) {
-      where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${p++})`);
-      params.push(status);
-    }
+//     // status filter
+//     if (status) {
+//       where.push(`LOWER(COALESCE(u.status,'')) = LOWER($${p++})`);
+//       params.push(status);
+//     }
 
-    // role_id filter
-    if (Number.isFinite(role_id_q)) {
-      where.push(`u.role_id = $${p++}`);
-      params.push(role_id_q);
-    }
+//     // role_id filter
+//     if (Number.isFinite(role_id_q)) {
+//       where.push(`u.role_id = $${p++}`);
+//       params.push(role_id_q);
+//     }
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+//     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    // whitelist sort column (avoid SQL injection)
-    const sortColumn =
-      sort === "name" ? "u.full_name" :
-        sort === "created_at" ? "u.created_at" :
-          "u.user_id";
+//     // whitelist sort column (avoid SQL injection)
+//     const sortColumn =
+//       sort === "name" ? "u.full_name" :
+//         sort === "created_at" ? "u.created_at" :
+//           "u.user_id";
 
-    // total count
-    const totalRes = await db.query(
-      `SELECT COUNT(*)::int AS total FROM users u ${whereSql}`,
-      params
-    );
-    const total = totalRes.rows[0]?.total ?? 0;
+//     // total count
+//     const totalRes = await db.query(
+//       `SELECT COUNT(*)::int AS total FROM users u ${whereSql}`,
+//       params
+//     );
+//     const total = totalRes.rows[0]?.total ?? 0;
 
-    // data query
-    const dataParams = [...params, limit, offset];
-    const { rows } = await db.query(
-      `SELECT
-         u.user_id,
-         u.seafarer_id,
-         u.full_name,
-         u.rank,
-         u.trip,
-         u.embarkation_date,
-         u.disembarkation_date,
-         u.status,
-         u.username,
-         u.ship_id,
-         u.company_id,
-         u.created_at,
-         u.updated_at,
-         u.role_id,
-         u.sex,
-         u.date_of_birth,
-         u.place_of_birth,
-         u.nationality,
-         u.embarkation_port,
-         u.disembarkation_port
-       FROM users u
-       ${whereSql}
-       ORDER BY ${sortColumn} ${order}
-       LIMIT $${p} OFFSET $${p + 1}`,
-      dataParams
-    );
+//     // data query
+//     const dataParams = [...params, limit, offset];
+//     const { rows } = await db.query(
+//       `SELECT
+//          u.user_id,
+//          u.seafarer_id,
+//          u.full_name,
+//          u.rank,
+//          u.trip,
+//          u.embarkation_date,
+//          u.disembarkation_date,
+//          u.status,
+//          u.username,
+//          u.ship_id,
+//          u.company_id,
+//          u.created_at,
+//          u.updated_at,
+//          u.role_id,
+//          u.sex,
+//          u.date_of_birth,
+//          u.place_of_birth,
+//          u.nationality,
+//          u.embarkation_port,
+//          u.disembarkation_port
+//        FROM users u
+//        ${whereSql}
+//        ORDER BY ${sortColumn} ${order}
+//        LIMIT $${p} OFFSET $${p + 1}`,
+//       dataParams
+//     );
 
-    // ===================== RECENT ACTIVITY (single query for this page) =====================
-    // Business rule: green stays for 31 days (not configurable from frontend)
-    const DAYS = 31;
-    const recent_activity_minutes = DAYS * 24 * 60; // 44,640 minutes
+//     // ===================== RECENT ACTIVITY (single query for this page) =====================
+//     // Business rule: green stays for 9 months
+//     const MONTHS = 9;
 
-    let activityMap = new Map(); // user_id -> last_activity_at ISO
+//     const sinceDate = new Date();
+//     sinceDate.setMonth(sinceDate.getMonth() - MONTHS);
 
-    if (recent_activity_minutes && rows.length) {
-      const sinceDate = new Date(Date.now() - recent_activity_minutes * 60 * 1000);
+//     const recent_activity_minutes = Math.floor(
+//       (Date.now() - sinceDate.getTime()) / (60 * 1000)
+//     );
 
-      // Only for user_ids returned in this page
-      const ids = rows.map((u) => Number(u.user_id)).filter((n) => Number.isInteger(n));
+//     let activityMap = new Map(); // user_id -> last_activity_at ISO
 
-      if (ids.length) {
-        // IMPORTANT: scope activity logs SAME AS user scope.
-        // Since your rows already follow scope, we just filter by these ids.
-        const actRes = await db.query(
-          `
-      SELECT user_id, MAX(occurred_at) AS last_activity_at
-      FROM activity_logs
-      WHERE occurred_at >= $1
-        AND user_id = ANY($2::int[])
-      GROUP BY user_id
-      `,
-          [sinceDate, ids]
-        );
+//     if (rows.length) {
+//       const ids = rows.map((u) => Number(u.user_id)).filter((n) => Number.isInteger(n));
 
-        for (const r of actRes.rows) {
-          activityMap.set(Number(r.user_id), r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null);
-        }
-      }
-    }
+//       if (ids.length) {
+//         const actRes = await db.query(
+//           `
+//       SELECT user_id, MAX(occurred_at) AS last_activity_at
+//       FROM activity_logs
+//       WHERE occurred_at >= $1
+//         AND user_id = ANY($2::int[])
+//       GROUP BY user_id
+//       `,
+//           [sinceDate, ids]
+//         );
 
+//         for (const r of actRes.rows) {
+//           activityMap.set(
+//             Number(r.user_id),
+//             r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null
+//           );
+//         }
+//       }
+//     }
 
-    // custom rank ordering when sort=rank
-    if (sort === "rank") {
-      rows.sort((a, b) => {
-        const ra = rankSortValue(a.rank);
-        const rb = rankSortValue(b.rank);
-        if (ra !== rb) return ra - rb;
-        return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
-          sensitivity: "base",
-        });
-      });
-    }
+//     // custom rank ordering when sort=rank
+//     if (sort === "rank") {
+//       rows.sort((a, b) => {
+//         const ra = rankSortValue(a.rank);
+//         const rb = rankSortValue(b.rank);
+//         if (ra !== rb) return ra - rb;
+//         return String(a.full_name || "").localeCompare(String(b.full_name || ""), undefined, {
+//           sensitivity: "base",
+//         });
+//       });
+//     }
 
-    return res.json({
-      page,
-      limit,
-      total,
-      count: rows.length,
-      recent_activity_minutes: recent_activity_minutes,
-      users: rows.map((u) => {
-        const last = activityMap.get(Number(u.user_id)) || null;
-        return {
-          ...u,
-          has_recent_activity: !!last,
-          last_activity_at: last,
-        };
-      }),
-      applied_filters: {
-        company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
-        ship_id:
-          role === 3 ? Number(req.user.ship_id) :
-            Number.isFinite(requestedShipId) ? requestedShipId :
-              null,
-        q: q || null,
-        rank: rank || null,
-        status: status || null,
-        role_id: Number.isFinite(role_id_q) ? role_id_q : null,
-        sort,
-        order: order.toLowerCase(),
-      },
-    });
-  } catch (err) {
-    console.error("searchUsers error:", err);
-    return res.status(500).json({ error: "Failed to search users" });
-  }
-};
+//     return res.json({
+//       page,
+//       limit,
+//       total,
+//       count: rows.length,
+//       recent_activity_minutes: recent_activity_minutes,
+//       users: rows.map((u) => {
+//         const last = activityMap.get(Number(u.user_id)) || null;
+//         return {
+//           ...u,
+//           has_recent_activity: !!last,
+//           last_activity_at: last,
+//         };
+//       }),
+//       applied_filters: {
+//         company_id: role === 1 ? (requestedCompanyId || null) : String(req.user.company_id),
+//         ship_id:
+//           role === 3 ? Number(req.user.ship_id) :
+//             Number.isFinite(requestedShipId) ? requestedShipId :
+//               null,
+//         q: q || null,
+//         rank: rank || null,
+//         status: status || null,
+//         role_id: Number.isFinite(role_id_q) ? role_id_q : null,
+//         sort,
+//         order: order.toLowerCase(),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("searchUsers error:", err);
+//     return res.status(500).json({ error: "Failed to search users" });
+//   }
+// };
 
 // ================== EXCEL IMPORT (multi-template + multi-sheet) ==================
 const upload = multer({ storage: multer.memoryStorage() });
@@ -1834,38 +1899,65 @@ const pickSheetWithHeader = (wb, requestedSheetName) => {
 // POST /users/import (roles 1/2/3)
 export const importUsersFromExcel = [
   upload.single("file"),
+
   async (req, res) => {
     const role = Number(req.user?.role_id);
-    if (![1, 2, 3].includes(role)) return res.status(403).json({ error: "Forbidden" });
+
+    if (![1, 2, 3].includes(role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     if (!req.file) {
-      return res.status(400).json({ error: 'Excel file is required (field name: "file")' });
+      return res.status(400).json({
+        error: 'Excel file is required (field name: "file")',
+      });
     }
 
     try {
       // 1) Validate and lock import scope
       const scope = await resolveImportScope(req);
-      if (scope.error) return res.status(400).json({ error: scope.error });
+
+      if (scope.error) {
+        return res.status(400).json({ error: scope.error });
+      }
+
       const { company_id, ship_id } = scope;
 
       // 2) Parse workbook + find sheet/header
-      const wb = xlsx.read(req.file.buffer, { type: "buffer", cellDates: true });
+      const wb = xlsx.read(req.file.buffer, {
+        type: "buffer",
+        cellDates: true,
+      });
+
       const picked = pickSheetWithHeader(wb, req.body?.sheet_name);
-      if (picked.error) return res.status(400).json({ error: picked.error });
+
+      if (picked.error) {
+        return res.status(400).json({ error: picked.error });
+      }
 
       const { sheetName, matrix, headerRowIdx } = picked;
 
       // 3) Convert rows using our safe matrix conversion
       const { rows } = matrixToObjects(matrix, headerRowIdx);
-      if (!rows.length) return res.status(400).json({ error: "Excel sheet is empty" });
 
-      // ✅ PRELOAD existing users once for the whole sheet (company scope)
+      if (!rows.length) {
+        return res.status(400).json({
+          error: "Excel sheet is empty",
+        });
+      }
+
+      // Preload existing users once for the whole sheet (company scope)
       const allSids = Array.from(
         new Set(
           rows
             .map((r) => {
-              const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
-              return sidCandidate != null && String(sidCandidate).trim() !== ""
+              const sidCandidate = getByAliases(
+                r,
+                FIELD_ALIASES.seafarer_id
+              );
+
+              return sidCandidate != null &&
+                String(sidCandidate).trim() !== ""
                 ? String(sidCandidate).replace(/\s+/g, " ").trim()
                 : null;
             })
@@ -1876,19 +1968,20 @@ export const importUsersFromExcel = [
       const existingAllRes =
         allSids.length > 0
           ? await db.query(
-            `SELECT user_id, seafarer_id, ship_id
-         FROM users
-         WHERE company_id = $1 AND seafarer_id = ANY($2::text[])`,
-            [company_id, allSids]
-          )
+              `SELECT user_id, seafarer_id, ship_id
+               FROM users
+               WHERE company_id = $1
+                 AND seafarer_id = ANY($2::text[])`,
+              [company_id, allSids]
+            )
           : { rows: [] };
 
       // Map seafarer_id -> existing user row
       const existingMap = new Map();
+
       for (const u of existingAllRes.rows) {
         existingMap.set(String(u.seafarer_id), u);
       }
-
 
       const results = {
         import_scope: { company_id, ship_id },
@@ -1901,18 +1994,25 @@ export const importUsersFromExcel = [
         errors: [],
         created_credentials: [],
       };
+
       await db.query("BEGIN");
-      const CHUNK_SIZE = 50; // or 25 if big Excel
+
+      const CHUNK_SIZE = 50;
+
       for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
         const chunk = rows.slice(start, start + CHUNK_SIZE);
 
         for (let i = 0; i < chunk.length; i++) {
           const r = chunk[i];
-          const rowNum = headerRowIdx + 2 + (start + i);
+          const rowNum = headerRowIdx + 2 + start + i;
 
-          // Required (smart)
+          // Required fields
           const full_name = getFullNameSmart(r);
-          const sidCandidate = getByAliases(r, FIELD_ALIASES.seafarer_id);
+
+          const sidCandidate = getByAliases(
+            r,
+            FIELD_ALIASES.seafarer_id
+          );
 
           const seafarer_id =
             sidCandidate != null && String(sidCandidate).trim() !== ""
@@ -1921,72 +2021,159 @@ export const importUsersFromExcel = [
 
           if (!seafarer_id || !full_name) {
             results.skipped++;
+
             results.errors.push({
               row: rowNum,
               error:
                 "Missing required identity (ID/Crew IPN/Number of identity document/etc) OR name (Name/Seafarer/Family+Given).",
             });
+
             continue;
           }
 
           // Optional fields
           const rank = getByAliases(r, FIELD_ALIASES.rank);
           const sex = getByAliases(r, FIELD_ALIASES.sex);
-          const nationality = getByAliases(r, FIELD_ALIASES.nationality);
-          const place_of_birth = getByAliases(r, FIELD_ALIASES.place_of_birth);
+          const nationality = getByAliases(
+            r,
+            FIELD_ALIASES.nationality
+          );
 
-          const date_of_birth = parseDateOrNull(getByAliases(r, FIELD_ALIASES.date_of_birth));
+          const place_of_birth = getByAliases(
+            r,
+            FIELD_ALIASES.place_of_birth
+          );
 
-          const embarkation_port = getByAliases(r, FIELD_ALIASES.embarkation_port);
-          const embarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.embarkation_date));
+          // EMAIL: read email from the Excel row
+          // The fallback aliases work even if email is not yet
+          // explicitly configured inside FIELD_ALIASES.
+          const emailCandidate = getByAliases(
+            r,
+            FIELD_ALIASES.email || [
+              "email",
+              "e-mail",
+              "email address",
+              "mail",
+            ]
+          );
 
-          const disembarkation_port = getByAliases(r, FIELD_ALIASES.disembarkation_port);
-          const disembarkation_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.disembarkation_date));
+          const email =
+            emailCandidate != null &&
+            String(emailCandidate).trim() !== ""
+              ? String(emailCandidate).trim()
+              : null;
 
-          // ✅ Fix invalid ranges coming from Excel (disembark < embark)
+          const date_of_birth = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.date_of_birth)
+          );
+
+          const embarkation_port = getByAliases(
+            r,
+            FIELD_ALIASES.embarkation_port
+          );
+
+          const embarkation_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.embarkation_date)
+          );
+
+          const disembarkation_port = getByAliases(
+            r,
+            FIELD_ALIASES.disembarkation_port
+          );
+
+          const disembarkation_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.disembarkation_date)
+          );
+
+          // Fix invalid ranges coming from Excel (disembark < embark)
           let emb = embarkation_date;
           let dis = disembarkation_date;
-          // ✅ Safety: never allow NaN to flow into DB params
-          if (emb !== null && Number.isNaN(emb)) emb = null;
-          if (dis !== null && Number.isNaN(dis)) dis = null;
+
+          // Safety: never allow NaN to flow into DB params
+          if (emb !== null && Number.isNaN(emb)) {
+            emb = null;
+          }
+
+          if (dis !== null && Number.isNaN(dis)) {
+            dis = null;
+          }
 
           if (emb && dis) {
             const embD = new Date(emb);
             const disD = new Date(dis);
-            if (!Number.isNaN(embD.getTime()) && !Number.isNaN(disD.getTime()) && disD < embD) {
+
+            if (
+              !Number.isNaN(embD.getTime()) &&
+              !Number.isNaN(disD.getTime()) &&
+              disD < embD
+            ) {
               dis = null;
             }
           }
 
+          const end_of_contract = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.end_of_contract)
+          );
 
-          const end_of_contract = parseDateOrNull(getByAliases(r, FIELD_ALIASES.end_of_contract));
-          const plus_months = parseIntOrNull(getByAliases(r, FIELD_ALIASES.plus_months));
+          const plus_months = parseIntOrNull(
+            getByAliases(r, FIELD_ALIASES.plus_months)
+          );
 
-          const passport_number = getByAliases(r, FIELD_ALIASES.passport_number);
-          const passport_issue_place = getByAliases(r, FIELD_ALIASES.passport_issue_place);
-          const passport_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_issue_date));
-          const passport_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.passport_expiry_date));
+          const passport_number = getByAliases(
+            r,
+            FIELD_ALIASES.passport_number
+          );
 
-          const seaman_book_number = getByAliases(r, FIELD_ALIASES.seaman_book_number);
-          const seaman_book_issue_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_issue_date));
-          const seaman_book_expiry_date = parseDateOrNull(getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date));
+          const passport_issue_place = getByAliases(
+            r,
+            FIELD_ALIASES.passport_issue_place
+          );
 
-          // Status from excel or computed
-          const statusFromExcel = getByAliases(r, FIELD_ALIASES.status);
+          const passport_issue_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.passport_issue_date)
+          );
+
+          const passport_expiry_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.passport_expiry_date)
+          );
+
+          const seaman_book_number = getByAliases(
+            r,
+            FIELD_ALIASES.seaman_book_number
+          );
+
+          const seaman_book_issue_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.seaman_book_issue_date)
+          );
+
+          const seaman_book_expiry_date = parseDateOrNull(
+            getByAliases(r, FIELD_ALIASES.seaman_book_expiry_date)
+          );
+
+          // Status from Excel or computed
+          const statusFromExcel = getByAliases(
+            r,
+            FIELD_ALIASES.status
+          );
+
           let status =
-            statusFromExcel != null && String(statusFromExcel).trim() !== ""
+            statusFromExcel != null &&
+            String(statusFromExcel).trim() !== ""
               ? String(statusFromExcel)
-              : computeStatusFromDates({ disembarkation_date: dis });
+              : computeStatusFromDates({
+                  disembarkation_date: dis,
+                });
 
-          // ✅ Auto role assignment:
-          // If rank is senior → role_id=3 + force Onboard
+          // Auto role assignment:
+          // If rank is senior -> role_id = 3 and force Onboard
           const role_id_to_insert = isShipAdminRank(rank) ? 3 : 4;
 
           if (role_id_to_insert === 3 && ship_id) {
             status = "Onboard";
           }
 
-          // ✅ If this user already exists in same company, UPDATE instead of INSERT
+          // If this user already exists in the same company,
+          // update instead of insert
           const existingUser = existingMap.get(seafarer_id) || null;
 
           const dateFieldsForUpdate = [
@@ -2000,48 +2187,60 @@ export const importUsersFromExcel = [
             ["seaman_book_expiry_date", seaman_book_expiry_date],
           ];
 
-          // if any is NaN (shouldn't happen after fix, but guard anyway)
-          const badDateUpdate = dateFieldsForUpdate.find(([, v]) => v !== null && Number.isNaN(v));
+          const badDateUpdate = dateFieldsForUpdate.find(
+            ([, v]) => v !== null && Number.isNaN(v)
+          );
+
           if (badDateUpdate) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDateUpdate[0]}` });
+
+            results.errors.push({
+              row: rowNum,
+              error: `Invalid date in ${badDateUpdate[0]}`,
+            });
+
             continue;
           }
 
+          // ==========================================
+          // UPDATE EXISTING USER
+          // ==========================================
           if (existingUser) {
-            // IMPORTANT: do NOT regenerate password on transfer
+            // Do NOT regenerate password on transfer
             await db.query(
               `UPDATE users
-     SET
-       full_name = COALESCE($1, full_name),
-       rank = COALESCE($2, rank),
-       ship_id = $3,
-       status = $4,
-       embarkation_date = COALESCE($5, embarkation_date),
-       disembarkation_date = COALESCE($6, disembarkation_date),
-       embarkation_port = COALESCE($7, embarkation_port),
-       disembarkation_port = COALESCE($8, disembarkation_port),
-       role_id = COALESCE($9, role_id),
+               SET
+                 full_name = COALESCE($1, full_name),
+                 rank = COALESCE($2, rank),
+                 ship_id = $3,
+                 status = $4,
+                 embarkation_date = COALESCE($5, embarkation_date),
+                 disembarkation_date = COALESCE($6, disembarkation_date),
+                 embarkation_port = COALESCE($7, embarkation_port),
+                 disembarkation_port = COALESCE($8, disembarkation_port),
+                 role_id = COALESCE($9, role_id),
 
-       sex = COALESCE($10, sex),
-       date_of_birth = COALESCE($11, date_of_birth),
-       place_of_birth = COALESCE($12, place_of_birth),
-       nationality = COALESCE($13, nationality),
+                 sex = COALESCE($10, sex),
+                 date_of_birth = COALESCE($11, date_of_birth),
+                 place_of_birth = COALESCE($12, place_of_birth),
+                 nationality = COALESCE($13, nationality),
 
-       end_of_contract = COALESCE($14, end_of_contract),
-       plus_months = COALESCE($15, plus_months),
+                 end_of_contract = COALESCE($14, end_of_contract),
+                 plus_months = COALESCE($15, plus_months),
 
-       passport_number = COALESCE($16, passport_number),
-       passport_issue_place = COALESCE($17, passport_issue_place),
-       passport_issue_date = COALESCE($18, passport_issue_date),
-       passport_expiry_date = COALESCE($19, passport_expiry_date),
+                 passport_number = COALESCE($16, passport_number),
+                 passport_issue_place = COALESCE($17, passport_issue_place),
+                 passport_issue_date = COALESCE($18, passport_issue_date),
+                 passport_expiry_date = COALESCE($19, passport_expiry_date),
 
-       seaman_book_number = COALESCE($20, seaman_book_number),
-       seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
-       seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
+                 seaman_book_number = COALESCE($20, seaman_book_number),
+                 seaman_book_issue_date = COALESCE($21, seaman_book_issue_date),
+                 seaman_book_expiry_date = COALESCE($22, seaman_book_expiry_date),
 
-       updated_at = NOW()
-     WHERE user_id = $23`,
+                 email = COALESCE($23, email),
+                 updated_at = NOW()
+
+               WHERE user_id = $24`,
               [
                 full_name,
                 rank ?? null,
@@ -2070,6 +2269,10 @@ export const importUsersFromExcel = [
                 seaman_book_issue_date ?? null,
                 seaman_book_expiry_date ?? null,
 
+                // $23: email
+                email,
+
+                // $24: existing user's ID
                 existingUser.user_id,
               ]
             );
@@ -2090,7 +2293,7 @@ export const importUsersFromExcel = [
               notes: "Excel import (existing user ship update)",
             });
 
-            // keep in-memory map fresh
+            // Keep in-memory map fresh
             existingMap.set(seafarer_id, {
               user_id: existingUser.user_id,
               seafarer_id,
@@ -2101,10 +2304,17 @@ export const importUsersFromExcel = [
             continue;
           }
 
-          // Validate numbers/dates if present
+          // ==========================================
+          // VALIDATE NEW USER DATA
+          // ==========================================
           if (plus_months !== null && Number.isNaN(plus_months)) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: "Plus Months must be a number (if provided)" });
+
+            results.errors.push({
+              row: rowNum,
+              error: "Plus Months must be a number (if provided)",
+            });
+
             continue;
           }
 
@@ -2118,14 +2328,23 @@ export const importUsersFromExcel = [
             ["seaman_book_issue_date", seaman_book_issue_date],
             ["seaman_book_expiry_date", seaman_book_expiry_date],
           ];
-          const badDate = dateFields.find(([, v]) => v !== null && Number.isNaN(v));
+
+          const badDate = dateFields.find(
+            ([, v]) => v !== null && Number.isNaN(v)
+          );
+
           if (badDate) {
             results.skipped++;
-            results.errors.push({ row: rowNum, error: `Invalid date in ${badDate[0]}` });
+
+            results.errors.push({
+              row: rowNum,
+              error: `Invalid date in ${badDate[0]}`,
+            });
+
             continue;
           }
 
-          // ✅ Generate credentials if onboard
+          // Generate credentials if onboard
           let username = null;
           let password = null;
           let password_hash = null;
@@ -2138,31 +2357,66 @@ export const importUsersFromExcel = [
             password_enc = encryptPassword(password);
           }
 
+          // ==========================================
+          // INSERT NEW USER
+          // ==========================================
           try {
             const { rows: inserted } = await db.query(
               `INSERT INTO users
-              (seafarer_id, full_name, rank, trip,
-               embarkation_date, disembarkation_date, status,
-               username, password_hash, password_enc,
-               ship_id, company_id,
-               sex, date_of_birth, place_of_birth, nationality,
-               embarkation_port, disembarkation_port, end_of_contract, plus_months,
-               passport_number, passport_issue_place, passport_issue_date, passport_expiry_date,
-               seaman_book_number, seaman_book_issue_date, seaman_book_expiry_date,
-               role_id,
-               created_at, updated_at)
-             VALUES
-              ($1,$2,$3,$4,
-               $5,$6,$7,
-               $8,$9,$10,
-               $11,$12,
-               $13,$14,$15,$16,
-               $17,$18,$19,$20,
-               $21,$22,$23,$24,
-               $25,$26,$27,
-               $28,
-               NOW(), NOW())
-             RETURNING user_id, seafarer_id, full_name, username, status, role_id`,
+                (
+                  seafarer_id,
+                  full_name,
+                  rank,
+                  trip,
+                  embarkation_date,
+                  disembarkation_date,
+                  status,
+                  username,
+                  password_hash,
+                  password_enc,
+                  ship_id,
+                  company_id,
+                  sex,
+                  date_of_birth,
+                  place_of_birth,
+                  nationality,
+                  embarkation_port,
+                  disembarkation_port,
+                  end_of_contract,
+                  plus_months,
+                  passport_number,
+                  passport_issue_place,
+                  passport_issue_date,
+                  passport_expiry_date,
+                  seaman_book_number,
+                  seaman_book_issue_date,
+                  seaman_book_expiry_date,
+                  role_id,
+                  email,
+                  created_at,
+                  updated_at
+                )
+               VALUES
+                (
+                  $1, $2, $3, $4,
+                  $5, $6, $7,
+                  $8, $9, $10,
+                  $11, $12,
+                  $13, $14, $15, $16,
+                  $17, $18, $19, $20,
+                  $21, $22, $23, $24,
+                  $25, $26, $27,
+                  $28, $29,
+                  NOW(), NOW()
+                )
+               RETURNING
+                 user_id,
+                 seafarer_id,
+                 full_name,
+                 email,
+                 username,
+                 status,
+                 role_id`,
               [
                 seafarer_id,
                 full_name,
@@ -2199,15 +2453,23 @@ export const importUsersFromExcel = [
                 seaman_book_issue_date ?? null,
                 seaman_book_expiry_date ?? null,
 
+                // $28: role_id
                 role_id_to_insert,
+
+                // $29: email
+                email,
               ]
             );
 
             const insertedUserId = inserted[0]?.user_id;
 
-            // ✅ update in-memory map so if same seafarer_id appears again in this sheet, it will be treated as existing
-            existingMap.set(seafarer_id, { user_id: insertedUserId, seafarer_id, ship_id });
-
+            // Update in-memory map so duplicate IDs in this sheet
+            // are treated as existing
+            existingMap.set(seafarer_id, {
+              user_id: insertedUserId,
+              seafarer_id,
+              ship_id,
+            });
 
             await handleShipHistoryChange({
               user_id: insertedUserId,
@@ -2221,7 +2483,6 @@ export const importUsersFromExcel = [
               changed_by_user_id: req.user.user_id,
               notes: "Excel import (new user)",
             });
-
 
             results.inserted++;
 
@@ -2237,9 +2498,13 @@ export const importUsersFromExcel = [
             }
           } catch (e) {
             results.skipped++;
+
             results.errors.push({
               row: rowNum,
-              error: e.code === "23505" ? "Duplicate seafarer_id or username" : e.message,
+              error:
+                e.code === "23505"
+                  ? "Duplicate seafarer_id or username"
+                  : e.message,
             });
           }
         }
@@ -2252,9 +2517,1202 @@ export const importUsersFromExcel = [
         ...results,
       });
     } catch (err) {
-      try { await db.query("ROLLBACK"); } catch { }
+      try {
+        await db.query("ROLLBACK");
+      } catch {
+        // Ignore rollback errors
+      }
+
       console.error("importUsersFromExcel error:", err);
-      return res.status(500).json({ error: "Failed to import users" });
+
+      return res.status(500).json({
+        error: "Failed to import users",
+      });
     }
   },
 ];
+
+
+// PATCH /users/bulk-ship
+
+
+
+export const bulkUpdateUserShip = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Only Superadmin (1) and Admin (2) can perform bulk ship assignment
+  if (![1, 2].includes(role)) {
+    return res.status(403).json({
+      error: "Forbidden. Only Superadmin and Admin can mass update ship assignments.",
+    });
+  }
+
+  const user_ids = Array.isArray(req.body?.user_ids)
+    ? req.body.user_ids
+    : [];
+
+  const ship_id_raw = req.body?.ship_id;
+
+  if (!user_ids.length) {
+    return res.status(400).json({
+      error: "user_ids must be a non-empty array",
+    });
+  }
+
+  const new_ship_id = Number.parseInt(String(ship_id_raw), 10);
+
+  if (!Number.isInteger(new_ship_id) || new_ship_id <= 0) {
+    return res.status(400).json({
+      error: "ship_id must be a valid positive integer",
+    });
+  }
+
+  // Sanitize and remove duplicate user IDs
+  const ids = [
+    ...new Set(
+      user_ids
+        .map((id) => Number.parseInt(String(id), 10))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    ),
+  ];
+
+  if (!ids.length) {
+    return res.status(400).json({
+      error: "user_ids must contain valid integer IDs",
+    });
+  }
+
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Validate target ship
+    const shipRes = await client.query(
+      `SELECT ship_id, company_id
+       FROM ships
+       WHERE ship_id = $1`,
+      [new_ship_id]
+    );
+
+    if (!shipRes.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        error: "Target ship_id does not exist",
+      });
+    }
+
+    const targetShip = shipRes.rows[0];
+
+    // Admin company scope check
+    const myCompany = req.user?.company_id
+      ? String(req.user.company_id)
+      : null;
+
+    if (
+      role === 2 &&
+      myCompany &&
+      String(targetShip.company_id) !== myCompany
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(403).json({
+        error: "Target ship does not belong to your company scope",
+      });
+    }
+
+    // Fetch and lock users, including their original embarkation dates
+    const { rows: users } = await client.query(
+      `SELECT
+         user_id,
+         company_id,
+         ship_id,
+         embarkation_date
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (!users.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        error: "No users found for given user_ids",
+      });
+    }
+
+    // Admin company scope check for users
+    const violations = [];
+
+    for (const user of users) {
+      if (
+        role === 2 &&
+        myCompany &&
+        String(user.company_id) !== myCompany
+      ) {
+        violations.push(user.user_id);
+      }
+    }
+
+    if (violations.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(403).json({
+        error: "Scope violation: some user_ids are outside your company scope",
+        violations,
+      });
+    }
+
+    // Use the database date as the actual ship-change date
+    const dateRes = await client.query(
+      `SELECT CURRENT_DATE::text AS change_date`
+    );
+
+    const changeDate = dateRes.rows[0].change_date;
+
+    const results = {
+      requested: ids.length,
+      found: users.length,
+      updated: 0,
+      skipped: 0,
+      skipped_reasons: [],
+    };
+
+    for (const user of users) {
+      // Same ship: do not update user or history
+      if (Number(user.ship_id) === new_ship_id) {
+        results.skipped++;
+
+        results.skipped_reasons.push({
+          user_id: user.user_id,
+          reason: "Already assigned to this ship",
+        });
+
+        continue;
+      }
+
+      // Update only ship assignment and company.
+      // Do not modify embarkation_date, disembarkation_date or status.
+      const { rowCount } = await client.query(
+        `UPDATE users
+         SET
+           ship_id = $1,
+           company_id = $2,
+           updated_at = NOW()
+         WHERE user_id = $3`,
+        [
+          new_ship_id,
+          targetShip.company_id,
+          user.user_id,
+        ]
+      );
+
+      if (!rowCount) {
+        throw new Error(
+          `Failed to update ship assignment for user ${user.user_id}`
+        );
+      }
+
+      // Immediately update old and new ship history
+      await handleShipHistoryChange({
+        client,
+
+        user_id: user.user_id,
+
+        // New ship details
+        company_id: targetShip.company_id,
+        new_ship_id,
+
+        // Old ship details
+        old_company_id: user.company_id,
+        old_ship_id: user.ship_id,
+        previous_embarkation_date: user.embarkation_date,
+
+        // Actual ship-change date
+        change_date: changeDate,
+
+        // New ship embarkation date
+        new_embarkation_date: changeDate,
+
+        embarkation_port: null,
+        disembarkation_port: null,
+
+        changed_by_user_id: req.user.user_id,
+        notes: "Mass ship assignment via Admin Dashboard",
+      });
+
+      results.updated++;
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Bulk ship assignment completed",
+      new_ship_id,
+      change_date: changeDate,
+      ...results,
+    });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Bulk ship assignment rollback error:",
+        rollbackError
+      );
+    }
+
+    console.error("bulkUpdateUserShip error:", error);
+
+    return res.status(500).json({
+      error: "Failed to bulk update user ships",
+    });
+  } finally {
+    client.release();
+  }
+};
+
+
+
+
+// PATCH /users/bulk-embarkation-dates
+export const bulkUpdateUserDates = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Enforce Role Scope: Only Superadmin (1) and Admin (2) can do this
+  if (![1, 2].includes(role)) {
+    return res.status(403).json({ error: "Forbidden. Only Superadmin and Admin can mass update embarkation dates." });
+  }
+
+  const user_ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+
+  // Extract ONLY the dates
+  const {
+    embarkation_date,
+    disembarkation_date
+  } = req.body;
+
+  if (!user_ids.length) {
+    return res.status(400).json({ error: "user_ids must be a non-empty array" });
+  }
+
+  // Ensure at least one date is being updated
+  if (!embarkation_date && !disembarkation_date) {
+    return res.status(400).json({ error: "At least one embarkation or disembarkation date must be provided to update." });
+  }
+
+  // Sanitize IDs
+  const ids = user_ids
+    .map((x) => Number.parseInt(String(x), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  if (!ids.length) {
+    return res.status(400).json({ error: "user_ids must contain valid integer IDs" });
+  }
+
+  try {
+    await db.query("BEGIN");
+
+    // Fetch the users being updated and lock the rows
+    const { rows: users } = await db.query(
+      `SELECT user_id, company_id, ship_id
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (!users.length) {
+      await db.query("ROLLBACK");
+      return res.status(404).json({ error: "No users found for given user_ids" });
+    }
+
+    // Admin Scope Check: Users must belong to the Admin's company
+    const myCompany = req.user?.company_id ? String(req.user.company_id) : null;
+    const violations = [];
+
+    for (const u of users) {
+      if (role === 2 && myCompany && String(u.company_id) !== myCompany) {
+        violations.push(u.user_id);
+      }
+    }
+
+    if (violations.length) {
+      await db.query("ROLLBACK");
+      return res.status(403).json({
+        error: "Scope violation: some user_ids are outside your company scope",
+        violations,
+      });
+    }
+
+    // Iterate and perform updates
+    const results = {
+      requested: ids.length,
+      found: users.length,
+      updated: 0,
+      skipped: 0,
+      skipped_reasons: [],
+    };
+
+    for (const u of users) {
+      // Update the user's dates using COALESCE so we only overwrite the provided date
+      const { rowCount } = await db.query(
+        `UPDATE users
+         SET
+           embarkation_date = COALESCE($1, embarkation_date),
+           disembarkation_date = COALESCE($2, disembarkation_date),
+           updated_at = NOW()
+         WHERE user_id = $3`,
+        [
+          embarkation_date || null,
+          disembarkation_date || null,
+          u.user_id
+        ]
+      );
+
+      if (!rowCount) {
+        results.skipped++;
+        results.skipped_reasons.push({ user_id: u.user_id, reason: "Update failed" });
+        continue;
+      }
+
+      // Automatically handle the ship history log
+      await handleShipHistoryChange({
+        user_id: u.user_id,
+        company_id: u.company_id,
+        old_ship_id: u.ship_id,
+        new_ship_id: u.ship_id, // Ship ID is not changing, just the dates
+        embarkation_date: embarkation_date || null,
+        disembarkation_date: disembarkation_date || null,
+        changed_by_user_id: req.user.user_id,
+        notes: "Mass embarkation/disembarkation date update via Admin Dashboard",
+      });
+
+      results.updated++;
+    }
+
+    await db.query("COMMIT");
+
+    return res.json({
+      message: "Bulk embarkation date update completed",
+      ...results,
+    });
+
+  } catch (err) {
+    await db.query("ROLLBACK");
+    console.error("bulkUpdateUserEmbarkationDates error:", err);
+    return res.status(500).json({ error: "Failed to bulk update user embarkation dates" });
+  }
+};
+
+// POST /users/search
+export const searchUsers = async (req, res) => {
+  try {
+    const role = Number(req.user.role_id);
+
+    // ============================================================
+    // INCOMING FILTERS
+    // ============================================================
+    const body = req.body || {};
+
+    const q = String(body.q ?? "").trim();
+    const rank = String(body.rank ?? "").trim();
+    const status = String(body.status ?? "").trim();
+
+    const role_id_q =
+      body.role_id != null ? Number(body.role_id) : null;
+
+    // ============================================================
+    // SORTING
+    // ============================================================
+    const sort =
+      String(body.sort ?? "rank").trim().toLowerCase();
+
+    const order =
+      String(body.order ?? "asc").trim().toLowerCase() === "desc"
+        ? "DESC"
+        : "ASC";
+
+    // ============================================================
+    // PAGINATION
+    // ============================================================
+    const pageRaw = parseInt(String(body.page ?? "1"), 10);
+    const limitRaw = parseInt(String(body.limit ?? "500"), 10);
+
+    const page =
+      Number.isFinite(pageRaw) && pageRaw > 0
+        ? pageRaw
+        : 1;
+
+    const limit = Math.min(
+      500,
+      Math.max(
+        50,
+        Number.isFinite(limitRaw) ? limitRaw : 50
+      )
+    );
+
+    const offset = (page - 1) * limit;
+
+    // ============================================================
+    // COMPANY / SHIP FILTERS
+    // ============================================================
+    const requestedCompanyId =
+      body.company_id != null &&
+      String(body.company_id).trim() !== ""
+        ? String(body.company_id).trim()
+        : null;
+
+    const requestedShipId =
+      body.ship_id != null &&
+      String(body.ship_id).trim() !== ""
+        ? Number.parseInt(String(body.ship_id), 10)
+        : null;
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    // company_id must be UUID
+    if (
+      requestedCompanyId &&
+      !isUuid(requestedCompanyId)
+    ) {
+      return res.status(400).json({
+        error: "company_id must be a valid UUID",
+      });
+    }
+
+    // ship_id must be positive integer
+    if (
+      body.ship_id != null &&
+      String(body.ship_id).trim() !== ""
+    ) {
+      if (
+        !Number.isInteger(requestedShipId) ||
+        requestedShipId <= 0
+      ) {
+        return res.status(400).json({
+          error: "ship_id must be a positive integer",
+        });
+      }
+    }
+
+    // role_id validation
+    if (
+      body.role_id != null &&
+      !Number.isFinite(role_id_q)
+    ) {
+      return res.status(400).json({
+        error: "role_id must be a number",
+      });
+    }
+
+    // status validation
+    if (status) {
+      const s = status.toLowerCase();
+
+      if (
+        s !== "onboard" &&
+        s !== "offboard"
+      ) {
+        return res.status(400).json({
+          error:
+            'status must be either "Onboard" or "Offboard"',
+        });
+      }
+    }
+
+    // ============================================================
+    // WHERE BUILDER
+    // ============================================================
+    const where = [];
+    const params = [];
+
+    let p = 1;
+
+    // ============================================================
+    // ROLE SCOPE
+    // ============================================================
+
+    // ROLE 1 = SUPERADMIN
+    if (role === 1) {
+      // Optional company filter
+      if (requestedCompanyId) {
+        where.push(
+          `u.company_id = $${p++}`
+        );
+
+        params.push(requestedCompanyId);
+      }
+
+      // Optional ship filter
+      if (Number.isFinite(requestedShipId)) {
+        where.push(
+          `u.ship_id = $${p++}`
+        );
+
+        params.push(requestedShipId);
+      }
+    }
+
+    // ROLE 2 = ADMIN
+    else if (role === 2) {
+      // Forced company scope
+      where.push(
+        `u.company_id = $${p++}`
+      );
+
+      params.push(req.user.company_id);
+
+      // Optional ship filter
+      if (Number.isFinite(requestedShipId)) {
+        where.push(
+          `u.ship_id = $${p++}`
+        );
+
+        params.push(requestedShipId);
+      }
+    }
+
+    // ROLE 3 = SUBADMIN
+    else if (role === 3) {
+      // Forced company scope
+      where.push(
+        `u.company_id = $${p++}`
+      );
+
+      params.push(req.user.company_id);
+
+      // Forced ship scope
+      where.push(
+        `u.ship_id = $${p++}`
+      );
+
+      params.push(req.user.ship_id);
+    }
+
+    // Everything else
+    else {
+      return res.status(403).json({
+        error: "Forbidden",
+      });
+    }
+
+    // Only Subadmins & Crew
+    where.push(
+      `u.role_id IN (2,3, 4)`
+    );
+
+    // ============================================================
+    // SEARCH QUERY
+    // ============================================================
+    if (q) {
+      where.push(`
+        (
+          u.full_name ILIKE $${p}
+          OR u.seafarer_id ILIKE $${p}
+          OR u.username ILIKE $${p}
+        )
+      `);
+
+      params.push(`%${q}%`);
+
+      p++;
+    }
+
+    // ============================================================
+    // RANK FILTER
+    // ============================================================
+    if (rank) {
+      where.push(
+        `u.rank ILIKE $${p++}`
+      );
+
+      params.push(`%${rank}%`);
+    }
+
+    // ============================================================
+    // STATUS FILTER
+    // ============================================================
+    if (status) {
+      where.push(
+        `LOWER(COALESCE(u.status, '')) = LOWER($${p++})`
+      );
+
+      params.push(status);
+    }
+
+    // ============================================================
+    // ROLE FILTER
+    // ============================================================
+    if (Number.isFinite(role_id_q)) {
+      where.push(
+        `u.role_id = $${p++}`
+      );
+
+      params.push(role_id_q);
+    }
+
+    const whereSql =
+      where.length > 0
+        ? `WHERE ${where.join(" AND ")}`
+        : "";
+
+    // ============================================================
+    // SORT COLUMN
+    // ============================================================
+    const sortColumn =
+      sort === "name"
+        ? "u.full_name"
+        : sort === "created_at"
+          ? "u.created_at"
+          : "u.user_id";
+
+    // ============================================================
+    // TOTAL COUNT
+    // ============================================================
+    const totalRes = await db.query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM users u
+      ${whereSql}
+      `,
+      params
+    );
+
+    const total =
+      totalRes.rows[0]?.total ?? 0;
+
+    // ============================================================
+    // FETCH USERS
+    // ============================================================
+    const dataParams = [
+      ...params,
+      limit,
+      offset,
+    ];
+
+    const { rows } = await db.query(
+      `
+      SELECT
+        u.user_id,
+        u.seafarer_id,
+        u.full_name,
+        u.rank,
+        u.trip,
+        u.embarkation_date,
+        u.disembarkation_date,
+        u.status,
+        u.username,
+        u.ship_id,
+        u.company_id,
+        u.created_at,
+        u.updated_at,
+        u.role_id,
+        u.sex,
+        u.date_of_birth,
+        u.place_of_birth,
+        u.nationality,
+        u.embarkation_port,
+        u.disembarkation_port
+      FROM users u
+      ${whereSql}
+      ORDER BY ${sortColumn} ${order}
+      LIMIT $${p}
+      OFFSET $${p + 1}
+      `,
+      dataParams
+    );
+
+    // ============================================================
+    // ACTIVITY CHECK
+    // ============================================================
+    //
+    // Business rule:
+    //
+    // GREEN if the user has at least ONE activity from:
+    //
+    //   1. activity_logs
+    //   OR
+    //   2. successful Unity course sync
+    //
+    // There is NO 9-month restriction here.
+    //
+    // ============================================================
+
+    const activityMap = new Map();
+
+    if (rows.length > 0) {
+      const ids = rows
+        .map((u) => Number(u.user_id))
+        .filter((id) => Number.isInteger(id));
+
+      if (ids.length > 0) {
+        const activityResult = await db.query(
+          `
+          WITH old_activity AS (
+
+            SELECT
+              al.user_id,
+              MAX(al.occurred_at) AS last_activity_at
+
+            FROM activity_logs al
+
+            WHERE al.user_id = ANY($1::int[])
+
+            GROUP BY al.user_id
+          ),
+
+          unity_activity AS (
+
+            SELECT
+              (result->>'user_id')::int AS user_id,
+
+              MAX(
+                COALESCE(
+                  NULLIF(
+                    result->'progress'->>'last_activity_at',
+                    ''
+                  )::timestamptz,
+
+                  NULLIF(
+                    result->'progress'->>'completed_at',
+                    ''
+                  )::timestamptz,
+
+                  NULLIF(
+                    result->'progress'->>'started_at',
+                    ''
+                  )::timestamptz
+                )
+              ) AS last_activity_at
+
+            FROM unity_course_sync_logs ucs
+
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(
+                  ucs.raw_response->'results'
+                ) = 'array'
+                THEN ucs.raw_response->'results'
+
+                ELSE '[]'::jsonb
+              END
+            ) AS r(result)
+
+            WHERE
+              ucs.success_records > 0
+
+              AND result->>'success' = 'true'
+
+              AND (result->>'user_id') ~ '^[0-9]+$'
+
+              AND (result->>'user_id')::int =
+                  ANY($1::int[])
+
+            GROUP BY
+              (result->>'user_id')::int
+          )
+
+          SELECT
+            COALESCE(
+              old_activity.user_id,
+              unity_activity.user_id
+            ) AS user_id,
+
+            CASE
+
+              WHEN old_activity.last_activity_at IS NULL
+                THEN unity_activity.last_activity_at
+
+              WHEN unity_activity.last_activity_at IS NULL
+                THEN old_activity.last_activity_at
+
+              WHEN old_activity.last_activity_at >=
+                   unity_activity.last_activity_at
+                THEN old_activity.last_activity_at
+
+              ELSE unity_activity.last_activity_at
+
+            END AS last_activity_at
+
+          FROM old_activity
+
+          FULL OUTER JOIN unity_activity
+
+            ON old_activity.user_id =
+               unity_activity.user_id
+          `,
+          [ids]
+        );
+
+        // ========================================================
+        // BUILD USER ACTIVITY MAP
+        // ========================================================
+
+        for (const activity of activityResult.rows) {
+          const userId =
+            Number(activity.user_id);
+
+          const lastActivity =
+            activity.last_activity_at
+              ? new Date(
+                  activity.last_activity_at
+                ).toISOString()
+              : null;
+
+          activityMap.set(
+            userId,
+            lastActivity
+          );
+        }
+      }
+    }
+
+    // ============================================================
+    // CUSTOM RANK ORDERING
+    // ============================================================
+    if (sort === "rank") {
+      rows.sort((a, b) => {
+        const ra = rankSortValue(a.rank);
+        const rb = rankSortValue(b.rank);
+
+        if (ra !== rb) {
+          return ra - rb;
+        }
+
+        return String(
+          a.full_name || ""
+        ).localeCompare(
+          String(b.full_name || ""),
+          undefined,
+          {
+            sensitivity: "base",
+          }
+        );
+      });
+    }
+
+    // ============================================================
+    // RESPONSE
+    // ============================================================
+    return res.json({
+      page,
+      limit,
+      total,
+      count: rows.length,
+
+      users: rows.map((u) => {
+        const last =
+          activityMap.get(
+            Number(u.user_id)
+          ) || null;
+
+        return {
+          ...u,
+
+          // TRUE if:
+          // activity_logs exists
+          // OR
+          // successful Unity activity exists
+          has_recent_activity: !!last,
+
+          last_activity_at: last,
+        };
+      }),
+
+      applied_filters: {
+        company_id:
+          role === 1
+            ? requestedCompanyId || null
+            : String(req.user.company_id),
+
+        ship_id:
+          role === 3
+            ? Number(req.user.ship_id)
+            : Number.isFinite(requestedShipId)
+              ? requestedShipId
+              : null,
+
+        q: q || null,
+
+        rank: rank || null,
+
+        status: status || null,
+
+        role_id:
+          Number.isFinite(role_id_q)
+            ? role_id_q
+            : null,
+
+        sort,
+
+        order: order.toLowerCase(),
+      },
+    });
+
+  } catch (err) {
+    console.error(
+      "searchUsers error:",
+      err
+    );
+
+    return res.status(500).json({
+      error: "Failed to search users",
+    });
+  }
+};
+
+
+
+
+// PATCH /users/bulk-email
+// Bulk update email addresses for multiple users.
+
+export const bulkUpdateUserEmails = async (req, res) => {
+  const role = Number(req.user?.role_id);
+
+  // Only Super Admin, Company Admin and Ship Admin
+  if (![1, 2, 3].includes(role)) {
+    return res.status(403).json({
+      error: "Forbidden",
+    });
+  }
+
+  const updates = req.body?.updates;
+
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({
+      error: "updates must be a non-empty array",
+    });
+  }
+
+  // Prevent excessively large requests
+  if (updates.length > 500) {
+    return res.status(400).json({
+      error: "Maximum 500 users can be updated per request",
+    });
+  }
+
+  // Validate and normalize request data
+  const normalizedUpdates = [];
+  const seenUserIds = new Set();
+
+  for (let i = 0; i < updates.length; i++) {
+    const item = updates[i];
+
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return res.status(400).json({
+        error: `Invalid update object at index ${i}`,
+      });
+    }
+
+    const user_id = Number(item.user_id);
+
+    if (!Number.isSafeInteger(user_id) || user_id <= 0) {
+      return res.status(400).json({
+        error: `Invalid user_id at index ${i}`,
+      });
+    }
+
+    if (seenUserIds.has(user_id)) {
+      return res.status(400).json({
+        error: `Duplicate user_id: ${user_id}`,
+      });
+    }
+
+    seenUserIds.add(user_id);
+
+    // Require the email property even when its value is null.
+    if (!Object.prototype.hasOwnProperty.call(item, "email")) {
+      return res.status(400).json({
+        error: `Email field is missing for user_id ${user_id}`,
+      });
+    }
+
+    let email = null;
+
+    if (item.email !== null && item.email !== "") {
+      if (typeof item.email !== "string") {
+        return res.status(400).json({
+          error: `Invalid email value for user_id ${user_id}`,
+        });
+      }
+
+      email = item.email.trim();
+
+      if (
+        email.length > 255 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
+        return res.status(400).json({
+          error: `Invalid email address for user_id ${user_id}`,
+        });
+      }
+    }
+
+    normalizedUpdates.push({
+      user_id,
+      email,
+    });
+  }
+
+  // Role-based scope from authenticated user
+  const myCompanyId = req.user?.company_id
+    ? String(req.user.company_id)
+    : null;
+
+  const myShipId =
+    req.user?.ship_id != null
+      ? Number(req.user.ship_id)
+      : null;
+
+  if (role === 2 && !myCompanyId) {
+    return res.status(403).json({
+      error: "Company information missing from authenticated user",
+    });
+  }
+
+  if (role === 3 && (!myCompanyId || myShipId == null)) {
+    return res.status(403).json({
+      error: "Company or ship information missing from authenticated user",
+    });
+  }
+
+  let client;
+  let transactionStarted = false;
+
+  try {
+    // Use one dedicated PostgreSQL connection for the transaction.
+    client = await db.connect();
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const userIds = normalizedUpdates.map((u) => u.user_id);
+
+    // Lock selected users and fetch their assignment information.
+    const { rows: users } = await client.query(
+      `SELECT
+         user_id,
+         full_name,
+         company_id,
+         ship_id,
+         email
+       FROM users
+       WHERE user_id = ANY($1::int[])
+       FOR UPDATE`,
+      [userIds]
+    );
+
+    // Check that every requested user exists.
+    if (users.length !== normalizedUpdates.length) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        error: "One or more users were not found",
+        requested: normalizedUpdates.length,
+        found: users.length,
+      });
+    }
+
+    // Enforce company and ship permissions.
+    const violations = [];
+
+    for (const user of users) {
+      if (
+        role === 2 &&
+        String(user.company_id) !== myCompanyId
+      ) {
+        violations.push(user.user_id);
+      }
+
+      if (
+        role === 3 &&
+        (
+          String(user.company_id) !== myCompanyId ||
+          Number(user.ship_id) !== myShipId
+        )
+      ) {
+        violations.push(user.user_id);
+      }
+    }
+
+    if (violations.length > 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        error: "Some users are outside your permitted company/ship scope",
+        violations,
+      });
+    }
+
+    // Update only the email column.
+    const updatedUsers = [];
+
+    for (const item of normalizedUpdates) {
+      const { rows } = await client.query(
+        `UPDATE users
+         SET
+           email = $1,
+           updated_at = NOW()
+         WHERE user_id = $2
+         RETURNING
+           user_id,
+           full_name,
+           email`,
+        [
+          item.email,
+          item.user_id,
+        ]
+      );
+
+      updatedUsers.push(rows[0]);
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.status(200).json({
+      message: "User emails updated successfully",
+      requested: normalizedUpdates.length,
+      updated: updatedUsers.length,
+      users: updatedUsers,
+    });
+
+  } catch (err) {
+    if (transactionStarted && client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Bulk email rollback error:", rollbackError);
+      }
+    }
+
+    console.error("bulkUpdateUserEmails error:", {
+      code: err.code,
+      constraint: err.constraint,
+      message: err.message,
+    });
+
+    if (err.code === "23505") {
+      return res.status(409).json({
+        error: "One or more email addresses conflict with a unique database constraint",
+      });
+    }
+
+    return res.status(500).json({
+      error: "Failed to update user emails",
+    });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+};

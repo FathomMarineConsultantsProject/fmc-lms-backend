@@ -8,6 +8,7 @@ import {
   updateShip,
   deleteShip,
   getShipsByCompanyId,
+  getShipOptions,
 } from '../controller/shipsController.js';
 import { allowRoles } from "../middleware/rbac.js"; 
 
@@ -77,6 +78,8 @@ router.use(requireAuth);
  *           description: "Role 1 can move ship to another company. Role 2 cannot."
  *           example: "002f6dad-7f5a-4962-a6b6-eaca609a8fa0"
  */
+
+router.get("/options", requireAuth, getShipOptions);
 
 /**
  * @openapi
