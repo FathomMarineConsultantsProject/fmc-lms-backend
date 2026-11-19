@@ -299,59 +299,7 @@ function isOverdue() {
  * - Can ONLY access their own company.
  * - Any companyId supplied through query params is ignored.
  */
-function getCompanyScope(req) {
-  const roleId = Number(req.user?.role_id);
-  const userCompanyId = req.user?.company_id;
-  const requestedCompanyId = req.query?.companyId;
 
-  /* ----------------------------------------------------------
-     SUPER ADMIN
-     ---------------------------------------------------------- */
-
-  if (roleId === 1) {
-    return {
-      roleId,
-      companyId: requestedCompanyId || null,
-      companyScoped: Boolean(requestedCompanyId),
-      allCompanies: !requestedCompanyId,
-    };
-  }
-
-
-  /* ----------------------------------------------------------
-     ADMIN
-     ---------------------------------------------------------- */
-
-  if (roleId === 2) {
-    if (!userCompanyId) {
-      return {
-        error: true,
-        status: 403,
-        message:
-          "Admin is not associated with a company",
-      };
-    }
-
-    return {
-      roleId,
-      companyId: userCompanyId,
-      companyScoped: true,
-      allCompanies: false,
-    };
-  }
-
-
-  /* ----------------------------------------------------------
-     OTHER ROLES
-     ---------------------------------------------------------- */
-
-  return {
-    error: true,
-    status: 403,
-    message:
-      "You are not authorized to access this dashboard",
-  };
-}
 
 
 /* ============================================================
