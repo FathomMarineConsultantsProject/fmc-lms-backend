@@ -5,6 +5,8 @@ import {
   getTrainingDashboard,
   getShipTrainingDashboard,
   getSeafarerTrainingDashboard,
+  getAssessmentUsers,
+  getUserAssessmentDetails,
 } from "../controller/dashboardController.js"
 
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -26,6 +28,16 @@ router.get(
 router.get(
   "/dashboard/users/:userId",
   getSeafarerTrainingDashboard
+);
+
+router.get(
+  "/assessments/users",
+  getAssessmentUsers
+);
+
+router.get(
+  "/assessments/users/:userId/assessments",
+  getUserAssessmentDetails
 );
 
 export default router;

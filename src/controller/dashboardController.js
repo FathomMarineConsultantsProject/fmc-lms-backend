@@ -1,6 +1,200 @@
 import { db } from "../db.js";
 
+/* ============================================================
+   HELPERS
+   ============================================================ */
 
+function calcPercentage(numerator, denominator) {
+  if (!denominator || denominator <= 0) return 0;
+  return Number(((numerator / denominator) * 100).toFixed(2));
+}
+
+function calcAveragePercentage(rows) {
+  const scored = rows.filter(
+    (r) =>
+      r.percentage !== null &&
+      r.percentage !== undefined &&
+      !Number.isNaN(Number(r.percentage))
+  );
+  if (scored.length === 0) return 0;
+  const sum = scored.reduce((acc, r) => acc + Number(r.percentage), 0);
+  return Number((sum / scored.length).toFixed(2));
+}
+
+function summarizeAttempts(attempts) {
+  let evaluated = 0;
+  let submitted = 0;
+  let inProgress = 0;
+  let expired = 0;
+  let passed = 0;
+
+  for (const att of attempts) {
+    const status = String(att.status || "").trim().toLowerCase();
+    if (status === "evaluated") evaluated++;
+    else if (status === "submitted") submitted++;
+    else if (status === "in_progress") inProgress++;
+    else if (status === "expired") expired++;
+
+    if (att.is_passed === true) passed++;
+  }
+
+  return {
+    total_attempts: attempts.length,
+    evaluated,
+    submitted,
+    in_progress: inProgress,
+    expired,
+    passed,
+    pass_rate: calcPercentage(passed, evaluated),
+    average_percentage: calcAveragePercentage(attempts),
+  };
+}
+
+/* ============================================================
+   ACCESS CONTROL / COMPANY SCOPE
+   ============================================================ */
+
+/**
+ * ROLE 1 = Super Admin -> All companies, optional ?companyId=<UUID>
+ * ROLE 2 = Admin       -> Own company_id only; query companyId ignored
+ */
+function getCompanyScope(req) {
+  const roleId = Number(req.user?.role_id);
+  const userCompanyId = req.user?.company_id;
+  const requestedCompanyId = req.query?.companyId;
+
+  if (roleId === 1) {
+    return {
+      roleId,
+      companyId: requestedCompanyId || null,
+      companyScoped: Boolean(requestedCompanyId),
+      allCompanies: !requestedCompanyId,
+    };
+  }
+
+  if (roleId === 2) {
+    if (!userCompanyId) {
+      return {
+        error: true,
+        status: 403,
+        message: "Admin is not associated with a company",
+      };
+    }
+    return {
+      roleId,
+      companyId: userCompanyId,
+      companyScoped: true,
+      allCompanies: false,
+    };
+  }
+
+  return {
+    error: true,
+    status: 403,
+    message: "You are not authorized to access assessment records",
+  };
+}
+
+/* ============================================================
+   FILTER BUILDER FOR USERS & ATTEMPTS
+   ============================================================ */
+
+function buildUserAndAttemptFilters(query, startIndex = 1) {
+  const {
+    shipId,
+    rank,
+    department,
+    assessmentId,
+    attemptStatus,
+    passed,
+    search,
+    joiningFrom,
+    joiningTo,
+  } = query;
+
+  const userConditions = [`COALESCE(s.is_test_ship, false) = false`];
+  const attemptConditions = [];
+  const params = [];
+  let index = startIndex;
+
+  if (shipId) {
+    if (String(shipId).toLowerCase() === "unassigned") {
+      userConditions.push(`u.ship_id IS NULL`);
+    } else {
+      userConditions.push(`u.ship_id = $${index}`);
+      params.push(Number(shipId));
+      index++;
+    }
+  }
+
+  if (rank) {
+    if (String(rank).toLowerCase() === "unknown") {
+      userConditions.push(`(u.rank IS NULL OR TRIM(u.rank) = '')`);
+    } else {
+      userConditions.push(`LOWER(TRIM(u.rank)) = LOWER(TRIM($${index}))`);
+      params.push(rank);
+      index++;
+    }
+  }
+
+  if (joiningFrom) {
+    userConditions.push(`u.embarkation_date >= $${index}`);
+    params.push(joiningFrom);
+    index++;
+  }
+
+  if (joiningTo) {
+    userConditions.push(`u.embarkation_date <= $${index}`);
+    params.push(joiningTo);
+    index++;
+  }
+
+  if (search && String(search).trim()) {
+    userConditions.push(`(
+      u.full_name ILIKE $${index}
+      OR COALESCE(u.seafarer_id::text, '') ILIKE $${index}
+    )`);
+    params.push(`%${String(search).trim()}%`);
+    index++;
+  }
+
+  if (department) {
+    attemptConditions.push(`a.department = $${index}`);
+    params.push(department);
+    index++;
+  }
+
+  if (assessmentId) {
+    attemptConditions.push(`aa.assessment_id = $${index}::uuid`);
+    params.push(assessmentId);
+    index++;
+  }
+
+  if (attemptStatus) {
+    const normalized = String(attemptStatus).trim().toLowerCase();
+    const valid = ["in_progress", "submitted", "evaluated", "expired"];
+    if (valid.includes(normalized)) {
+      attemptConditions.push(`LOWER(COALESCE(aa.status, '')) = $${index}`);
+      params.push(normalized);
+      index++;
+    }
+  }
+
+  if (passed === "true" || passed === true) {
+    attemptConditions.push(`aa.is_passed = true`);
+  } else if (passed === "false" || passed === false) {
+    attemptConditions.push(`aa.is_passed = false`);
+  }
+
+  return {
+    userSql: userConditions.length > 0 ? `AND ${userConditions.join("\nAND ")}` : "",
+    attemptSql:
+      attemptConditions.length > 0
+        ? `AND ${attemptConditions.join("\nAND ")}`
+        : "",
+    params,
+  };
+}
 /* ============================================================
    STATUS HELPERS
    ============================================================ */
@@ -2424,6 +2618,363 @@ export async function getSeafarerTrainingDashboard(
           "development"
           ? error.message
           : undefined,
+    });
+  }
+}
+
+
+/* ============================================================
+   API 1: GET /api/assessments/users
+   Users filtered by company, ship, or rank + their assessment details
+   ============================================================ */
+
+export async function getAssessmentUsers(req, res) {
+  try {
+    const scope = getCompanyScope(req);
+    if (scope.error) {
+      return res.status(scope.status).json({
+        success: false,
+        message: scope.message,
+      });
+    }
+
+    const { companyId, allCompanies } = scope;
+    const includeAllAttempts =
+      String(req.query.includeAllAttempts || "").toLowerCase() === "true";
+
+    const baseUserConditions = ["1=1"];
+    const baseParams = [];
+    let paramIndex = 1;
+
+    if (companyId) {
+      baseUserConditions.push(`u.company_id = $${paramIndex}`);
+      baseParams.push(companyId);
+      paramIndex++;
+    }
+
+    const filters = buildUserAndAttemptFilters(req.query, paramIndex);
+
+    const query = `
+      SELECT
+        u.user_id,
+        u.seafarer_id,
+        u.full_name,
+        u.rank,
+        u.status AS user_status,
+        u.company_id,
+        u.ship_id,
+        u.embarkation_date,
+        u.disembarkation_date,
+        comp.company_name,
+        s.ship_name,
+        s.ship_type,
+        aa.attempt_id,
+        aa.assessment_id,
+        aa.started_at,
+        aa.submitted_at,
+        aa.status AS attempt_status,
+        aa.score_obtained,
+        aa.percentage,
+        aa.is_passed,
+        aa.correct_answers_count,
+        aa.total_questions,
+        aa.subjective_pending_review,
+        aa.reviewed_by,
+        aa.reviewed_at,
+        aa.attempt_number,
+        aa.created_at AS attempt_created_at,
+        a.title AS assessment_title,
+        a.department AS assessment_department
+      FROM users u
+      LEFT JOIN company comp
+        ON comp.company_id = u.company_id
+      LEFT JOIN ships s
+        ON s.ship_id = u.ship_id
+      LEFT JOIN assessment_attempts aa
+        ON aa.user_id = u.user_id
+      LEFT JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE ${baseUserConditions.join("\nAND ")}
+        ${filters.userSql}
+        ${filters.attemptSql}
+      ORDER BY
+        comp.company_name NULLS LAST,
+        s.ship_name NULLS LAST,
+        u.rank NULLS LAST,
+        u.full_name ASC,
+        aa.assessment_id,
+        aa.attempt_number DESC NULLS LAST,
+        aa.submitted_at DESC NULLS LAST,
+        aa.created_at DESC
+    `;
+
+    const result = await db.query(query, [...baseParams, ...filters.params]);
+
+    const usersMap = new Map();
+
+    for (const row of result.rows) {
+      if (!usersMap.has(row.user_id)) {
+        usersMap.set(row.user_id, {
+          user_id: row.user_id,
+          seafarer_id: row.seafarer_id,
+          full_name: row.full_name,
+          rank: row.rank,
+          status: row.user_status,
+          company: {
+            company_id: row.company_id,
+            company_name: row.company_name || null,
+          },
+          ship: {
+            ship_id: row.ship_id,
+            ship_name: row.ship_name || null,
+            ship_type: row.ship_type || null,
+          },
+          embarkation_date: row.embarkation_date,
+          disembarkation_date: row.disembarkation_date,
+          latestByAssessment: new Map(),
+          allAttempts: [],
+        });
+      }
+
+      const userEntry = usersMap.get(row.user_id);
+
+      if (row.attempt_id) {
+        const attemptObj = {
+          attempt_id: row.attempt_id,
+          assessment_id: row.assessment_id,
+          title: row.assessment_title || null,
+          department: row.assessment_department || null,
+          attempt_number: row.attempt_number,
+          status: row.attempt_status,
+          score_obtained: row.score_obtained,
+          percentage: row.percentage,
+          is_passed: row.is_passed,
+          correct_answers_count: row.correct_answers_count,
+          total_questions: row.total_questions,
+          subjective_pending_review: row.subjective_pending_review,
+          reviewed_by: row.reviewed_by,
+          reviewed_at: row.reviewed_at,
+          started_at: row.started_at,
+          submitted_at: row.submitted_at,
+        };
+
+        // Since ORDER BY puts highest attempt_number / latest timestamp first per assessment_id,
+        // the first seen row for an assessment_id is the latest attempt.
+        if (!userEntry.latestByAssessment.has(row.assessment_id)) {
+          userEntry.latestByAssessment.set(row.assessment_id, attemptObj);
+        }
+
+        if (includeAllAttempts) {
+          userEntry.allAttempts.push(attemptObj);
+        }
+      }
+    }
+
+    const users = Array.from(usersMap.values()).map((entry) => {
+      const assessments = Array.from(entry.latestByAssessment.values());
+      const summary = summarizeAttempts(assessments);
+
+      return {
+        user_id: entry.user_id,
+        seafarer_id: entry.seafarer_id,
+        full_name: entry.full_name,
+        rank: entry.rank,
+        status: entry.status,
+        company: entry.company,
+        ship: entry.ship,
+        embarkation_date: entry.embarkation_date,
+        disembarkation_date: entry.disembarkation_date,
+        summary,
+        assessments,
+        ...(includeAllAttempts ? { attempts: entry.allAttempts } : {}),
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        scope: {
+          company_id: companyId || null,
+          all_companies: allCompanies,
+        },
+        filters: {
+          shipId: req.query.shipId || null,
+          rank: req.query.rank || null,
+          department: req.query.department || null,
+          assessmentId: req.query.assessmentId || null,
+          attemptStatus: req.query.attemptStatus || null,
+          passed: req.query.passed ?? null,
+          search: req.query.search || null,
+        },
+        total_users: users.length,
+        users,
+      },
+    });
+  } catch (error) {
+    console.error("getAssessmentUsers error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load users and assessment details",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+}
+
+/* ============================================================
+   API 2: GET /api/assessments/users/:userId/assessments
+   Single seafarer assessment profile & attempt history
+   ============================================================ */
+
+export async function getUserAssessmentDetails(req, res) {
+  try {
+    const { userId } = req.params;
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required",
+      });
+    }
+
+    const scope = getCompanyScope(req);
+    if (scope.error) {
+      return res.status(scope.status).json({
+        success: false,
+        message: scope.message,
+      });
+    }
+
+    const { companyId, companyScoped } = scope;
+
+    const query = `
+      SELECT
+        u.user_id,
+        u.seafarer_id,
+        u.full_name,
+        u.rank,
+        u.status,
+        u.company_id,
+        u.ship_id,
+        u.embarkation_date,
+        u.disembarkation_date,
+        comp.company_name,
+        s.ship_name,
+        s.ship_type,
+        aa.attempt_id,
+        aa.assessment_id,
+        aa.started_at,
+        aa.submitted_at,
+        aa.status AS attempt_status,
+        aa.score_obtained,
+        aa.percentage,
+        aa.is_passed,
+        aa.correct_answers_count,
+        aa.total_questions,
+        aa.subjective_pending_review,
+        aa.reviewed_by,
+        aa.reviewed_at,
+        aa.attempt_number,
+        a.title AS assessment_title,
+        a.department AS assessment_department
+      FROM users u
+      LEFT JOIN company comp
+        ON comp.company_id = u.company_id
+      LEFT JOIN ships s
+        ON s.ship_id = u.ship_id
+      LEFT JOIN assessment_attempts aa
+        ON aa.user_id = u.user_id
+      LEFT JOIN assessments a
+        ON a.assessment_id = aa.assessment_id
+      WHERE u.user_id = $1
+        ${companyScoped ? `AND u.company_id = $2` : ""}
+      ORDER BY
+        aa.assessment_id,
+        aa.attempt_number DESC NULLS LAST,
+        aa.submitted_at DESC NULLS LAST,
+        aa.created_at DESC
+    `;
+
+    const queryParams = [
+      Number(userId),
+      ...(companyScoped ? [companyId] : []),
+    ];
+
+    const result = await db.query(query, queryParams);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const first = result.rows[0];
+    const latestByAssessment = new Map();
+    const attempts = [];
+
+    for (const row of result.rows) {
+      if (!row.attempt_id) continue;
+
+      const attemptObj = {
+        attempt_id: row.attempt_id,
+        assessment_id: row.assessment_id,
+        title: row.assessment_title || null,
+        department: row.assessment_department || null,
+        attempt_number: row.attempt_number,
+        status: row.attempt_status,
+        score_obtained: row.score_obtained,
+        percentage: row.percentage,
+        is_passed: row.is_passed,
+        correct_answers_count: row.correct_answers_count,
+        total_questions: row.total_questions,
+        subjective_pending_review: row.subjective_pending_review,
+        reviewed_by: row.reviewed_by,
+        reviewed_at: row.reviewed_at,
+        started_at: row.started_at,
+        submitted_at: row.submitted_at,
+      };
+
+      attempts.push(attemptObj);
+
+      if (!latestByAssessment.has(row.assessment_id)) {
+        latestByAssessment.set(row.assessment_id, attemptObj);
+      }
+    }
+
+    const assessments = Array.from(latestByAssessment.values());
+    const summary = summarizeAttempts(assessments);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        seafarer: {
+          user_id: first.user_id,
+          seafarer_id: first.seafarer_id,
+          full_name: first.full_name,
+          rank: first.rank,
+          status: first.status,
+          company: {
+            company_id: first.company_id,
+            company_name: first.company_name || null,
+          },
+          ship: {
+            ship_id: first.ship_id,
+            ship_name: first.ship_name || null,
+            ship_type: first.ship_type || null,
+          },
+          embarkation_date: first.embarkation_date,
+          disembarkation_date: first.disembarkation_date,
+        },
+        summary,
+        assessments,
+        attempts,
+      },
+    });
+  } catch (error) {
+    console.error("getUserAssessmentDetails error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load user assessment details",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 }
