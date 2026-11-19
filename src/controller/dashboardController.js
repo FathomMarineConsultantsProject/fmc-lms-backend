@@ -103,7 +103,6 @@ function buildUserAndAttemptFilters(query, startIndex = 1) {
   const {
     shipId,
     rank,
-    department,
     assessmentId,
     attemptStatus,
     passed,
@@ -155,12 +154,6 @@ function buildUserAndAttemptFilters(query, startIndex = 1) {
       OR COALESCE(u.seafarer_id::text, '') ILIKE $${index}
     )`);
     params.push(`%${String(search).trim()}%`);
-    index++;
-  }
-
-  if (department) {
-    attemptConditions.push(`a.department = $${index}`);
-    params.push(department);
     index++;
   }
 
@@ -2631,8 +2624,7 @@ export async function getAssessmentUsers(req, res) {
         aa.reviewed_at,
         aa.attempt_number,
         aa.created_at AS attempt_created_at,
-        a.title AS assessment_title,
-        a.department AS assessment_department
+        a.title AS assessment_title
       FROM users u
       LEFT JOIN company comp
         ON comp.company_id = u.company_id
@@ -2691,7 +2683,6 @@ export async function getAssessmentUsers(req, res) {
           attempt_id: row.attempt_id,
           assessment_id: row.assessment_id,
           title: row.assessment_title || null,
-          department: row.assessment_department || null,
           attempt_number: row.attempt_number,
           status: row.attempt_status,
           score_obtained: row.score_obtained,
@@ -2706,8 +2697,6 @@ export async function getAssessmentUsers(req, res) {
           submitted_at: row.submitted_at,
         };
 
-        // Since ORDER BY puts highest attempt_number / latest timestamp first per assessment_id,
-        // the first seen row for an assessment_id is the latest attempt.
         if (!userEntry.latestByAssessment.has(row.assessment_id)) {
           userEntry.latestByAssessment.set(row.assessment_id, attemptObj);
         }
@@ -2748,7 +2737,6 @@ export async function getAssessmentUsers(req, res) {
         filters: {
           shipId: req.query.shipId || null,
           rank: req.query.rank || null,
-          department: req.query.department || null,
           assessmentId: req.query.assessmentId || null,
           attemptStatus: req.query.attemptStatus || null,
           passed: req.query.passed ?? null,
@@ -2769,8 +2757,7 @@ export async function getAssessmentUsers(req, res) {
 }
 
 /* ============================================================
-   API 2: GET /api/assessments/users/:userId/assessments
-   Single seafarer assessment profile & attempt history
+   API 2: GET /api/training/assessments/users/:userId/assessments
    ============================================================ */
 
 export async function getUserAssessmentDetails(req, res) {
@@ -2821,8 +2808,7 @@ export async function getUserAssessmentDetails(req, res) {
         aa.reviewed_by,
         aa.reviewed_at,
         aa.attempt_number,
-        a.title AS assessment_title,
-        a.department AS assessment_department
+        a.title AS assessment_title
       FROM users u
       LEFT JOIN company comp
         ON comp.company_id = u.company_id
@@ -2866,7 +2852,6 @@ export async function getUserAssessmentDetails(req, res) {
         attempt_id: row.attempt_id,
         assessment_id: row.assessment_id,
         title: row.assessment_title || null,
-        department: row.assessment_department || null,
         attempt_number: row.attempt_number,
         status: row.attempt_status,
         score_obtained: row.score_obtained,
