@@ -25,6 +25,7 @@ import {
     getExecutiveCombinedAnalytics,
     getCompanyCombinedAnalytics,
     getFleetCombinedAnalytics,
+    getFleetCrewRegisterAnalytics,
     getSeafarerCombinedAnalytics,
     getSeafarerCompetencyPassport,
 } from "../controller/analyticsController.js";
@@ -142,18 +143,21 @@ router.get(
 );
 
 // =====================================================
-// 6. FLEET AND VESSEL ANALYTICS - 1 API
+// FLEET & VESSEL ANALYTICS
 // =====================================================
 
-// Includes:
-// - Fleet Overview
-// - Vessel Performance
-// - Ship-wise Crew Distribution
-// - Vessel Readiness
-// - Ship-wise Competency
+// API 1 - Fleet Overview
+// Includes vessel matrix, rank performance and readiness
 router.get(
     "/ships/combined",
     getFleetCombinedAnalytics
+);
+
+// API 2 - Complete Crew Performance Register
+// Supports companyId, shipId, rank and date filters
+router.get(
+    "/ships/crew-register",
+    getFleetCrewRegisterAnalytics
 );
 
 // =====================================================

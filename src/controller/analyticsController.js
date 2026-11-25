@@ -4766,93 +4766,242 @@ export const getCompanyCombinedAnalytics = async (req, res) => {
 
 
 
+
 export const getFleetCombinedAnalytics = async (req, res) => {
   try {
-      await verifyAnalyticsRequest(req);
+    await verifyAnalyticsRequest(req);
+
     const scope = fmiScope(req);
 
-    // =====================================================
-    // VESSEL-WISE PERFORMANCE MATRIX
-    // =====================================================
+    // One SQL query with a shared combined CTE.
+    // The complete crew register is not loaded here.
+    const summaryQ = `
+      ${fmiCombinedCte},
 
-    const vesselQ = `
-      ${fmiCombinedCte}
+      vessel_matrix AS (
+        SELECT
+          s.ship_id,
+          s.ship_name,
+          s.imo_number,
+          s.flag,
+          s.ship_type,
+
+          s.company_id,
+          co.company_name,
+
+          ${fmiRollupSql("p")},
+
+          NULL::boolean AS is_active,
+          NULL::float8 AS competency_score,
+          NULL::float8 AS mandatory_compliance_percentage
+
+        FROM fmi_ships s
+
+        JOIN fmi_companies co
+          ON co.company_id = s.company_id
+
+        LEFT JOIN fmi_per_crew p
+          ON p.ship_id = s.ship_id
+         AND p.company_id = s.company_id
+
+        GROUP BY
+          s.ship_id,
+          s.ship_name,
+          s.imo_number,
+          s.flag,
+          s.ship_type,
+          s.company_id,
+          co.company_name
+      ),
+
+      rank_matrix AS (
+        SELECT
+          p.ship_id,
+          p.ship_name,
+
+          COALESCE(
+            p.rank,
+            'Unknown'
+          ) AS rank,
+
+          ${fmiRollupSql("p")}
+
+        FROM fmi_per_crew p
+
+        WHERE p.ship_id IS NOT NULL
+
+        GROUP BY
+          p.ship_id,
+          p.ship_name,
+          COALESCE(p.rank, 'Unknown')
+      )
 
       SELECT
-        s.ship_id,
-        s.ship_name,
-        s.imo_number,
-        s.flag,
-        s.ship_type,
-
-        s.company_id,
-        co.company_name,
-
-        ${fmiRollupSql("p")},
-
-        NULL::boolean AS is_active,
-
-        NULL::float8 AS competency_score,
-
-        NULL::float8 AS mandatory_compliance_percentage
-
-      FROM fmi_ships s
-
-      JOIN fmi_companies co
-        ON co.company_id = s.company_id
-
-      LEFT JOIN fmi_per_crew p
-        ON p.ship_id = s.ship_id
-
-      GROUP BY
-        s.ship_id,
-        s.ship_name,
-        s.imo_number,
-        s.flag,
-        s.ship_type,
-        s.company_id,
-        co.company_name
-
-      ORDER BY
-        co.company_name,
-        s.ship_name
-    `;
-
-    // =====================================================
-    // RANK-WISE PERFORMANCE WITHIN EACH SHIP
-    // =====================================================
-
-    const rankQ = `
-      ${fmiCombinedCte}
-
-      SELECT
-        p.ship_id,
-        p.ship_name,
+        COALESCE(
+          (
+            SELECT jsonb_agg(
+              to_jsonb(v)
+              ORDER BY v.company_name, v.ship_name
+            )
+            FROM vessel_matrix v
+          ),
+          '[]'::jsonb
+        ) AS vessel_rows,
 
         COALESCE(
-          p.rank,
-          'Unknown'
-        ) AS rank,
-
-        ${fmiRollupSql("p")}
-
-      FROM fmi_per_crew p
-
-      WHERE p.ship_id IS NOT NULL
-
-      GROUP BY
-        p.ship_id,
-        p.ship_name,
-        COALESCE(p.rank, 'Unknown')
-
-      ORDER BY
-        p.ship_name,
-        rank
+          (
+            SELECT jsonb_agg(
+              to_jsonb(r)
+              ORDER BY r.ship_name, r.rank
+            )
+            FROM rank_matrix r
+          ),
+          '[]'::jsonb
+        ) AS rank_rows
     `;
 
-    // =====================================================
-    // COMPLETE SHIP CREW PERFORMANCE REGISTER
-    // =====================================================
+    const start = Date.now();
+
+    const { rows } = await db.query(
+      summaryQ,
+      scope.params
+    );
+
+    console.log(
+      `[Fleet Overview] ${Date.now() - start} ms`
+    );
+
+    const shipRows = rows[0]?.vessel_rows ?? [];
+    const rankRows = rows[0]?.rank_rows ?? [];
+
+    // =========================================
+    // FLEET OVERVIEW
+    // =========================================
+
+    const shipTypes = new Set(
+      shipRows
+        .map((ship) => ship.ship_type)
+        .filter(Boolean)
+    );
+
+    const onboardSum = shipRows.reduce(
+      (sum, ship) =>
+        sum + Number(ship.onboard_crew || 0),
+      0
+    );
+
+    const mannedVessels = shipRows.filter(
+      (ship) =>
+        Number(ship.onboard_crew || 0) > 0
+    ).length;
+
+    // =========================================
+    // VESSEL READINESS
+    // =========================================
+
+    const vesselReadiness = shipRows.map(
+      (ship) => ({
+        ship_id: ship.ship_id,
+        ship_name: ship.ship_name,
+
+        ready_crew: ship.ready_crew,
+
+        conditionally_ready_crew:
+          ship.conditionally_ready_crew,
+
+        partially_ready_crew:
+          ship.conditionally_ready_crew,
+
+        not_ready_crew:
+          ship.not_ready_crew,
+
+        unassessed_crew:
+          ship.unassessed_crew,
+
+        readiness_percentage:
+          ship.readiness_percentage,
+
+        average_matrix_readiness_score:
+          ship.average_matrix_readiness_score,
+      })
+    );
+
+    // =========================================
+    // RESPONSE
+    // =========================================
+
+    return res.status(200).json({
+      success: true,
+
+      data: {
+        fleetOverview: {
+          total_ships: shipRows.length,
+
+          active_ships: null,
+
+          vessel_types: shipTypes.size,
+
+          manned_vessels: mannedVessels,
+
+          average_onboard_crew_per_vessel:
+            shipRows.length > 0
+              ? Number(
+                  (
+                    onboardSum / shipRows.length
+                  ).toFixed(2)
+                )
+              : null,
+        },
+
+        vesselPerformanceMatrix: shipRows,
+
+        shipRankPerformance: rankRows,
+
+        vesselReadiness: {
+          available: true,
+
+          verified_operational_readiness: false,
+
+          byVessel: vesselReadiness,
+        },
+
+        definitions: {
+          ...fmiDefinitions,
+
+          mannedVessel:
+            "at_least_one_current_onboard_crew",
+
+          shipActivityStatus:
+            "not_stored_in_ships_table",
+
+          crewRegisterEndpoint:
+            "/api/analytics/ships/crew-register",
+        },
+
+        filters: scope.filters,
+      },
+    });
+
+  } catch (error) {
+    return fmiSendError(
+      res,
+      error,
+      "getFleetCombinedAnalytics"
+    );
+  }
+};
+
+
+
+export const getFleetCrewRegisterAnalytics = async (req, res) => {
+  try {
+    await verifyAnalyticsRequest(req);
+
+    const scope = fmiScope(req);
+
+    // =========================================
+    // COMPLETE CREW PERFORMANCE QUERY
+    // =========================================
 
     const crewQ = `
       ${fmiCombinedCte}
@@ -4871,6 +5020,7 @@ export const getFleetCombinedAnalytics = async (req, res) => {
         p.ship_name,
         p.ship_type,
 
+        -- TRAINING
         p.training_enrolments,
         p.training_completed,
 
@@ -4883,6 +5033,7 @@ export const getFleetCombinedAnalytics = async (req, res) => {
           2
         )::float8 AS training_completion_rate,
 
+        -- ASSESSMENTS
         p.assessment_attempts,
         p.assessment_passed,
 
@@ -4904,6 +5055,7 @@ export const getFleetCombinedAnalytics = async (req, res) => {
           2
         )::float8 AS average_assessment_score,
 
+        -- CERTIFICATES
         p.certificates_held,
         p.certificates_valid,
         p.certificates_expired,
@@ -4916,11 +5068,14 @@ export const getFleetCombinedAnalytics = async (req, res) => {
             0
           ),
           2
-        )::float8 AS certificate_validity_percentage,
+        )::float8
+          AS certificate_validity_percentage,
 
+        -- COMPETENCY MATRIX & READINESS
         p.readiness_score,
         p.readiness_status,
         p.certificate_hard_stops,
+
         p.matrix_total_assigned,
         p.matrix_total_completed,
 
@@ -4936,101 +5091,51 @@ export const getFleetCombinedAnalytics = async (req, res) => {
         p.full_name
     `;
 
-    const [
-      vessels,
-      ranks,
-      crew,
-    ] = await Promise.all([
-      db.query(vesselQ, scope.params),
-      db.query(rankQ, scope.params),
-      db.query(crewQ, scope.params),
-    ]);
+    const start = Date.now();
 
-    const shipRows = vessels.rows;
-
-    const shipTypes = [
-      ...new Set(
-        shipRows
-          .map((s) => s.ship_type)
-          .filter(Boolean)
-      ),
-    ];
-
-    const onboardSum = shipRows.reduce(
-      (sum, s) =>
-        sum + Number(s.onboard_crew || 0),
-      0
+    const { rows } = await db.query(
+      crewQ,
+      scope.params
     );
+
+    console.log(
+      `[Fleet Crew Register] ${Date.now() - start} ms`,
+      `Records: ${rows.length}`
+    );
+
+    // =========================================
+    // RESPONSE
+    // =========================================
 
     return res.status(200).json({
       success: true,
 
       data: {
-        fleetOverview: {
-          total_ships: shipRows.length,
+        totalCrewRecords: rows.length,
 
-          active_ships: null,
+        shipCrewPerformanceRegister: rows,
 
-          vessel_types: shipTypes.length,
-
-          manned_vessels: shipRows.filter(
-            (s) => s.onboard_crew > 0
-          ).length,
-
-          average_onboard_crew_per_vessel:
-            shipRows.length
-              ? Number(
-                  (
-                    onboardSum / shipRows.length
-                  ).toFixed(2)
-                )
-              : null,
-        },
-
-        vesselPerformanceMatrix: shipRows,
-
-        shipRankPerformance: ranks.rows,
-
-        shipCrewPerformanceRegister: crew.rows,
-
-        vesselReadiness: {
-          available: true,
-          verified_operational_readiness: false,
-          byVessel: shipRows.map((ship) => ({
-            ship_id: ship.ship_id,
-            ship_name: ship.ship_name,
-            ready_crew: ship.ready_crew,
-            conditionally_ready_crew: ship.conditionally_ready_crew,
-            partially_ready_crew: ship.conditionally_ready_crew,
-            not_ready_crew: ship.not_ready_crew,
-            unassessed_crew: ship.unassessed_crew,
-            readiness_percentage: ship.readiness_percentage,
-            average_matrix_readiness_score: ship.average_matrix_readiness_score,
-          })),
-        },
+        filters: scope.filters,
 
         definitions: {
           ...fmiDefinitions,
 
-          mannedVessel:
-            "at_least_one_current_onboard_crew",
+          recordScope:
+            "current_company_and_ship_of_seafarer",
 
-          shipActivityStatus:
-            "not_stored_in_ships_table",
+          pagination: false,
         },
-
-        filters: scope.filters,
       },
     });
+
   } catch (error) {
     return fmiSendError(
       res,
       error,
-      "getFleetCombinedAnalytics"
+      "getFleetCrewRegisterAnalytics"
     );
   }
 };
-
 
 
 export const getSeafarerCombinedAnalytics = async (req, res) => {
