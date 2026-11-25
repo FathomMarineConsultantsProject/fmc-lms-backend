@@ -11,6 +11,10 @@ import {
   getUserInfoForCertificate,
   getCertificateSourceOptions,
   getCertificateByUid,
+  getCertificateOverviewAnalytics,
+  getCertificateRenewalAnalytics,
+  getCrewCertificateAnalytics,
+  getCertificateComplianceAnalytics,
 } from "../controller/certificatesController.js";
 
 export const router = Router();
@@ -38,6 +42,38 @@ router.get("/:id", allowRoles(1, 2, 3, 4), getCertificateById);
 // unity lookup
 router.post("/user-info", allowRoles(1, 2, 3, 4), getUserInfoForCertificate);
 
+
+// =====================================================
+//  CERTIFICATE ANALYTICS
+// =====================================================
+
+// 1. Overview
+router.get(
+  "/analytics/overview",
+  allowRoles(1, 2, 3),
+  getCertificateOverviewAnalytics
+);
+
+// 2. Renewals
+router.get(
+  "/analytics/renewals",
+  allowRoles(1, 2, 3),
+  getCertificateRenewalAnalytics
+);
+
+// 3. Crew certificate analytics
+router.get(
+  "/analytics/crew",
+  allowRoles(1, 2, 3),
+  getCrewCertificateAnalytics
+);
+
+// 4. Certificate compliance
+router.get(
+  "/analytics/compliance",
+  allowRoles(1, 2, 3),
+  getCertificateComplianceAnalytics
+);
 
 
 // APIS:

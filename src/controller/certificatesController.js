@@ -6,6 +6,292 @@ const ROLE_ADMIN = 2;
 const ROLE_SUBADMIN = 3;
 const ROLE_CREW = 4;
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// =====================================================
+// SHARED HELPERS
+// =====================================================
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function parseDate(raw, name) {
+  if (raw == null || raw === "") return null;
+
+  if (
+    typeof raw !== "string" ||
+    !DATE_RE.test(raw) ||
+    Number.isNaN(Date.parse(`${raw}T00:00:00Z`)) ||
+    new Date(`${raw}T00:00:00Z`)
+      .toISOString()
+      .slice(0, 10) !== raw
+  ) {
+    throw httpError(
+      400,
+      `${name} must be a valid YYYY-MM-DD date`
+    );
+  }
+
+  return raw;
+}
+
+function parseIntParam(
+  raw,
+  name,
+  fallback,
+  max = 10000
+) {
+  if (raw == null || raw === "") return fallback;
+
+  if (!/^\d+$/.test(String(raw))) {
+    throw httpError(
+      400,
+      `${name} must be a positive integer`
+    );
+  }
+
+  const number = Number(raw);
+
+  if (
+    !Number.isSafeInteger(number) ||
+    number < 1 ||
+    number > max
+  ) {
+    throw httpError(
+      400,
+      `${name} must be between 1 and ${max}`
+    );
+  }
+
+  return number;
+}
+
+// =====================================================
+// ROLE-BASED COMPANY / SHIP FILTER
+// =====================================================
+
+function roleScope(req, tableAlias, options = {}) {
+  const role = Number(req.user?.role_id);
+  const userCompany = req.user?.company_id;
+  const userShip = req.user?.ship_id;
+
+  const {
+    companyId,
+    shipId,
+    dateFrom,
+    dateTo,
+  } = req.query || {};
+
+  const includeDates = options.includeDates !== false;
+
+  const where = [];
+  const params = [];
+
+  const add = (sql, value) => {
+    params.push(value);
+    where.push(
+      sql.replace("?", `$${params.length}`)
+    );
+  };
+
+  if (![1, 2, 3].includes(role)) {
+    throw httpError(
+      403,
+      "Certificate analytics are restricted to administrative roles"
+    );
+  }
+
+  if (
+    companyId != null &&
+    companyId !== "" &&
+    !UUID_RE.test(String(companyId))
+  ) {
+    throw httpError(400, "companyId must be a UUID");
+  }
+
+  if (shipId != null && shipId !== "") {
+    parseIntParam(shipId, "shipId", null);
+  }
+
+  // Company Admin and Ship Admin
+  if (role === 2 || role === 3) {
+    if (!userCompany) {
+      throw httpError(
+        403,
+        "Authenticated company is missing"
+      );
+    }
+
+    if (
+      companyId &&
+      String(companyId).toLowerCase() !==
+        String(userCompany).toLowerCase()
+    ) {
+      throw httpError(
+        403,
+        "Cannot access another company's certificates"
+      );
+    }
+
+    add(
+      `${tableAlias}.company_id = ?`,
+      userCompany
+    );
+  }
+
+  // Ship Admin
+  if (role === 3) {
+    if (!userShip) {
+      throw httpError(
+        403,
+        "Authenticated ship is missing"
+      );
+    }
+
+    if (
+      shipId &&
+      Number(shipId) !== Number(userShip)
+    ) {
+      throw httpError(
+        403,
+        "Cannot access another ship's certificates"
+      );
+    }
+
+    add(`${tableAlias}.ship_id = ?`, userShip);
+  }
+
+  // Super Admin
+  if (role === 1 && companyId) {
+    add(`${tableAlias}.company_id = ?`, companyId);
+  }
+
+  if (role !== 3 && shipId) {
+    add(`${tableAlias}.ship_id = ?`, Number(shipId));
+  }
+
+  const from = parseDate(dateFrom, "dateFrom");
+  const to = parseDate(dateTo, "dateTo");
+
+  if (from && to && from > to) {
+    throw httpError(
+      400,
+      "dateFrom must be on or before dateTo"
+    );
+  }
+
+  if (includeDates) {
+    if (from) {
+      add(
+        `${tableAlias}.issue_date >= ?::date`,
+        from
+      );
+    }
+
+    if (to) {
+      add(
+        `${tableAlias}.issue_date < (?::date + INTERVAL '1 day')`,
+        to
+      );
+    }
+  }
+
+  return {
+    where: where.length
+      ? where.join(" AND ")
+      : "TRUE",
+    params,
+  };
+}
+
+// =====================================================
+// CERTIFICATE COMPUTED STATUS
+// =====================================================
+
+function statusSql(alias = "c") {
+  return `
+    CASE
+      WHEN LOWER(COALESCE(${alias}.status, 'active')) = 'revoked'
+        THEN 'revoked'
+
+      WHEN ${alias}.expiry_date IS NOT NULL
+        AND ${alias}.expiry_date < CURRENT_DATE
+        THEN 'expired'
+
+      WHEN ${alias}.expiry_date IS NOT NULL
+        AND ${alias}.expiry_date <= CURRENT_DATE + 14
+        THEN 'expiring_soon'
+
+      ELSE 'active'
+    END
+  `;
+}
+
+function baseCte(scope) {
+  return `
+    WITH scoped AS (
+      SELECT
+        c.*,
+        ${statusSql("c")} AS computed_status
+      FROM public.certificates c
+      WHERE ${scope.where}
+    )
+  `;
+}
+
+const totalsSql = `
+  COUNT(*)::int AS total,
+
+  COUNT(*) FILTER (
+    WHERE computed_status = 'active'
+  )::int AS active,
+
+  COUNT(*) FILTER (
+    WHERE computed_status = 'expiring_soon'
+  )::int AS expiring_soon,
+
+  COUNT(*) FILTER (
+    WHERE computed_status = 'expired'
+  )::int AS expired,
+
+  COUNT(*) FILTER (
+    WHERE computed_status = 'revoked'
+  )::int AS revoked,
+
+  COUNT(*) FILTER (
+    WHERE computed_status IN ('active', 'expiring_soon')
+  )::int AS valid,
+
+  ROUND(
+    100.0 * COUNT(*) FILTER (
+      WHERE computed_status IN ('active', 'expiring_soon')
+    ) / NULLIF(COUNT(*), 0),
+    2
+  ) AS valid_percentage
+`;
+
+function sendError(res, error, name) {
+  if (error.status && error.status < 500) {
+    return res.status(error.status).json({
+      success: false,
+      error: error.message,
+    });
+  }
+
+  console.error(`${name} error:`, error);
+
+  return res.status(500).json({
+    success: false,
+    error: "Failed to load certificate analytics",
+  });
+}
+
 const COURSE_CONTENT_MODES = ["course", "single_training"];
 
 function normalizeType(value) {
@@ -1692,7 +1978,534 @@ export const getCertificateByUid = async (req, res) => {
   }
 };
 
+// =====================================================
+// 1. CERTIFICATE OVERVIEW ANALYTICS
+// GET /certificates/analytics/overview
+// =====================================================
 
+export const getCertificateOverviewAnalytics =
+  async (req, res) => {
+    try {
+      const scope = roleScope(req, "c");
+      const cte = baseCte(scope);
+
+      const queries = [
+        // Overall summary
+        `
+          ${cte}
+          SELECT ${totalsSql}
+          FROM scoped
+        `,
+
+        // Certificate type distribution
+        `
+          ${cte}
+          SELECT
+            certificate_type AS type,
+            ${totalsSql}
+          FROM scoped
+          GROUP BY certificate_type
+          ORDER BY total DESC
+        `,
+
+        // Company-wise summary
+        `
+          ${cte}
+          SELECT
+            s.company_id,
+            COALESCE(
+              MAX(co.company_name),
+              MAX(s.company_name_snapshot),
+              'Unassigned'
+            ) AS company_name,
+            ${totalsSql}
+          FROM scoped s
+          LEFT JOIN public.company co
+            ON co.company_id = s.company_id
+          GROUP BY s.company_id
+          ORDER BY total DESC
+        `,
+
+        // Ship-wise summary
+        `
+          ${cte}
+          SELECT
+            s.ship_id,
+            COALESCE(
+              MAX(sh.ship_name),
+              MAX(s.ship_name_snapshot),
+              'Unassigned'
+            ) AS ship_name,
+            ${totalsSql}
+          FROM scoped s
+          LEFT JOIN public.ships sh
+            ON sh.ship_id = s.ship_id
+          GROUP BY s.ship_id
+          ORDER BY total DESC
+        `,
+
+        // Rank-wise summary
+        `
+          ${cte}
+          SELECT
+            COALESCE(u.rank, 'Unknown') AS rank,
+            ${totalsSql}
+          FROM scoped s
+          LEFT JOIN public.users u
+            ON u.user_id = s.user_id
+          GROUP BY COALESCE(u.rank, 'Unknown')
+          ORDER BY total DESC
+        `,
+
+        // Monthly issuance trends
+        `
+          ${cte}
+          SELECT
+            TO_CHAR(
+              DATE_TRUNC('month', issue_date),
+              'YYYY-MM'
+            ) AS month,
+
+            COUNT(*)::int AS total,
+
+            COUNT(*) FILTER (
+              WHERE certificate_type = 'course'
+            )::int AS course,
+
+            COUNT(*) FILTER (
+              WHERE certificate_type = 'assessment'
+            )::int AS assessment,
+
+            COUNT(*) FILTER (
+              WHERE certificate_type = 'training'
+            )::int AS training
+
+          FROM scoped
+          GROUP BY DATE_TRUNC('month', issue_date)
+          ORDER BY DATE_TRUNC('month', issue_date)
+        `,
+      ];
+
+      const [
+        summary,
+        types,
+        companies,
+        ships,
+        ranks,
+        monthly,
+      ] = await Promise.all(
+        queries.map((sql) =>
+          db.query(sql, scope.params)
+        )
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          summary: summary.rows[0],
+          byType: types.rows,
+          byCompany: companies.rows,
+          byShip: ships.rows,
+          byRank: ranks.rows,
+          monthlyIssuance: monthly.rows,
+          definitions: {
+            expiringSoonDays: 14,
+            grouping: "certificate records",
+            dateFilter: "issue_date",
+            shipGrouping: "ship_at_issuance",
+          },
+        },
+      });
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        "getCertificateOverviewAnalytics"
+      );
+    }
+  };
+
+// =====================================================
+// 2. CERTIFICATE RENEWAL ANALYTICS
+// GET /certificates/analytics/renewals
+// =====================================================
+
+
+export const getCertificateRenewalAnalytics = async (req, res) => {
+  try {
+    const scope = roleScope(req, "c", {
+      includeDates: false,
+    });
+
+    const days = parseIntParam(
+      req.query.days,
+      "days",
+      30,
+      365
+    );
+
+    const cte = baseCte(scope);
+
+    const summaryQuery = `
+      ${cte}
+      SELECT
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date < CURRENT_DATE
+        )::int AS expired,
+
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date BETWEEN CURRENT_DATE
+            AND CURRENT_DATE + 7
+        )::int AS expiring_in_7_days,
+
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date BETWEEN CURRENT_DATE
+            AND CURRENT_DATE + 14
+        )::int AS expiring_in_14_days,
+
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date BETWEEN CURRENT_DATE
+            AND CURRENT_DATE + 30
+        )::int AS expiring_in_30_days,
+
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date BETWEEN CURRENT_DATE
+            AND CURRENT_DATE + 60
+        )::int AS expiring_in_60_days,
+
+        COUNT(*) FILTER (
+          WHERE computed_status <> 'revoked'
+            AND expiry_date BETWEEN CURRENT_DATE
+            AND CURRENT_DATE + 90
+        )::int AS expiring_in_90_days
+
+      FROM scoped
+    `;
+
+    const listQuery = `
+      ${cte}
+      SELECT
+        s.certificate_id,
+        s.certificate_uid,
+        s.certificate_name,
+        s.certificate_type,
+        s.user_id,
+
+        COALESCE(
+          u.full_name,
+          s.full_name_snapshot
+        ) AS full_name,
+
+        u.rank,
+        s.company_id,
+
+        COALESCE(
+          co.company_name,
+          s.company_name_snapshot
+        ) AS company_name,
+
+        s.ship_id,
+
+        COALESCE(
+          sh.ship_name,
+          s.ship_name_snapshot
+        ) AS ship_name,
+
+        s.issue_date,
+        s.expiry_date,
+        s.computed_status,
+
+        (
+          s.expiry_date - CURRENT_DATE
+        )::int AS days_until_expiry
+
+      FROM scoped s
+
+      LEFT JOIN public.users u
+        ON u.user_id = s.user_id
+
+      LEFT JOIN public.company co
+        ON co.company_id = s.company_id
+
+      LEFT JOIN public.ships sh
+        ON sh.ship_id = s.ship_id
+
+      WHERE s.computed_status <> 'revoked'
+        AND s.expiry_date IS NOT NULL
+        AND s.expiry_date <= CURRENT_DATE +
+          $${scope.params.length + 1}::int
+
+      ORDER BY
+        s.expiry_date ASC,
+        s.certificate_id DESC
+    `;
+
+    const [summary, list] = await Promise.all([
+      db.query(summaryQuery, scope.params),
+      db.query(listQuery, [
+        ...scope.params,
+        days,
+      ]),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        summary: summary.rows[0],
+        totalRecords: list.rows.length,
+        renewalList: list.rows,
+        definitions: {
+          selectedWindowDays: days,
+          includesExpired: true,
+          expiringSoonDays: 14,
+          renewalHistoryAvailable: false,
+        },
+      },
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "getCertificateRenewalAnalytics"
+    );
+  }
+};
+
+
+// =====================================================
+// 3. CREW CERTIFICATE ANALYTICS
+// GET /certificates/analytics/crew
+// =====================================================
+
+
+export const getCrewCertificateAnalytics = async (req, res) => {
+  try {
+    const scope = roleScope(req, "u", {
+      includeDates: false,
+    });
+
+    const where = `
+      ${scope.where}
+      AND u.role_id = 4
+    `;
+
+    const crewCte = `
+      WITH crew AS (
+        SELECT
+          u.user_id,
+          u.full_name,
+          u.seafarer_id,
+          u.rank,
+          u.company_id,
+          u.ship_id,
+          co.company_name,
+          sh.ship_name
+
+        FROM public.users u
+
+        LEFT JOIN public.company co
+          ON co.company_id = u.company_id
+
+        LEFT JOIN public.ships sh
+          ON sh.ship_id = u.ship_id
+
+        WHERE ${where}
+      ),
+
+      per_crew AS (
+        SELECT
+          crew.*,
+
+          COUNT(c.certificate_id)::int
+            AS total_certificates,
+
+          COUNT(c.certificate_id) FILTER (
+            WHERE ${statusSql("c")} = 'active'
+          )::int AS active,
+
+          COUNT(c.certificate_id) FILTER (
+            WHERE ${statusSql("c")} = 'expiring_soon'
+          )::int AS expiring_soon,
+
+          COUNT(c.certificate_id) FILTER (
+            WHERE ${statusSql("c")} = 'expired'
+          )::int AS expired,
+
+          COUNT(c.certificate_id) FILTER (
+            WHERE ${statusSql("c")} = 'revoked'
+          )::int AS revoked
+
+        FROM crew
+
+        LEFT JOIN public.certificates c
+          ON c.user_id = crew.user_id
+
+        GROUP BY
+          crew.user_id,
+          crew.full_name,
+          crew.seafarer_id,
+          crew.rank,
+          crew.company_id,
+          crew.ship_id,
+          crew.company_name,
+          crew.ship_name
+      )
+    `;
+
+    const summaryQuery = `
+      ${crewCte}
+      SELECT
+        COUNT(*)::int AS total_crew,
+
+        COUNT(*) FILTER (
+          WHERE total_certificates > 0
+        )::int AS crew_with_certificates,
+
+        COUNT(*) FILTER (
+          WHERE expiring_soon > 0
+        )::int AS crew_with_expiring_certificates,
+
+        COUNT(*) FILTER (
+          WHERE expired > 0
+        )::int AS crew_with_expired_certificates,
+
+        COUNT(*) FILTER (
+          WHERE total_certificates = 0
+        )::int AS crew_without_certificates
+
+      FROM per_crew
+    `;
+
+    const listQuery = `
+      ${crewCte}
+      SELECT *
+      FROM per_crew
+
+      ORDER BY
+        full_name NULLS LAST,
+        user_id
+    `;
+
+    const [summary, list] = await Promise.all([
+      db.query(summaryQuery, scope.params),
+      db.query(listQuery, scope.params),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        summary: summary.rows[0],
+        totalRecords: list.rows.length,
+        crew: list.rows,
+        definitions: {
+          population: "current_users_role_4",
+          shipGrouping: "current_user_ship",
+          readinessCalculated: false,
+        },
+      },
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "getCrewCertificateAnalytics"
+    );
+  }
+};
+
+
+// =====================================================
+// 4. CERTIFICATE COMPLIANCE ANALYTICS
+// GET /certificates/analytics/compliance
+// =====================================================
+
+export const getCertificateComplianceAnalytics =
+  async (req, res) => {
+    try {
+      const scope = roleScope(req, "c");
+      const cte = baseCte(scope);
+
+      const byShipQ = `
+        ${cte}
+        SELECT
+          s.ship_id,
+
+          COALESCE(
+            MAX(sh.ship_name),
+            MAX(s.ship_name_snapshot),
+            'Unassigned'
+          ) AS ship_name,
+
+          ${totalsSql}
+
+        FROM scoped s
+
+        LEFT JOIN public.ships sh
+          ON sh.ship_id = s.ship_id
+
+        GROUP BY s.ship_id
+
+        ORDER BY
+          valid_percentage ASC NULLS LAST
+      `;
+
+      const [summary, ships] =
+        await Promise.all([
+          db.query(
+            `${cte}
+             SELECT ${totalsSql}
+             FROM scoped`,
+            scope.params
+          ),
+
+          db.query(
+            byShipQ,
+            scope.params
+          ),
+        ]);
+
+      return res.json({
+        success: true,
+        data: {
+          certificateValidity: {
+            summary: summary.rows[0],
+            byShip: ships.rows,
+          },
+
+          mandatoryCompliance: {
+            available: false,
+            totalRequired: null,
+            requirementsMet: null,
+            requirementsMissing: null,
+            compliancePercentage: null,
+            byCompany: null,
+            byShip: null,
+            byRank: null,
+            missingRequirements: null,
+
+            reason:
+              "No mandatory certificate requirement rules were provided for rank, vessel type, and company",
+          },
+
+          definitions: {
+            notEquivalent:
+              "Certificate validity is not mandatory compliance",
+          },
+        },
+      });
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        "getCertificateComplianceAnalytics"
+      );
+    }
+  };
 // APIS:
 // Write
 // POST /certificates/issue

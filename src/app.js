@@ -30,6 +30,9 @@ import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import disclaimerRoutes from "./routes/disclaimerRoutes.js"
 import seamilesRoutes from "./routes/seamilesRoutes.js";
 import dashboardMainRoutes from "./routes/dashboardMainRoutes.js"; 
+
+import { router as analyticsRoutes } from "./routes/analyticsRoutes.js";
+
 const app = express();
 
 app.set("trust proxy", 1);
@@ -125,6 +128,10 @@ app.use("/device", deviceRoutes);
 app.use("/api/mail", mailTestRoutes);
 app.use("/api/seamiles", seamilesRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
+
+
+app.use("/api/analytics", analyticsRoutes);
+
 /**
  * Unity course progress APIs
  *
